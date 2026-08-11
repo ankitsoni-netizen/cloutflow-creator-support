@@ -59,6 +59,7 @@ export interface Ticket {
   priority: TicketPriority;
   assignedTeam: string;
   assignedExecutive: string;
+  assignedExecutiveId?: string | null;
   createdAt: string;
   updatedAt: string;
   activity: ActivityEvent[];

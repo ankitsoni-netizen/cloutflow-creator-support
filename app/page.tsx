@@ -2,6 +2,7 @@ import AccessDenied from "@/components/AccessDenied";
 import AuthDiagnosticError from "@/components/AuthDiagnosticError";
 import CreatorSupportApp from "@/components/CreatorSupportApp";
 import { requireActiveStaff } from "@/lib/auth";
+import { fetchTicketsForStaff } from "@/lib/tickets/server";
 
 export default async function Home() {
   const result = await requireActiveStaff();
@@ -14,5 +15,17 @@ export default async function Home() {
     return <AccessDenied />;
   }
 
-  return <CreatorSupportApp />;
+  const ticketsResult = await fetchTicketsForStaff();
+  const initialTickets =
+    "tickets" in ticketsResult ? ticketsResult.tickets : [];
+  const initialLoadError =
+    "error" in ticketsResult ? ticketsResult.error : null;
+
+  return (
+    <CreatorSupportApp
+      staffProfile={result.profile}
+      initialTickets={initialTickets}
+      initialLoadError={initialLoadError}
+    />
+  );
 }

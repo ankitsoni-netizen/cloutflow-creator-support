@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import NewTicketModal from "@/components/NewTicketModal";
 import {
   AnalyticsView,
@@ -10,20 +10,34 @@ import {
 import Sidebar from "@/components/Sidebar";
 import TicketDetail from "@/components/TicketDetail";
 import TicketList from "@/components/TicketList";
-import { CURRENT_USER, SAMPLE_TICKETS } from "@/lib/sample-data";
+import type { StaffProfile } from "@/lib/auth";
+import { createTicketAction } from "@/lib/tickets/actions";
+import { fetchTickets, resolveAssignedExecutiveId } from "@/lib/tickets/api";
 import type {
   NavItem,
   NewTicketFormData,
   StatusFilter,
   Ticket,
 } from "@/lib/types";
-import { matchesStatusFilter, nextTicketNumber } from "@/lib/utils";
+import { matchesStatusFilter } from "@/lib/utils";
 
-export default function CreatorSupportApp() {
-  const [tickets, setTickets] = useState<Ticket[]>(SAMPLE_TICKETS);
+interface CreatorSupportAppProps {
+  staffProfile: StaffProfile;
+  initialTickets: Ticket[];
+  initialLoadError: string | null;
+}
+
+export default function CreatorSupportApp({
+  staffProfile,
+  initialTickets,
+  initialLoadError,
+}: CreatorSupportAppProps) {
+  const [tickets, setTickets] = useState<Ticket[]>(initialTickets);
+  const [loadError, setLoadError] = useState<string | null>(initialLoadError);
+  const [isRefreshing, startRefreshTransition] = useTransition();
   const [activeNav, setActiveNav] = useState<NavItem>("inbox");
   const [selectedId, setSelectedId] = useState<string | null>(
-    SAMPLE_TICKETS[0]?.id ?? null,
+    initialTickets[0]?.id ?? null,
   );
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
@@ -33,19 +47,47 @@ export default function CreatorSupportApp() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [emailAcknowledgements, setEmailAcknowledgements] = useState(true);
 
-  useEffect(() => {
-    if (!successMessage) return;
-    const timer = window.setTimeout(() => setSuccessMessage(null), 3200);
-    return () => window.clearTimeout(timer);
-  }, [successMessage]);
+  function refreshTickets() {
+    startRefreshTransition(async () => {
+      const result = await fetchTickets();
+      if ("error" in result) {
+        setLoadError(result.error);
+        return;
+      }
+
+      setLoadError(null);
+      setTickets(result.tickets);
+      setSelectedId((current) => {
+        if (current && result.tickets.some((ticket) => ticket.id === current)) {
+          return current;
+        }
+        return result.tickets[0]?.id ?? null;
+      });
+    });
+  }
+
+  function showSuccess(message: string) {
+    setSuccessMessage(message);
+    window.setTimeout(() => {
+      setSuccessMessage((current) => (current === message ? null : current));
+    }, 3200);
+  }
 
   const filteredTickets = useMemo(() => {
     const query = search.trim().toLowerCase();
+    const currentName = staffProfile.full_name?.trim() ?? "";
 
     return tickets
       .filter((ticket) => {
         if (activeNav === "my-tickets") {
-          return ticket.assignedExecutive === CURRENT_USER;
+          const matchesId =
+            !!ticket.assignedExecutiveId &&
+            ticket.assignedExecutiveId === staffProfile.user_id;
+          const matchesName =
+            !!currentName &&
+            ticket.assignedExecutive.toLowerCase() ===
+              currentName.toLowerCase();
+          return matchesId || matchesName;
         }
         if (activeNav === "resolved") {
           return ticket.status === "Resolved";
@@ -74,7 +116,14 @@ export default function CreatorSupportApp() {
         (a, b) =>
           new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
       );
-  }, [tickets, activeNav, search, statusFilter]);
+  }, [
+    tickets,
+    activeNav,
+    search,
+    statusFilter,
+    staffProfile.full_name,
+    staffProfile.user_id,
+  ]);
 
   const selectedTicket =
     tickets.find((ticket) => ticket.id === selectedId) ?? null;
@@ -95,62 +144,33 @@ export default function CreatorSupportApp() {
     setMobileDetailOpen(true);
   }
 
-  function handleCreateTicket(data: NewTicketFormData) {
-    const now = new Date().toISOString();
-    const ticketNumber = nextTicketNumber(tickets);
-    const newTicket: Ticket = {
-      id: ticketNumber,
-      ticketNumber,
-      creatorName: data.creatorName.trim(),
-      phone: data.phone.trim(),
-      email: data.email.trim(),
-      socialHandle: data.socialHandle.trim(),
-      platform: data.platform,
-      issueType: data.issueType,
-      issueCategory: data.issueType,
-      campaignName: data.campaignName.trim(),
-      brand: data.brand.trim(),
-      campaignMonth: data.campaignMonth.trim(),
-      cloutflowPoc: data.cloutflowPoc.trim(),
-      cloutflowPocContactNumber: data.cloutflowPocContactNumber.trim(),
-      issueDescription: data.issueDescription.trim(),
-      internalCallNotes: data.internalCallNotes.trim() || undefined,
-      sourceChannel: "Phone Call",
-      status: "Open",
-      priority: "Normal",
-      assignedTeam: "Creator Support",
-      assignedExecutive: data.assignedExecutive,
-      createdAt: now,
-      updatedAt: now,
-      sendAcknowledgementEmail: data.sendAcknowledgementEmail,
-      activity: [
-        {
-          id: `${ticketNumber}-a1`,
-          timestamp: now,
-          actor: CURRENT_USER,
-          action: "Ticket created via phone call intake.",
-        },
-        ...(data.sendAcknowledgementEmail
-          ? [
-              {
-                id: `${ticketNumber}-a2`,
-                timestamp: now,
-                actor: "System",
-                action: "Acknowledgement email queued for the creator.",
-              },
-            ]
-          : []),
-      ],
-    };
+  async function handleCreateTicket(
+    data: NewTicketFormData,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const assignedExecutiveId = await resolveAssignedExecutiveId(
+      data.assignedExecutive,
+    );
 
-    setTickets((prev) => [newTicket, ...prev]);
-    setSelectedId(newTicket.id);
+    const result = await createTicketAction({
+      form: data,
+      assignedTeam: staffProfile.team || "Creator Support",
+      assignedExecutiveId,
+    });
+
+    if ("error" in result) {
+      return { ok: false, message: result.error };
+    }
+
+    setTickets((prev) => [result.ticket, ...prev]);
+    setSelectedId(result.ticket.id);
     setActiveNav("inbox");
     setStatusFilter("All");
     setSearch("");
+    setLoadError(null);
     setModalOpen(false);
     setMobileDetailOpen(true);
-    setSuccessMessage(`Ticket ${ticketNumber} created successfully.`);
+    showSuccess(`Ticket ${result.ticket.ticketNumber} created successfully.`);
+    return { ok: true };
   }
 
   const showTicketWorkspace =
@@ -211,6 +231,10 @@ export default function CreatorSupportApp() {
                   onSelectTicket={handleSelectTicket}
                   onNewTicket={() => setModalOpen(true)}
                   title={listTitle}
+                  loading={isRefreshing && tickets.length === 0}
+                  error={loadError}
+                  onRetry={refreshTickets}
+                  hasTickets={tickets.length > 0}
                 />
               </div>
               <div

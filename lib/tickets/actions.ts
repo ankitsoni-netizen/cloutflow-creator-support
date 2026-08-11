@@ -1,0 +1,103 @@
+"use server";
+
+import { createClient } from "@/lib/supabase/server";
+import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors";
+import { mapDbTicketToTicket, mapFormToDbInsert } from "@/lib/tickets/map";
+import type { DbTicket } from "@/lib/tickets/types";
+import type { NewTicketFormData, Ticket } from "@/lib/types";
+
+const TICKET_SELECT = `
+  id,
+  ticket_code,
+  creator_name,
+  creator_phone,
+  creator_email,
+  social_handle,
+  platform,
+  issue_type,
+  campaign_name,
+  brand_name,
+  campaign_month,
+  cloutflow_poc_name,
+  cloutflow_poc_contact_number,
+  source_channel,
+  status,
+  priority,
+  assigned_team,
+  assigned_executive_id,
+  assigned_executive_name,
+  issue_description,
+  internal_notes,
+  acknowledgement_email_requested,
+  acknowledgement_email_sent_at,
+  resolution_summary,
+  first_response_at,
+  resolved_at,
+  customer_last_notified_at,
+  metadata,
+  created_at,
+  updated_at
+`;
+
+export async function createTicketAction(options: {
+  form: NewTicketFormData;
+  assignedTeam: string | null;
+  assignedExecutiveId: string | null;
+}): Promise<{ ticket: Ticket } | { error: string }> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    return { error: "Your session expired. Please sign in again." };
+  }
+
+  const mapped = mapFormToDbInsert(options.form, {
+    assignedTeam: options.assignedTeam,
+    assignedExecutiveId: options.assignedExecutiveId,
+  });
+
+  if ("error" in mapped) {
+    return { error: mapped.error };
+  }
+
+  const { data, error } = await supabase
+    .from("tickets")
+    .insert(mapped.insert)
+    .select(TICKET_SELECT)
+    .single();
+
+  if (data) {
+    return { ticket: mapDbTicketToTicket(data as DbTicket) };
+  }
+
+  if (error) {
+    logSupabaseError("tickets insert failed", error);
+
+    // Insert may have succeeded while RETURNING was filtered by RLS.
+    if (error.code === "PGRST116") {
+      const { data: latest, error: latestError } = await supabase
+        .from("tickets")
+        .select(TICKET_SELECT)
+        .eq("creator_name", mapped.insert.creator_name)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestError) {
+        logSupabaseError("tickets post-insert fetch failed", latestError);
+        return { error: toSafeTicketErrorMessage(latestError) };
+      }
+
+      if (latest) {
+        return { ticket: mapDbTicketToTicket(latest as DbTicket) };
+      }
+    }
+
+    return { error: toSafeTicketErrorMessage(error) };
+  }
+
+  return { error: "Unable to create ticket. Please try again." };
+}

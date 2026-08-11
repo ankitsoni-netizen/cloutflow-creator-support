@@ -2,7 +2,7 @@
 
 import type { StatusFilter, Ticket } from "@/lib/types";
 import {
-  formatRelativeTime,
+  formatDateTime,
   priorityClass,
   statusClass,
 } from "@/lib/utils";
@@ -25,6 +25,10 @@ interface TicketListProps {
   onSelectTicket: (id: string) => void;
   onNewTicket: () => void;
   title?: string;
+  loading?: boolean;
+  error?: string | null;
+  onRetry?: () => void;
+  hasTickets?: boolean;
 }
 
 export default function TicketList({
@@ -37,6 +41,10 @@ export default function TicketList({
   onSelectTicket,
   onNewTicket,
   title = "Creator Support Inbox",
+  loading = false,
+  error = null,
+  onRetry,
+  hasTickets = true,
 }: TicketListProps) {
   return (
     <section className="flex h-full min-h-0 flex-col border-r border-border bg-surface">
@@ -47,7 +55,9 @@ export default function TicketList({
               {title}
             </h1>
             <p className="mt-1 text-sm text-muted">
-              {tickets.length} ticket{tickets.length === 1 ? "" : "s"}
+              {loading
+                ? "Loading tickets..."
+                : `${tickets.length} ticket${tickets.length === 1 ? "" : "s"}`}
             </p>
           </div>
           <button
@@ -95,9 +105,28 @@ export default function TicketList({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {tickets.length === 0 ? (
+        {loading ? (
           <div className="px-5 py-16 text-center text-sm text-muted">
-            No tickets match your current filters.
+            Loading tickets...
+          </div>
+        ) : error ? (
+          <div className="px-5 py-16 text-center">
+            <p className="text-sm text-red-700">{error}</p>
+            {onRetry ? (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-3 rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground hover:bg-surface-muted"
+              >
+                Retry
+              </button>
+            ) : null}
+          </div>
+        ) : tickets.length === 0 ? (
+          <div className="px-5 py-16 text-center text-sm text-muted">
+            {!hasTickets
+              ? "No tickets in the inbox yet."
+              : "No tickets match your current filters."}
           </div>
         ) : (
           <ul className="divide-y divide-border">
@@ -139,7 +168,7 @@ export default function TicketList({
                         </p>
                       </div>
                       <span className="shrink-0 text-xs text-muted">
-                        {formatRelativeTime(ticket.updatedAt)}
+                        {formatDateTime(ticket.updatedAt)}
                       </span>
                     </div>
 

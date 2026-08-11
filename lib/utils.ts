@@ -1,67 +1,34 @@
-import type { Ticket, TicketPriority, TicketStatus } from "./types";
+import type { TicketPriority, TicketStatus } from "./types";
 
-export function formatRelativeTime(iso: string): string {
-  const date = new Date(iso);
-  const now = new Date("2026-08-11T12:00:00+05:30");
-  const diffMs = now.getTime() - date.getTime();
-  const minutes = Math.floor(diffMs / 60000);
+const DISPLAY_TIMEZONE = "Asia/Kolkata";
 
-  if (minutes < 1) return "Just now";
-  if (minutes < 60) return `${minutes}m ago`;
+const kolkataDateTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: DISPLAY_TIMEZONE,
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
 
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-
-  return date.toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+function partValue(
+  parts: Intl.DateTimeFormatPart[],
+  type: Intl.DateTimeFormatPartTypes,
+): string {
+  return parts.find((part) => part.type === type)?.value ?? "";
 }
 
-const MONTHS = [
-  "Jan",
-  "Feb",
-  "Mar",
-  "Apr",
-  "May",
-  "Jun",
-  "Jul",
-  "Aug",
-  "Sep",
-  "Oct",
-  "Nov",
-  "Dec",
-] as const;
-
+/** Formats a timestamptz/ISO string for CRM display in Asia/Kolkata. */
 export function formatDateTime(iso: string): string {
   const date = new Date(iso);
-  const day = date.getDate();
-  const month = MONTHS[date.getMonth()];
-  const year = date.getFullYear();
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const parts = kolkataDateTimeFormatter.formatToParts(date);
+  const day = partValue(parts, "day");
+  const month = partValue(parts, "month");
+  const year = partValue(parts, "year");
+  const hours = partValue(parts, "hour").padStart(2, "0");
+  const minutes = partValue(parts, "minute").padStart(2, "0");
   return `${day} ${month} ${year}, ${hours}:${minutes}`;
-}
-
-export function nextTicketNumber(tickets: Ticket[]): string {
-  const currentYear = new Date().getFullYear();
-  let highest = 0;
-
-  for (const ticket of tickets) {
-    const sections = ticket.ticketNumber.split("-");
-    const numericSection = sections[sections.length - 1];
-    const value = Number(numericSection);
-    if (!Number.isNaN(value) && value > highest) {
-      highest = value;
-    }
-  }
-
-  const paddedNumber = String(highest + 1).padStart(5, "0");
-  return `CF-${currentYear}-${paddedNumber}`;
 }
 
 export function priorityClass(priority: TicketPriority): string {

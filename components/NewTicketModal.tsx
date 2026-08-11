@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { EXECUTIVES, ISSUE_TYPES } from "@/lib/sample-data";
+import { EXECUTIVES, ISSUE_TYPES } from "@/lib/ticket-constants";
 import type { NewTicketFormData, Platform } from "@/lib/types";
 
 const fieldInputClass =
@@ -9,10 +9,12 @@ const fieldInputClass =
 
 type FormErrors = Partial<Record<keyof NewTicketFormData, string>>;
 
+type CreateTicketResult = { ok: true } | { ok: false; message: string };
+
 interface NewTicketModalProps {
   open: boolean;
   onClose: () => void;
-  onCreate: (data: NewTicketFormData) => void;
+  onCreate: (data: NewTicketFormData) => Promise<CreateTicketResult>;
   defaultSendAcknowledgementEmail?: boolean;
 }
 
@@ -60,17 +62,6 @@ export default function NewTicketModal({
   onCreate,
   defaultSendAcknowledgementEmail = true,
 }: NewTicketModalProps) {
-  useEffect(() => {
-    if (!open) return;
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
-
   if (!open) return null;
 
   return (
@@ -88,7 +79,7 @@ function NewTicketModalForm({
   defaultSendAcknowledgementEmail,
 }: {
   onClose: () => void;
-  onCreate: (data: NewTicketFormData) => void;
+  onCreate: (data: NewTicketFormData) => Promise<CreateTicketResult>;
   defaultSendAcknowledgementEmail: boolean;
 }) {
   const [form, setForm] = useState<NewTicketFormData>({
@@ -110,12 +101,24 @@ function NewTicketModalForm({
     sendAcknowledgementEmail: defaultSendAcknowledgementEmail,
   });
   const [errors, setErrors] = useState<FormErrors>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !submitting) onClose();
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, submitting]);
 
   function updateField<K extends keyof NewTicketFormData>(
     key: K,
     value: NewTicketFormData[K],
   ) {
     setForm((prev) => ({ ...prev, [key]: value }));
+    setSubmitError(null);
     setErrors((prev) => {
       if (!prev[key]) return prev;
       const next = { ...prev };
@@ -124,12 +127,22 @@ function NewTicketModalForm({
     });
   }
 
-  function handleSubmit(event: FormEvent) {
+  async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
+
     const nextErrors = validate(form);
     setErrors(nextErrors);
+    setSubmitError(null);
     if (Object.keys(nextErrors).length > 0) return;
-    onCreate(form);
+
+    setSubmitting(true);
+    const result = await onCreate(form);
+    if (!result.ok) {
+      setSubmitError(result.message);
+      setSubmitting(false);
+      return;
+    }
   }
 
   return (
@@ -138,7 +151,9 @@ function NewTicketModalForm({
         type="button"
         aria-label="Close modal overlay"
         className="absolute inset-0"
-        onClick={onClose}
+        onClick={() => {
+          if (!submitting) onClose();
+        }}
       />
 
       <div
@@ -157,7 +172,8 @@ function NewTicketModalForm({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-2 py-1 text-sm text-muted hover:bg-surface-muted hover:text-foreground"
+            disabled={submitting}
+            className="rounded-md px-2 py-1 text-sm text-muted hover:bg-surface-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-70"
           >
             Close
           </button>
@@ -368,19 +384,32 @@ function NewTicketModalForm({
             </div>
           </div>
 
+          {submitError ? (
+            <div className="px-5 pb-2">
+              <div
+                role="alert"
+                className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+              >
+                {submitError}
+              </div>
+            </div>
+          ) : null}
+
           <div className="flex flex-wrap justify-end gap-3 border-t border-border px-5 py-4">
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface-muted"
+              disabled={submitting}
+              className="rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-70"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover"
+              disabled={submitting}
+              className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
             >
-              Create Ticket
+              {submitting ? "Creating..." : "Create Ticket"}
             </button>
           </div>
         </form>
