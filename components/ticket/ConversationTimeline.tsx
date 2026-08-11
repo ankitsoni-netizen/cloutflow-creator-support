@@ -7,13 +7,14 @@ function deliveryLabel(status: TimelineItem["deliveryStatus"]): string | null {
   if (!status) return null;
   switch (status) {
     case "pending":
-      return "Queued · Pending delivery";
+      return "Pending";
     case "sent":
       return "Sent";
     case "delivered":
-      return "Delivered";
+      // SMTP acceptance only — never claim inbox delivery.
+      return "Sent";
     case "failed":
-      return "Delivery failed";
+      return "Failed";
     default:
       return status;
   }
@@ -37,6 +38,12 @@ function itemStyles(kind: TimelineItem["kind"]): {
         bubble: "border-border bg-surface",
         dot: "bg-[var(--brand-blue)]",
         label: "Creator reply",
+      };
+    case "acknowledgement_email":
+      return {
+        bubble: "border-border bg-surface",
+        dot: "bg-accent",
+        label: "Acknowledgement",
       };
     case "resolution":
       return {
@@ -67,6 +74,8 @@ interface ConversationTimelineProps {
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  onRetryEmail?: (commentId: string) => void;
+  retryingCommentId?: string | null;
   issueDescription?: string;
   createdAt?: string;
   creatorName?: string;
@@ -77,6 +86,8 @@ export default function ConversationTimeline({
   loading,
   error,
   onRetry,
+  onRetryEmail,
+  retryingCommentId = null,
   issueDescription,
   createdAt,
   creatorName,
@@ -126,8 +137,8 @@ export default function ConversationTimeline({
           </div>
         ) : items.length === 0 ? (
           <p className="text-sm text-muted">
-            No conversation activity yet. Add an internal note or queue a
-            creator reply to begin the thread.
+            No conversation activity yet. Add an internal note or send a creator
+            email to begin the thread.
           </p>
         ) : (
           <ol className="space-y-4">
@@ -179,7 +190,15 @@ export default function ConversationTimeline({
                         </span>
                       )}
                       {delivery ? (
-                        <span className="rounded bg-[var(--warning-soft)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--warning)] ring-1 ring-[color-mix(in_srgb,var(--warning)_25%,transparent)]">
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ${
+                            item.deliveryStatus === "failed"
+                              ? "bg-red-50 text-red-700 ring-red-200"
+                              : item.deliveryStatus === "pending"
+                                ? "bg-[var(--warning-soft)] text-[var(--warning)] ring-[color-mix(in_srgb,var(--warning)_25%,transparent)]"
+                                : "bg-accent-soft text-accent ring-accent/20"
+                          }`}
+                        >
                           {delivery}
                         </span>
                       ) : null}
@@ -189,9 +208,23 @@ export default function ConversationTimeline({
                         {item.detail}
                       </p>
                     ) : null}
-                    <p className="mt-2 text-[11px] text-muted tabular-nums">
-                      {item.actor} · {formatDateTime(item.timestamp)}
-                    </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <p className="text-[11px] text-muted tabular-nums">
+                        {item.actor} · {formatDateTime(item.timestamp)}
+                      </p>
+                      {item.canRetryEmail && item.commentId && onRetryEmail ? (
+                        <button
+                          type="button"
+                          disabled={retryingCommentId === item.commentId}
+                          onClick={() => onRetryEmail(item.commentId!)}
+                          className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {retryingCommentId === item.commentId
+                            ? "Retrying..."
+                            : "Retry Email"}
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 </li>
               );

@@ -1,14 +1,30 @@
 "use server";
 
+import {
+  sendCreatorReplyEmail,
+  sendResolutionEmail,
+} from "@/lib/email/ticket-mail";
 import { getActiveStaffContext } from "@/lib/tickets/auth-action";
+import {
+  loadTicketById,
+  markTicketCustomerNotified,
+  updateCommentDeliveryStatus,
+} from "@/lib/tickets/email-delivery";
 import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
 import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
-import { uiStatusToDb, mapDbComment, mapStaffOption } from "@/lib/tickets/workflow-map";
+import {
+  COMMENT_SELECT,
+  uiStatusToDb,
+  mapDbComment,
+  mapStaffOption,
+} from "@/lib/tickets/workflow-map";
 import type {
   AssignmentInput,
   CommentMutationResult,
+  CreatorReplyActionResult,
+  ResolveTicketActionResult,
   ResolveTicketInput,
   StaffOption,
   StatusUpdateInput,
@@ -38,9 +54,7 @@ export async function addInternalNoteAction(input: {
       send_to_creator: false,
       delivery_status: null,
     })
-    .select(
-      "id, ticket_id, author_user_id, author_name, visibility, comment_text, send_to_creator, delivery_status, created_at",
-    )
+    .select(COMMENT_SELECT)
     .single();
 
   if (error || !data) {
@@ -58,7 +72,7 @@ export async function addInternalNoteAction(input: {
 export async function queueCreatorReplyAction(input: {
   ticketId: string;
   commentText: string;
-}): Promise<CommentMutationResult> {
+}): Promise<CreatorReplyActionResult> {
   const context = await getActiveStaffContext();
   if (!context.ok) return { error: context.error };
 
@@ -66,6 +80,10 @@ export async function queueCreatorReplyAction(input: {
   if (!commentText) {
     return { error: "Creator reply cannot be empty." };
   }
+
+  const loadedTicket = await loadTicketById(context.supabase, input.ticketId);
+  if ("error" in loadedTicket) return { error: loadedTicket.error };
+  const ticket = loadedTicket.data;
 
   const { data, error } = await context.supabase
     .from("ticket_comments")
@@ -78,9 +96,7 @@ export async function queueCreatorReplyAction(input: {
       send_to_creator: true,
       delivery_status: "pending",
     })
-    .select(
-      "id, ticket_id, author_user_id, author_name, visibility, comment_text, send_to_creator, delivery_status, created_at",
-    )
+    .select(COMMENT_SELECT)
     .single();
 
   if (error || !data) {
@@ -88,11 +104,60 @@ export async function queueCreatorReplyAction(input: {
     return {
       error: error
         ? toSafeTicketErrorMessage(error)
-        : "Unable to queue the creator reply.",
+        : "Unable to save the creator reply.",
     };
   }
 
-  return { data: mapDbComment(data) };
+  const comment = mapDbComment(data);
+  const sendResult = await sendCreatorReplyEmail({
+    ticket,
+    commentText: comment.commentText,
+  });
+
+  if (!sendResult.ok) {
+    const failed = await updateCommentDeliveryStatus(
+      context.supabase,
+      comment.id,
+      "failed",
+    );
+    return {
+      data: "data" in failed ? failed.data : comment,
+      ticket: mapDbTicketToTicket(ticket),
+      delivery: "failed",
+      deliveryMessage: sendResult.error,
+    };
+  }
+
+  const updatedComment = await updateCommentDeliveryStatus(
+    context.supabase,
+    comment.id,
+    "sent",
+  );
+  if ("error" in updatedComment) {
+    return {
+      error: updatedComment.rlsBlocked
+        ? "Email was accepted by Brevo, but delivery status could not be saved due to database permissions. See supabase/migrations/20260811163000_ticket_comments_delivery_update.sql."
+        : updatedComment.error,
+    };
+  }
+
+  const notified = await markTicketCustomerNotified(context.supabase, ticket);
+  if ("error" in notified) {
+    return {
+      data: updatedComment.data,
+      ticket: mapDbTicketToTicket(ticket),
+      delivery: "sent",
+      deliveryMessage:
+        "Email accepted by Brevo, but ticket notification timestamps could not be updated.",
+    };
+  }
+
+  return {
+    data: updatedComment.data,
+    ticket: notified.data,
+    delivery: "sent",
+    deliveryMessage: "Email accepted by Brevo.",
+  };
 }
 
 export async function updateTicketStatusAction(
@@ -122,7 +187,7 @@ export async function updateTicketStatusAction(
 
 export async function resolveTicketAction(
   input: ResolveTicketInput,
-): Promise<TicketMutationResult> {
+): Promise<ResolveTicketActionResult> {
   const context = await getActiveStaffContext();
   if (!context.ok) return { error: context.error };
 
@@ -150,7 +215,91 @@ export async function resolveTicketAction(
     };
   }
 
-  return { data: mapDbTicketToTicket(data as DbTicket) };
+  const resolvedTicket = data as DbTicket;
+
+  const { data: commentRow, error: commentError } = await context.supabase
+    .from("ticket_comments")
+    .insert({
+      ticket_id: resolvedTicket.id,
+      author_user_id: context.user.id,
+      author_name: context.profile.full_name,
+      visibility: "creator",
+      comment_text: resolutionSummary,
+      send_to_creator: true,
+      delivery_status: "pending",
+    })
+    .select(COMMENT_SELECT)
+    .single();
+
+  if (commentError || !commentRow) {
+    if (commentError) {
+      logSupabaseError("resolution comment insert failed", commentError);
+    }
+    return {
+      data: mapDbTicketToTicket(resolvedTicket),
+      resolutionEmail: "failed",
+      resolutionEmailMessage:
+        "Ticket resolved, but the resolution email could not be prepared.",
+    };
+  }
+
+  const comment = mapDbComment(commentRow);
+  const sendResult = await sendResolutionEmail({
+    ticket: resolvedTicket,
+    resolutionSummary,
+  });
+
+  if (!sendResult.ok) {
+    const failed = await updateCommentDeliveryStatus(
+      context.supabase,
+      comment.id,
+      "failed",
+    );
+    return {
+      data: mapDbTicketToTicket(resolvedTicket),
+      resolutionEmail: "failed",
+      resolutionEmailMessage:
+        "Ticket resolved, but the resolution email could not be sent.",
+      comment: "data" in failed ? failed.data : comment,
+    };
+  }
+
+  const updatedComment = await updateCommentDeliveryStatus(
+    context.supabase,
+    comment.id,
+    "sent",
+  );
+  if ("error" in updatedComment) {
+    return {
+      data: mapDbTicketToTicket(resolvedTicket),
+      resolutionEmail: "failed",
+      resolutionEmailMessage: updatedComment.rlsBlocked
+        ? "Ticket resolved and email accepted by Brevo, but delivery status could not be saved due to database permissions."
+        : "Ticket resolved and email accepted by Brevo, but delivery status could not be saved.",
+      comment,
+    };
+  }
+
+  const notified = await markTicketCustomerNotified(
+    context.supabase,
+    resolvedTicket,
+  );
+  if ("error" in notified) {
+    return {
+      data: mapDbTicketToTicket(resolvedTicket),
+      resolutionEmail: "sent",
+      resolutionEmailMessage:
+        "Ticket resolved and email accepted by Brevo, but notification timestamps could not be updated.",
+      comment: updatedComment.data,
+    };
+  }
+
+  return {
+    data: notified.data,
+    resolutionEmail: "sent",
+    resolutionEmailMessage: "Ticket resolved and resolution email sent.",
+    comment: updatedComment.data,
+  };
 }
 
 const DEFAULT_ASSIGNED_TEAM = "Creator Support";

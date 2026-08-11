@@ -18,11 +18,7 @@ import {
   LogoutIcon,
   ResolvedIcon,
   SettingsIcon,
-  SlaIcon,
   TeamIcon,
-  UnassignedIcon,
-  UserIcon,
-  WaitingIcon,
 } from "@/components/ui/Icons";
 import type { StaffProfile } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/client";
@@ -43,10 +39,6 @@ const NAV_SECTIONS: {
     label: "Workspace",
     items: [
       { id: "inbox", label: "Inbox", Icon: InboxIcon },
-      { id: "my-tickets", label: "My Tickets", Icon: UserIcon },
-      { id: "unassigned", label: "Unassigned", Icon: UnassignedIcon },
-      { id: "waiting", label: "Waiting", Icon: WaitingIcon },
-      { id: "sla-risk", label: "SLA Risk", Icon: SlaIcon },
       { id: "resolved", label: "Resolved", Icon: ResolvedIcon },
     ],
   },

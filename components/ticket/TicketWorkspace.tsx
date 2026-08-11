@@ -12,6 +12,14 @@ import ChannelBadge from "@/components/ui/ChannelBadge";
 import EmptyState from "@/components/ui/EmptyState";
 import ResizeHandle, { clampSize } from "@/components/ui/ResizeHandle";
 import { CloseIcon, PanelIcon, SparklesIcon } from "@/components/ui/Icons";
+import {
+  retryAcknowledgementEmailAction,
+  retryCreatorEmailAction,
+} from "@/lib/tickets/email-actions";
+import {
+  applyResolutionEmailLabels,
+  buildTimeline,
+} from "@/lib/tickets/timeline";
 import type { StaffOption, TimelineItem } from "@/lib/tickets/workflow-types";
 import {
   addInternalNoteAction,
@@ -110,12 +118,29 @@ function TicketWorkspaceActive({
   const [resolveOpen, setResolveOpen] = useState(false);
   const [resolveSaving, setResolveSaving] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
+  const [resolveNotice, setResolveNotice] = useState<string | null>(null);
+
+  const [ackRetrying, setAckRetrying] = useState(false);
+  const [ackMessage, setAckMessage] = useState<string | null>(null);
+  const [retryingCommentId, setRetryingCommentId] = useState<string | null>(
+    null,
+  );
 
   const [copilotCollapsed, setCopilotCollapsed] = useState(true);
   const [mobilePanel, setMobilePanel] = useState<SidePanel>(null);
   const [propertiesWidth, setPropertiesWidth] = useState(300);
   const [copilotWidth, setCopilotWidth] = useState(280);
   const [composerHeight, setComposerHeight] = useState(220);
+
+  function enrichTimeline(
+    comments: Parameters<typeof buildTimeline>[1],
+    events: Parameters<typeof buildTimeline>[0],
+  ) {
+    const base = buildTimeline(events, comments, {
+      acknowledgementEmailSentAt: ticket.acknowledgementEmailSentAt,
+    });
+    return applyResolutionEmailLabels(base, ticket.resolutionSummary);
+  }
 
   async function loadTimeline() {
     setTimelineLoading(true);
@@ -127,7 +152,7 @@ function TicketWorkspaceActive({
       setTimelineLoading(false);
       return;
     }
-    setTimeline(result.timeline);
+    setTimeline(enrichTimeline(result.comments, result.events));
     setTimelineLoading(false);
   }
 
@@ -139,14 +164,25 @@ function TicketWorkspaceActive({
         setTimeline([]);
         setTimelineError(result.error);
       } else {
-        setTimeline(result.timeline);
+        setTimeline(
+          applyResolutionEmailLabels(
+            buildTimeline(result.events, result.comments, {
+              acknowledgementEmailSentAt: ticket.acknowledgementEmailSentAt,
+            }),
+            ticket.resolutionSummary,
+          ),
+        );
       }
       setTimelineLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [ticket.id]);
+  }, [
+    ticket.id,
+    ticket.acknowledgementEmailSentAt,
+    ticket.resolutionSummary,
+  ]);
 
   async function handleStatusChange(
     nextStatus: Exclude<TicketStatus, "Resolved">,
@@ -194,8 +230,17 @@ function TicketWorkspaceActive({
     if ("error" in result) {
       return { ok: false as const, message: result.error };
     }
+    onTicketUpdated(result.ticket);
     void loadTimeline();
     onConversationMutated?.();
+    if (result.delivery === "failed") {
+      return {
+        ok: false as const,
+        message:
+          result.deliveryMessage ||
+          "The creator reply was saved, but the email could not be sent.",
+      };
+    }
     return { ok: true as const };
   }
 
@@ -216,6 +261,7 @@ function TicketWorkspaceActive({
     if (resolveSaving) return;
     setResolveSaving(true);
     setResolveError(null);
+    setResolveNotice(null);
     const result = await resolveTicketAction({
       ticketId: ticket.id,
       resolutionSummary: summary,
@@ -226,9 +272,67 @@ function TicketWorkspaceActive({
       return;
     }
     setResolveOpen(false);
+    if (result.resolutionEmail === "failed") {
+      setResolveNotice(
+        result.resolutionEmailMessage ||
+          "Ticket resolved, but the resolution email could not be sent.",
+      );
+    } else {
+      setResolveNotice(result.resolutionEmailMessage || null);
+    }
     onTicketResolved(result.data);
     void loadTimeline();
+    onConversationMutated?.();
   }
+
+  async function handleRetryEmail(commentId: string) {
+    if (retryingCommentId) return;
+    setRetryingCommentId(commentId);
+    const result = await retryCreatorEmailAction({
+      ticketId: ticket.id,
+      commentId,
+    });
+    setRetryingCommentId(null);
+    if ("error" in result) {
+      setAckMessage(result.error);
+      return;
+    }
+    onTicketUpdated(result.ticket);
+    void loadTimeline();
+    onConversationMutated?.();
+    setAckMessage(
+      result.delivery === "sent"
+        ? result.deliveryMessage || "Email accepted by Brevo."
+        : result.deliveryMessage || "Email retry failed.",
+    );
+  }
+
+  async function handleRetryAcknowledgement() {
+    if (ackRetrying) return;
+    setAckRetrying(true);
+    setAckMessage(null);
+    const result = await retryAcknowledgementEmailAction({
+      ticketId: ticket.id,
+    });
+    setAckRetrying(false);
+    if ("error" in result) {
+      setAckMessage(result.error);
+      return;
+    }
+    onTicketUpdated(result.ticket);
+    void loadTimeline();
+    setAckMessage(
+      result.acknowledgementMessage ||
+        (result.acknowledgement === "sent"
+          ? "Acknowledgement email accepted by Brevo."
+          : "Acknowledgement email could not be sent."),
+    );
+  }
+
+  const canRetryAcknowledgement =
+    Boolean(ticket.sendAcknowledgementEmail) &&
+    Boolean(ticket.email.trim()) &&
+    !ticket.acknowledgementEmailSentAt;
 
   const isResolved = ticket.status === "Resolved";
   const assigneeInitials = getInitials(ticket.assignedExecutive || "?");
@@ -296,6 +400,18 @@ function TicketWorkspaceActive({
               <SparklesIcon className="h-3.5 w-3.5" />
               Copilot
             </button>
+            {canRetryAcknowledgement ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleRetryAcknowledgement();
+                }}
+                disabled={ackRetrying}
+                className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {ackRetrying ? "Retrying ack..." : "Retry acknowledgement"}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => {
@@ -340,6 +456,27 @@ function TicketWorkspaceActive({
             }}
           />
         </div>
+        {ackMessage || resolveNotice ? (
+          <div className="mt-3 space-y-1">
+            {ackMessage ? (
+              <p className="text-xs text-muted" role="status">
+                {ackMessage}
+              </p>
+            ) : null}
+            {resolveNotice ? (
+              <p
+                className={`text-xs ${
+                  resolveNotice.includes("could not be sent")
+                    ? "text-[var(--danger)]"
+                    : "text-[var(--success)]"
+                }`}
+                role="status"
+              >
+                {resolveNotice}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -351,6 +488,10 @@ function TicketWorkspaceActive({
             onRetry={() => {
               void loadTimeline();
             }}
+            onRetryEmail={(commentId) => {
+              void handleRetryEmail(commentId);
+            }}
+            retryingCommentId={retryingCommentId}
             issueDescription={ticket.issueDescription}
             createdAt={ticket.createdAt}
             creatorName={ticket.creatorName}
@@ -364,6 +505,7 @@ function TicketWorkspaceActive({
           />
           <ReplyComposer
             height={composerHeight}
+            creatorEmail={ticket.email}
             onQueueReply={handleQueueReply}
             onSaveNote={handleSaveNote}
           />

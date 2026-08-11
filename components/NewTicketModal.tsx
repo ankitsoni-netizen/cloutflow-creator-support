@@ -450,10 +450,10 @@ function NewTicketModalForm({
                       className="mt-0.5 h-4 w-4 accent-[var(--accent)]"
                     />
                     <span>
-                      Send acknowledgement email preference
+                      Send acknowledgement email
                       <span className="mt-0.5 block text-xs text-muted">
-                        Stored on the ticket. Actual email delivery requires
-                        Brevo to be connected.
+                        When enabled, Cloutflow emails the creator after the
+                        ticket is created (uses the creator email on this form).
                       </span>
                     </span>
                   </label>

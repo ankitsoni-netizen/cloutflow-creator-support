@@ -9,7 +9,7 @@ import {
   distribution,
   executiveWorkload,
 } from "@/lib/intelligence/command-centre";
-import type { Ticket } from "@/lib/types";
+import type { InboxView, Ticket } from "@/lib/types";
 import {
   formatCompactDateTime,
   formatDateTime,
@@ -24,15 +24,7 @@ interface CommandCentreProps {
   staffName: string;
   onOpenInbox: () => void;
   onOpenTicket: (ticketId: string) => void;
-  onOpenView: (
-    view:
-      | "unassigned"
-      | "waiting"
-      | "urgent"
-      | "pending-reply"
-      | "resolved"
-      | "sla-risk",
-  ) => void;
+  onOpenInboxView: (view: InboxView) => void;
 }
 
 function StatCard({
@@ -120,7 +112,7 @@ export default function CommandCentre({
   staffName,
   onOpenInbox,
   onOpenTicket,
-  onOpenView,
+  onOpenInboxView,
 }: CommandCentreProps) {
   const counts = countByStatus(tickets);
   const attention = buildNeedsAttentionQueue(tickets, pendingReplyIds);
@@ -163,8 +155,8 @@ export default function CommandCentre({
               Command Centre
             </h1>
             <p className="mt-1 text-sm text-muted">
-              Operational home for {staffName}. Live ticket intelligence across
-              creators, campaigns and ownership.
+              Operational overview for {staffName}. Open any metric to jump into
+              the matching Inbox view.
             </p>
             <p className="mt-1 text-xs text-muted tabular-nums">
               Snapshot as of {formatDateTime(new Date().toISOString())} IST ·{" "}
@@ -199,50 +191,50 @@ export default function CommandCentre({
           </div>
         ) : (
           <>
-            <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-8">
-              <StatCard label="Open" value={counts.open} onClick={onOpenInbox} />
-              <StatCard label="In Progress" value={counts.inProgress} />
+            <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+              <StatCard
+                label="Open"
+                value={counts.open}
+                onClick={() => onOpenInboxView("open")}
+              />
+              <StatCard
+                label="In Progress"
+                value={counts.inProgress}
+                onClick={() => onOpenInboxView("in-progress")}
+              />
               <StatCard
                 label="Waiting"
                 value={counts.waiting}
-                onClick={() => onOpenView("waiting")}
+                onClick={() => onOpenInboxView("waiting")}
               />
               <StatCard
                 label="Resolved"
                 value={counts.resolved}
-                onClick={() => onOpenView("resolved")}
+                onClick={() => onOpenInboxView("resolved")}
               />
               <StatCard
                 label="Urgent"
                 value={counts.urgent}
-                onClick={() => onOpenView("urgent")}
+                onClick={() => onOpenInboxView("urgent")}
               />
               <StatCard
                 label="Unassigned"
                 value={counts.unassigned}
-                onClick={() => onOpenView("unassigned")}
+                onClick={() => onOpenInboxView("unassigned")}
               />
               <StatCard
                 label="Pending replies"
                 value={pendingReplyIds.size}
-                onClick={() => onOpenView("pending-reply")}
+                onClick={() => onOpenInboxView("pending-reply")}
               />
               <StatCard
                 label="Aging unresolved"
                 value={counts.aging}
-                hint={`>${agingHours}h · not an SLA breach`}
-                onClick={() => onOpenView("sla-risk")}
+                hint={`Older than ${agingHours}h`}
               />
             </div>
 
-            <div className="mt-4 rounded-lg border border-dashed border-border bg-surface px-4 py-3 text-sm text-muted">
-              <span className="font-medium text-foreground">SLA Risk:</span>{" "}
-              Formal SLA breach detection is not configured yet. Aging
-              unresolved tickets ({">"}
-              {agingHours} hours) are shown as attention signals only.
-            </div>
-
-            <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+            <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
               <section className="rounded-lg border border-border bg-surface">
                 <div className="flex items-center justify-between border-b border-border px-4 py-3">
                   <div>

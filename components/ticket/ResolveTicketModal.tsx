@@ -121,7 +121,8 @@ function ResolveTicketModalForm({
               />
             </label>
             <p className="text-xs text-muted">
-              The creator will not be notified automatically from this action.
+              Confirming will mark the ticket resolved and email the resolution
+              summary to the creator when an email address is available.
             </p>
             {displayError ? (
               <div

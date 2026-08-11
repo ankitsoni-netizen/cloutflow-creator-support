@@ -1,17 +1,19 @@
 "use server";
 
+import { sendAcknowledgementForTicket } from "@/lib/email/ticket-mail";
 import { createClient } from "@/lib/supabase/server";
 import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors";
 import { mapDbTicketToTicket, mapFormToDbInsert } from "@/lib/tickets/map";
 import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
-import type { NewTicketFormData, Ticket } from "@/lib/types";
+import type { NewTicketFormData } from "@/lib/types";
+import type { CreateTicketActionResult } from "@/lib/tickets/workflow-types";
 
 export async function createTicketAction(options: {
   form: NewTicketFormData;
   assignedTeam: string | null;
   assignedExecutiveId: string | null;
-}): Promise<{ ticket: Ticket } | { error: string }> {
+}): Promise<CreateTicketActionResult> {
   const supabase = await createClient();
   const {
     data: { user },
@@ -37,11 +39,9 @@ export async function createTicketAction(options: {
     .select(TICKET_SELECT)
     .single();
 
-  if (data) {
-    return { ticket: mapDbTicketToTicket(data as DbTicket) };
-  }
+  let created: DbTicket | null = data ? (data as DbTicket) : null;
 
-  if (error) {
+  if (!created && error) {
     logSupabaseError("tickets insert failed", error);
 
     // Insert may have succeeded while RETURNING was filtered by RLS.
@@ -60,12 +60,62 @@ export async function createTicketAction(options: {
       }
 
       if (latest) {
-        return { ticket: mapDbTicketToTicket(latest as DbTicket) };
+        created = latest as DbTicket;
       }
     }
 
-    return { error: toSafeTicketErrorMessage(error) };
+    if (!created) {
+      return { error: toSafeTicketErrorMessage(error) };
+    }
   }
 
-  return { error: "Unable to create ticket. Please try again." };
+  if (!created) {
+    return { error: "Unable to create ticket. Please try again." };
+  }
+
+  const acknowledgement = await sendAcknowledgementForTicket(created);
+
+  if (acknowledgement.outcome === "sent") {
+    const sentAt = new Date().toISOString();
+    const { data: updated, error: ackError } = await supabase
+      .from("tickets")
+      .update({ acknowledgement_email_sent_at: sentAt })
+      .eq("id", created.id)
+      .select(TICKET_SELECT)
+      .single();
+
+    if (ackError || !updated) {
+      if (ackError) {
+        logSupabaseError("acknowledgement_email_sent_at update failed", ackError);
+      }
+      return {
+        ticket: mapDbTicketToTicket(created),
+        acknowledgement: "failed",
+        acknowledgementMessage:
+          "Acknowledgement was accepted by Brevo, but the ticket could not be updated with the sent timestamp.",
+      };
+    }
+
+    return {
+      ticket: mapDbTicketToTicket(updated as DbTicket),
+      acknowledgement: "sent",
+      acknowledgementMessage: "Ticket created and acknowledgement email sent.",
+    };
+  }
+
+  if (acknowledgement.outcome === "failed") {
+    return {
+      ticket: mapDbTicketToTicket(created),
+      acknowledgement: "failed",
+      acknowledgementMessage:
+        acknowledgement.error ||
+        "Ticket created, but the acknowledgement email could not be sent.",
+    };
+  }
+
+  return {
+    ticket: mapDbTicketToTicket(created),
+    acknowledgement: "skipped",
+    acknowledgementMessage: "Ticket created.",
+  };
 }

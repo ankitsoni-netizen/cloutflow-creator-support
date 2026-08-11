@@ -180,10 +180,16 @@ export default function TicketProperties({
       <Section title="Channel information">
         <dl className="divide-y divide-border">
           <ReadRow label="Inbound source" value={ticket.sourceChannel} />
-          <ReadRow label="Outbound delivery" value="Not connected" />
+          <ReadRow
+            label="Email outbound"
+            value="Connected · Cloutflow Creator Support"
+          />
+          <ReadRow label="WhatsApp" value="Not connected" />
+          <ReadRow label="Instagram" value="Not connected" />
+          <ReadRow label="Website chatbot" value="Not connected" />
           <ReadRow
             label="Integration health"
-            value="Setup required for WhatsApp, Instagram, and Email"
+            value="Email connected · 3 channels offline"
           />
         </dl>
         {ticket.internalCallNotes ? (

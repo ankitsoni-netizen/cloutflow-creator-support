@@ -14,7 +14,6 @@ import CommandCentre from "@/components/command/CommandCentre";
 import CreatorsView from "@/components/creators/CreatorsView";
 import TicketQueue from "@/components/inbox/TicketQueue";
 import NewTicketModal from "@/components/NewTicketModal";
-import SlaRiskView from "@/components/ops/SlaRiskView";
 import {
   AnalyticsView,
   AutomationsView,
@@ -30,6 +29,7 @@ import ResizeHandle, { clampSize } from "@/components/ui/ResizeHandle";
 import type { StaffProfile } from "@/lib/auth";
 import { createTicketAction } from "@/lib/tickets/actions";
 import { fetchTickets } from "@/lib/tickets/api";
+import { getEmailChannelStatusAction } from "@/lib/tickets/email-actions";
 import {
   fetchPendingReplyTicketIds,
   fetchStaffDirectory,
@@ -71,12 +71,6 @@ function navToInboxView(nav: NavItem): InboxView | null {
   switch (nav) {
     case "inbox":
       return "all-active";
-    case "my-tickets":
-      return "my-tickets";
-    case "unassigned":
-      return "unassigned";
-    case "waiting":
-      return "waiting";
     case "resolved":
       return "resolved";
     default:
@@ -140,6 +134,8 @@ export default function CreatorSupportApp({
     null,
   );
   const [staffDirectoryLoading, setStaffDirectoryLoading] = useState(true);
+  const [emailConnected, setEmailConnected] = useState(false);
+  const [emailFromDisplay, setEmailFromDisplay] = useState<string | null>(null);
 
   const staffName = staffProfile.full_name?.trim() ?? "";
   const staffUserId = staffProfile.user_id;
@@ -186,6 +182,12 @@ export default function CreatorSupportApp({
       }
       setStaffDirectoryError(null);
       setStaffDirectory(result.data);
+    });
+
+    void getEmailChannelStatusAction().then((status) => {
+      if (cancelled) return;
+      setEmailConnected(status.configured);
+      setEmailFromDisplay(status.fromDisplay);
     });
 
     return () => {
@@ -311,11 +313,14 @@ export default function CreatorSupportApp({
 
   function handleInboxViewChange(view: InboxView) {
     setInboxView(view);
-    if (view === "my-tickets") setActiveNav("my-tickets");
-    else if (view === "unassigned") setActiveNav("unassigned");
-    else if (view === "waiting") setActiveNav("waiting");
-    else if (view === "resolved") setActiveNav("resolved");
-    else setActiveNav("inbox");
+    setActiveNav(view === "resolved" ? "resolved" : "inbox");
+  }
+
+  function openInboxView(view: InboxView) {
+    setActiveNav(view === "resolved" ? "resolved" : "inbox");
+    setInboxView(view);
+    setQueueSearch("");
+    setMobileDetailOpen(false);
   }
 
   function handleSelectTicket(id: string) {
@@ -371,7 +376,17 @@ export default function CreatorSupportApp({
     setLoadError(null);
     setModalOpen(false);
     setMobileDetailOpen(true);
-    showSuccess(`Ticket ${result.ticket.ticketNumber} created successfully.`);
+
+    if (result.acknowledgement === "sent") {
+      showSuccess("Ticket created and acknowledgement email sent.");
+    } else if (result.acknowledgement === "failed") {
+      showSuccess(
+        result.acknowledgementMessage ||
+          "Ticket created, but the acknowledgement email could not be sent.",
+      );
+    } else {
+      showSuccess(`Ticket ${result.ticket.ticketNumber} created successfully.`);
+    }
     return { ok: true };
   }
 
@@ -397,6 +412,7 @@ export default function CreatorSupportApp({
           onOpenMenu={() => setMobileSidebarOpen(true)}
           staffProfile={staffProfile}
           showMenuButton
+          emailConnected={emailConnected}
         />
 
         <main className="min-h-0 flex-1">
@@ -407,23 +423,7 @@ export default function CreatorSupportApp({
               staffName={staffProfile.full_name || "Staff"}
               onOpenInbox={() => handleNavigate("inbox")}
               onOpenTicket={openTicketFromModule}
-              onOpenView={(view) => {
-                if (view === "sla-risk") {
-                  handleNavigate("sla-risk");
-                  return;
-                }
-                if (view === "pending-reply") {
-                  setActiveNav("inbox");
-                  setInboxView("pending-reply");
-                  return;
-                }
-                if (view === "urgent") {
-                  setActiveNav("inbox");
-                  setInboxView("urgent");
-                  return;
-                }
-                handleNavigate(view);
-              }}
+              onOpenInboxView={openInboxView}
             />
           ) : null}
 
@@ -487,14 +487,6 @@ export default function CreatorSupportApp({
             </div>
           ) : null}
 
-          {activeNav === "sla-risk" ? (
-            <SlaRiskView
-              tickets={tickets}
-              onOpenTicket={openTicketFromModule}
-              onOpenInbox={() => handleNavigate("inbox")}
-            />
-          ) : null}
-
           {activeNav === "creators" ? (
             <CreatorsView
               tickets={tickets}
@@ -532,7 +524,11 @@ export default function CreatorSupportApp({
           ) : null}
 
           {activeNav === "channels" ? (
-            <ChannelsView onOpenInbox={() => handleNavigate("inbox")} />
+            <ChannelsView
+              onOpenInbox={() => handleNavigate("inbox")}
+              emailConnected={emailConnected}
+              emailFromDisplay={emailFromDisplay}
+            />
           ) : null}
 
           {activeNav === "team" ? (

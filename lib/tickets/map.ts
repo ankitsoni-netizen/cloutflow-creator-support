@@ -178,7 +178,7 @@ function mapIssueTypeToDb(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-function mapIssueTypeFromDb(value: string): string {
+export function mapIssueTypeFromDb(value: string): string {
   return ISSUE_TYPE_FROM_DB[value] ?? ISSUE_TYPE_FROM_DB[value.toLowerCase()] ?? value;
 }
 
@@ -208,6 +208,9 @@ export function mapDbTicketToTicket(row: DbTicket): Ticket {
     assignedExecutiveId: row.assigned_executive_id,
     resolutionSummary: row.resolution_summary,
     resolvedAt: row.resolved_at,
+    acknowledgementEmailSentAt: row.acknowledgement_email_sent_at,
+    firstResponseAt: row.first_response_at,
+    customerLastNotifiedAt: row.customer_last_notified_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     activity: [],

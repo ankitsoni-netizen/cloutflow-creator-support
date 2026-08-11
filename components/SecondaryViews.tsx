@@ -773,6 +773,8 @@ export function ResolutionBaseView({ onOpenInbox }: ResolutionBaseViewProps) {
 
 interface ChannelsViewProps {
   onOpenInbox: () => void;
+  emailConnected?: boolean;
+  emailFromDisplay?: string | null;
 }
 
 function ChannelSetupBlock({
@@ -814,13 +816,21 @@ function DisabledField({
   );
 }
 
-export function ChannelsView({ onOpenInbox }: ChannelsViewProps) {
+export function ChannelsView({
+  onOpenInbox,
+  emailConnected = false,
+  emailFromDisplay = null,
+}: ChannelsViewProps) {
   return (
     <section className="h-full overflow-y-auto bg-background p-4 sm:p-6">
       <div className="mx-auto max-w-5xl">
         <ViewHeader
           title="Channels"
-          description="Omnichannel integrations for Cloutflow Creator Operations Resolution System. Status reflects real connectivity only — all channels are Not Connected until backend credentials are configured."
+          description={
+            emailConnected
+              ? "Email is connected for creator notifications. WhatsApp, Instagram, and website chatbot remain offline."
+              : "Omnichannel integrations for Cloutflow Creator Operations Resolution System. Status reflects real connectivity only."
+          }
           onOpenInbox={onOpenInbox}
         />
 
@@ -828,6 +838,9 @@ export function ChannelsView({ onOpenInbox }: ChannelsViewProps) {
           Security: never paste API keys, tokens, or secrets into the browser.
           Channel credentials must live in server-side configuration only.
           Configuration forms below are intentionally disabled.
+          {emailConnected
+            ? " Email sending uses server-side Brevo SMTP only."
+            : ""}
         </p>
 
         <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -933,13 +946,29 @@ export function ChannelsView({ onOpenInbox }: ChannelsViewProps) {
               name="Brevo Email"
               description="Send acknowledgement and follow-up emails from the support desk."
               inbound="Not connected"
-              outbound="Queued until connected"
-              setupNotes="Requires Brevo API credentials and approved templates. Keys are never stored in frontend code."
-              status="not_connected"
+              outbound={
+                emailConnected
+                  ? "Transactional send connected"
+                  : "Queued until connected"
+              }
+              setupNotes={
+                emailConnected
+                  ? `Sender: ${emailFromDisplay || "Cloutflow Creator Support"}. SMTP keys stay server-side only.`
+                  : "Requires Brevo SMTP credentials in server environment variables. Keys are never stored in frontend code."
+              }
+              status={emailConnected ? "connected" : "not_connected"}
             />
             <ChannelSetupBlock title="Setup detail">
-              <p>Sender domain: not verified in this workspace.</p>
-              <p>Acknowledgement template: not configured.</p>
+              <p>
+                Sender:{" "}
+                {emailConnected
+                  ? emailFromDisplay || "Cloutflow Creator Support"
+                  : "not configured"}
+              </p>
+              <p>
+                Acknowledgement / reply / resolution templates:{" "}
+                {emailConnected ? "enabled in app" : "not configured"}
+              </p>
               <p>Inbound parse / reply-to threading: not configured.</p>
               <DisabledField
                 label="Sender email"

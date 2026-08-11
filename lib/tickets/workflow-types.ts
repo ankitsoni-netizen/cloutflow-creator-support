@@ -41,6 +41,7 @@ export type TimelineKind =
   | "internal_note"
   | "creator_reply"
   | "resolution"
+  | "acknowledgement_email"
   | "other_event";
 
 export interface TimelineItem {
@@ -53,8 +54,38 @@ export interface TimelineItem {
   fromStatus?: string | null;
   toStatus?: string | null;
   deliveryStatus?: DeliveryStatus | null;
-  visibilityLabel?: "Internal Note" | "Creator Reply";
+  visibilityLabel?: "Internal Note" | "Creator Reply" | "Resolution Email";
+  commentId?: string;
+  canRetryEmail?: boolean;
 }
+
+export type AcknowledgementEmailOutcome = "sent" | "skipped" | "failed";
+
+export type CreateTicketActionResult =
+  | {
+      ticket: Ticket;
+      acknowledgement: AcknowledgementEmailOutcome;
+      acknowledgementMessage?: string;
+    }
+  | { error: string };
+
+export type CreatorReplyActionResult =
+  | {
+      data: TicketComment;
+      ticket: Ticket;
+      delivery: "sent" | "failed";
+      deliveryMessage?: string;
+    }
+  | { error: string };
+
+export type ResolveTicketActionResult =
+  | {
+      data: Ticket;
+      resolutionEmail: "sent" | "failed" | "skipped";
+      resolutionEmailMessage?: string;
+      comment?: TicketComment;
+    }
+  | { error: string };
 
 export interface StatusUpdateInput {
   ticketId: string;

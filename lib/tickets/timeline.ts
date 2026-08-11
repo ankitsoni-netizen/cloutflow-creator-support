@@ -148,26 +148,57 @@ function describeEvent(event: TicketEvent): TimelineItem {
 
 function describeComment(comment: TicketComment): TimelineItem {
   const isCreator = comment.visibility === "creator";
+  const failed = comment.deliveryStatus === "failed";
+  const pending = comment.deliveryStatus === "pending";
+  const sent =
+    comment.deliveryStatus === "sent" ||
+    comment.deliveryStatus === "delivered";
+
+  let title = isCreator ? "Creator reply email" : "Internal note added";
+  if (isCreator && pending) title = "Creator reply email · Pending";
+  if (isCreator && sent) title = "Creator reply email · Sent";
+  if (isCreator && failed) title = "Creator reply email · Failed";
+
   return {
     id: `comment-${comment.id}`,
     kind: isCreator ? "creator_reply" : "internal_note",
     timestamp: comment.createdAt,
     actor: comment.authorName,
-    title: isCreator ? "Creator-facing reply queued" : "Internal note added",
+    title,
     detail: comment.commentText,
     deliveryStatus: comment.deliveryStatus,
     visibilityLabel: isCreator ? "Creator Reply" : "Internal Note",
+    commentId: isCreator ? comment.id : undefined,
+    canRetryEmail: isCreator && failed,
   };
 }
 
 export function buildTimeline(
   events: TicketEvent[],
   comments: TicketComment[],
+  options?: {
+    acknowledgementEmailSentAt?: string | null;
+  },
 ): TimelineItem[] {
   const items: TimelineItem[] = [
     ...events.map(describeEvent),
     ...comments.map(describeComment),
   ];
+
+  if (options?.acknowledgementEmailSentAt) {
+    items.push({
+      id: `ack-${options.acknowledgementEmailSentAt}`,
+      kind: "acknowledgement_email",
+      timestamp: options.acknowledgementEmailSentAt,
+      actor: "System",
+      title: "Acknowledgement email sent",
+      detail: "Accepted by Brevo SMTP (not proof of inbox delivery).",
+      deliveryStatus: "sent",
+    });
+  }
+
+  // Prefer "Resolution email" label when a creator comment matches resolution flow:
+  // keep creator_reply kind but title already set; TicketWorkspace can refine via comment text match.
 
   items.sort((a, b) => {
     const diff =
@@ -177,4 +208,32 @@ export function buildTimeline(
   });
 
   return items;
+}
+
+/** Refine creator-facing resolution comments for timeline display. */
+export function applyResolutionEmailLabels(
+  items: TimelineItem[],
+  resolutionSummary?: string | null,
+): TimelineItem[] {
+  const summary = resolutionSummary?.trim();
+  if (!summary) return items;
+
+  return items.map((item) => {
+    if (item.kind !== "creator_reply" || item.detail?.trim() !== summary) {
+      return item;
+    }
+    const status = item.deliveryStatus;
+    let title = "Resolution email";
+    if (status === "pending") title = "Resolution email · Pending";
+    if (status === "sent" || status === "delivered") {
+      title = "Resolution email · Sent";
+    }
+    if (status === "failed") title = "Resolution email · Failed";
+    return {
+      ...item,
+      title,
+      visibilityLabel: "Resolution Email",
+      canRetryEmail: status === "failed",
+    };
+  });
 }

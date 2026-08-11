@@ -17,6 +17,7 @@ interface TopCommandBarProps {
   onOpenMenu?: () => void;
   staffProfile: StaffProfile;
   showMenuButton?: boolean;
+  emailConnected?: boolean;
 }
 
 export default function TopCommandBar({
@@ -26,6 +27,7 @@ export default function TopCommandBar({
   onOpenMenu,
   staffProfile,
   showMenuButton = false,
+  emailConnected = false,
 }: TopCommandBarProps) {
   const initials = getInitials(staffProfile.full_name || "Staff");
 
@@ -81,13 +83,21 @@ export default function TopCommandBar({
       <div className="flex shrink-0 items-center gap-2">
         <div
           className="hidden items-center gap-1.5 rounded-md border border-border bg-surface-muted px-2.5 py-1.5 text-xs text-muted xl:inline-flex"
-          title="Channel integrations are not connected"
+          title={
+            emailConnected
+              ? "Email connected. WhatsApp, Instagram, and website chatbot remain offline."
+              : "Channel integrations are not connected"
+          }
         >
           <span
-            className="h-1.5 w-1.5 rounded-full bg-[var(--warning)]"
+            className={`h-1.5 w-1.5 rounded-full ${
+              emailConnected ? "bg-[var(--success)]" : "bg-[var(--warning)]"
+            }`}
             aria-hidden="true"
           />
-          Channels offline
+          {emailConnected
+            ? "Email connected · 3 channels offline"
+            : "Channels offline"}
         </div>
 
         <div

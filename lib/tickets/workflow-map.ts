@@ -22,6 +22,25 @@ export function uiStatusToDb(status: TicketStatus): DbTicketStatus {
   }
 }
 
+export function dbStatusToUiLabel(status: string | null | undefined): string {
+  switch ((status ?? "").toLowerCase()) {
+    case "in_progress":
+    case "in progress":
+      return "In Progress";
+    case "waiting":
+      return "Waiting";
+    case "resolved":
+      return "Resolved";
+    case "open":
+      return "Open";
+    default:
+      return status?.trim() || "Open";
+  }
+}
+
+export const COMMENT_SELECT =
+  "id, ticket_id, author_user_id, author_name, visibility, comment_text, send_to_creator, delivery_status, created_at";
+
 export function mapDbComment(row: {
   id: string;
   ticket_id: string;

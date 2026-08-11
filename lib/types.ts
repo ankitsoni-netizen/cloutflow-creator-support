@@ -18,10 +18,6 @@ export type Platform = "Instagram" | "YouTube";
 export type NavItem =
   | "command-centre"
   | "inbox"
-  | "my-tickets"
-  | "unassigned"
-  | "waiting"
-  | "sla-risk"
   | "resolved"
   | "creators"
   | "campaigns"
@@ -83,6 +79,9 @@ export interface Ticket {
   assignedExecutiveId?: string | null;
   resolutionSummary?: string | null;
   resolvedAt?: string | null;
+  acknowledgementEmailSentAt?: string | null;
+  firstResponseAt?: string | null;
+  customerLastNotifiedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   activity: ActivityEvent[];

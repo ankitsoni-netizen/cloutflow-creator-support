@@ -1,0 +1,227 @@
+import { describe, expect, it } from "vitest";
+import { escapeHtml, isValidEmailAddress } from "@/lib/email/html";
+import { isBrevoConfigured } from "@/lib/email/env-check";
+import { buildTicketAcknowledgementEmail } from "@/lib/email/templates/ticket-acknowledgement";
+import { buildTicketReplyEmail } from "@/lib/email/templates/ticket-reply";
+import { buildTicketResolutionEmail } from "@/lib/email/templates/ticket-resolution";
+import {
+  formatTicketEmailLabels,
+  sendAcknowledgementForTicket,
+} from "@/lib/email/ticket-mail";
+import {
+  formatCampaignMonthForDisplay,
+  mapIssueTypeFromDb,
+} from "@/lib/tickets/map";
+import type { DbTicket } from "@/lib/tickets/types";
+
+describe("escapeHtml", () => {
+  it("escapes HTML special characters", () => {
+    expect(escapeHtml(`<script>alert("x")</script>&'`)).toBe(
+      "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;&amp;&#39;",
+    );
+  });
+});
+
+describe("ticket email display formatting", () => {
+  it("maps issue_type via shared ISSUE_TYPE_FROM_DB helper", () => {
+    expect(mapIssueTypeFromDb("payment_delayed")).toBe("Payment Delayed");
+  });
+
+  it("formats campaign_month as Month YYYY without timezone shift", () => {
+    expect(formatCampaignMonthForDisplay("2026-08-01")).toBe("August 2026");
+    expect(formatCampaignMonthForDisplay("2026-01-01")).toBe("January 2026");
+    expect(formatCampaignMonthForDisplay("2026-12")).toBe("December 2026");
+  });
+
+  it("formats DbTicket labels for email templates", () => {
+    const labels = formatTicketEmailLabels({
+      id: "t1",
+      ticket_code: "CF-2026-00001",
+      creator_name: "Riya Sharma",
+      creator_phone: null,
+      creator_email: "riya@example.com",
+      social_handle: null,
+      platform: "instagram",
+      issue_type: "payment_delayed",
+      campaign_name: "Summer",
+      brand_name: "Acme",
+      campaign_month: "2026-08-01",
+      cloutflow_poc_name: null,
+      cloutflow_poc_contact_number: null,
+      source_channel: "phone_call",
+      status: "in_progress",
+      priority: "normal",
+      assigned_team: "Creator Support",
+      assigned_executive_id: null,
+      assigned_executive_name: null,
+      issue_description: null,
+      internal_notes: null,
+      acknowledgement_email_requested: true,
+      acknowledgement_email_sent_at: null,
+      resolution_summary: null,
+      first_response_at: null,
+      resolved_at: null,
+      customer_last_notified_at: null,
+      metadata: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    expect(labels.issueType).toBe("Payment Delayed");
+    expect(labels.campaignMonth).toBe("August 2026");
+    expect(labels.ticketStatus).toBe("In Progress");
+  });
+});
+
+describe("acknowledgement template", () => {
+  it("includes formatted issue type and campaign month and escapes HTML", () => {
+    const labels = {
+      issueType: mapIssueTypeFromDb("payment_delayed"),
+      campaignMonth: formatCampaignMonthForDisplay("2026-08-01"),
+    };
+    const email = buildTicketAcknowledgementEmail({
+      creatorName: `Riya <b>Sharma</b>`,
+      ticketCode: "CF-2026-00001",
+      issueType: labels.issueType,
+      brand: "Acme",
+      campaignName: "Summer Launch",
+      campaignMonth: labels.campaignMonth,
+    });
+
+    expect(email.subject).toBe(
+      "We've received your request — CF-2026-00001",
+    );
+    expect(email.html).toContain("Payment Delayed");
+    expect(email.html).toContain("August 2026");
+    expect(email.html).not.toContain("payment_delayed");
+    expect(email.html).not.toContain("2026-08-01");
+    expect(email.text).toContain("Issue type: Payment Delayed");
+    expect(email.text).toContain("Campaign month: August 2026");
+    expect(email.html).toContain("Riya &lt;b&gt;Sharma&lt;/b&gt;");
+    expect(email.html).not.toContain("<b>Sharma</b>");
+  });
+});
+
+describe("reply template", () => {
+  it("includes formatted campaign month and escapes staff reply", () => {
+    const email = buildTicketReplyEmail({
+      creatorName: "Riya Sharma",
+      ticketCode: "CF-2026-00001",
+      staffReply: `Hello <img src=x onerror=alert(1)>`,
+      ticketStatus: "In Progress",
+      brand: "Acme",
+      campaignName: "Summer Launch",
+      campaignMonth: formatCampaignMonthForDisplay("2026-08-01"),
+    });
+
+    expect(email.subject).toBe(
+      "Update on your Cloutflow support ticket CF-2026-00001",
+    );
+    expect(email.html).toContain("August 2026");
+    expect(email.html).not.toContain("2026-08-01");
+    expect(email.text).toContain("Campaign month: August 2026");
+    expect(email.html).toContain(
+      "Hello &lt;img src=x onerror=alert(1)&gt;",
+    );
+  });
+});
+
+describe("resolution template", () => {
+  it("includes formatted issue type and campaign month safely", () => {
+    const email = buildTicketResolutionEmail({
+      creatorName: "Riya Sharma",
+      ticketCode: "CF-2026-00001",
+      issueType: mapIssueTypeFromDb("payment_delayed"),
+      resolutionSummary: `Paid on <script>`,
+      brand: "Acme",
+      campaignName: "Summer",
+      campaignMonth: formatCampaignMonthForDisplay("2026-08-01"),
+    });
+
+    expect(email.subject).toBe(
+      "Resolved: Your Cloutflow support ticket CF-2026-00001",
+    );
+    expect(email.html).toContain("Payment Delayed");
+    expect(email.html).toContain("August 2026");
+    expect(email.html).not.toContain("payment_delayed");
+    expect(email.html).not.toContain("2026-08-01");
+    expect(email.html).toContain("Paid on &lt;script&gt;");
+    expect(email.text).toContain("Issue type: Payment Delayed");
+    expect(email.text).toContain("Campaign month: August 2026");
+  });
+});
+
+describe("acknowledgement send gates", () => {
+  const baseTicket: DbTicket = {
+    id: "t1",
+    ticket_code: "CF-2026-00001",
+    creator_name: "Riya Sharma",
+    creator_phone: null,
+    creator_email: "riya@example.com",
+    social_handle: null,
+    platform: "instagram",
+    issue_type: "payment_delayed",
+    campaign_name: "Summer",
+    brand_name: "Acme",
+    campaign_month: "2026-08-01",
+    cloutflow_poc_name: null,
+    cloutflow_poc_contact_number: null,
+    source_channel: "phone_call",
+    status: "open",
+    priority: "normal",
+    assigned_team: "Creator Support",
+    assigned_executive_id: null,
+    assigned_executive_name: null,
+    issue_description: null,
+    internal_notes: null,
+    acknowledgement_email_requested: false,
+    acknowledgement_email_sent_at: null,
+    resolution_summary: null,
+    first_response_at: null,
+    resolved_at: null,
+    customer_last_notified_at: null,
+    metadata: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  it("skips when acknowledgement is not requested", async () => {
+    const result = await sendAcknowledgementForTicket(baseTicket);
+    expect(result.outcome).toBe("skipped");
+  });
+
+  it("fails when creator email is missing", async () => {
+    const result = await sendAcknowledgementForTicket({
+      ...baseTicket,
+      acknowledgement_email_requested: true,
+      creator_email: null,
+    });
+    expect(result.outcome).toBe("failed");
+    expect(result.error).toMatch(/creator email/i);
+  });
+
+  it("treats already-sent acknowledgement as sent without resending", async () => {
+    const result = await sendAcknowledgementForTicket({
+      ...baseTicket,
+      acknowledgement_email_requested: true,
+      acknowledgement_email_sent_at: new Date().toISOString(),
+    });
+    expect(result.outcome).toBe("sent");
+  });
+});
+
+describe("env and email helpers", () => {
+  it("detects missing Brevo configuration without network calls", () => {
+    expect(
+      isBrevoConfigured({
+        BREVO_SMTP_HOST: "",
+      }),
+    ).toBe(false);
+  });
+
+  it("validates email addresses", () => {
+    expect(isValidEmailAddress("a@b.com")).toBe(true);
+    expect(isValidEmailAddress("not-an-email")).toBe(false);
+    expect(isValidEmailAddress("a@b.com\nBcc: evil@x.com")).toBe(false);
+  });
+});

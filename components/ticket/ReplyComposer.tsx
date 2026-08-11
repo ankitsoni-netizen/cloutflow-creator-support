@@ -5,14 +5,15 @@ import { useState, type FormEvent, type KeyboardEvent } from "react";
 type ComposerMode = "reply" | "note";
 
 interface ReplyComposerProps {
+  creatorEmail?: string;
   onQueueReply: (text: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   onSaveNote: (text: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   disabled?: boolean;
-  /** Total composer panel height in pixels (tabs + body). */
   height?: number;
 }
 
 export default function ReplyComposer({
+  creatorEmail = "",
   onQueueReply,
   onSaveNote,
   disabled = false,
@@ -24,6 +25,9 @@ export default function ReplyComposer({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  const trimmedEmail = creatorEmail.trim();
+  const canEmailCreator = Boolean(trimmedEmail);
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     if (submitting || disabled) return;
@@ -34,6 +38,11 @@ export default function ReplyComposer({
           ? "Creator reply cannot be empty."
           : "Internal note cannot be empty.",
       );
+      return;
+    }
+
+    if (mode === "reply" && !canEmailCreator) {
+      setError("This ticket has no creator email address.");
       return;
     }
 
@@ -49,12 +58,13 @@ export default function ReplyComposer({
       return;
     }
 
-    setText("");
-    setSuccess(
-      mode === "reply"
-        ? "Creator reply queued for delivery. Channels are not connected yet."
-        : "Internal note saved.",
-    );
+    if (mode === "reply") {
+      setText("");
+      setSuccess("Email accepted by Brevo.");
+    } else {
+      setText("");
+      setSuccess("Internal note saved.");
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -68,7 +78,7 @@ export default function ReplyComposer({
   const charCount = text.length;
   const placeholder =
     mode === "reply"
-      ? "Write a creator-facing reply. Delivery stays queued until channels are connected."
+      ? "Write a creator-facing reply. This will be emailed to the creator."
       : "Write a private note visible only to Cloutflow staff.";
 
   return (
@@ -121,7 +131,9 @@ export default function ReplyComposer({
           }`}
         >
           {mode === "reply"
-            ? "Public reply mode · Queued delivery while WhatsApp, Instagram, and Email are disconnected."
+            ? canEmailCreator
+              ? `Public reply mode · Email will be sent to ${trimmedEmail}`
+              : "Public reply mode · This ticket has no creator email address."
             : "Private note mode · Visible to staff only. Never sent to the creator."}
         </div>
 
@@ -156,7 +168,11 @@ export default function ReplyComposer({
           </div>
           <button
             type="submit"
-            disabled={submitting || disabled}
+            disabled={
+              submitting ||
+              disabled ||
+              (mode === "reply" && !canEmailCreator)
+            }
             className={`rounded-md px-3.5 py-2 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${
               mode === "reply"
                 ? "bg-accent hover:bg-accent-hover"
@@ -165,10 +181,10 @@ export default function ReplyComposer({
           >
             {submitting
               ? mode === "reply"
-                ? "Queuing..."
+                ? "Sending..."
                 : "Saving..."
               : mode === "reply"
-                ? "Queue Reply"
+                ? "Send Email"
                 : "Save Note"}
           </button>
         </div>
