@@ -1,6 +1,9 @@
 "use client";
 
 import Image from "next/image";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 import type { NavItem } from "@/lib/types";
 
 const NAV_ITEMS: { id: NavItem; label: string }[] = [
@@ -25,6 +28,17 @@ export default function Sidebar({
   mobileOpen,
   onCloseMobile,
 }: SidebarProps) {
+  const router = useRouter();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  async function handleLogout() {
+    setLoggingOut(true);
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.replace("/login");
+    router.refresh();
+  }
+
   return (
     <>
       {mobileOpen ? (
@@ -80,8 +94,18 @@ export default function Sidebar({
           })}
         </nav>
 
-        <div className="border-t border-white/10 p-4 text-xs text-sidebar-muted">
-          Internal CRM prototype
+        <div className="border-t border-white/10 p-4">
+          <p className="mb-3 text-xs text-sidebar-muted">
+            Internal CRM prototype
+          </p>
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={loggingOut}
+            className="w-full rounded-md border border-white/15 px-3 py-2 text-left text-sm font-medium text-sidebar-text transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {loggingOut ? "Logging out..." : "Logout"}
+          </button>
         </div>
       </aside>
     </>
