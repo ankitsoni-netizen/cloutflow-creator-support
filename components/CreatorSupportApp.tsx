@@ -1,30 +1,110 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useTransition,
+  type CSSProperties,
+} from "react";
+import AIAgentStudio from "@/components/ai/AIAgentStudio";
+import CampaignsView from "@/components/campaigns/CampaignsView";
+import CommandCentre from "@/components/command/CommandCentre";
+import CreatorsView from "@/components/creators/CreatorsView";
+import TicketQueue from "@/components/inbox/TicketQueue";
 import NewTicketModal from "@/components/NewTicketModal";
+import SlaRiskView from "@/components/ops/SlaRiskView";
 import {
   AnalyticsView,
+  AutomationsView,
+  ChannelsView,
   ResolutionBaseView,
   SettingsView,
 } from "@/components/SecondaryViews";
-import Sidebar from "@/components/Sidebar";
-import TicketDetail from "@/components/TicketDetail";
-import TicketList from "@/components/TicketList";
+import NavigationRail from "@/components/shell/NavigationRail";
+import TopCommandBar from "@/components/shell/TopCommandBar";
+import TeamManagement from "@/components/team/TeamManagement";
+import TicketWorkspace from "@/components/ticket/TicketWorkspace";
+import ResizeHandle, { clampSize } from "@/components/ui/ResizeHandle";
 import type { StaffProfile } from "@/lib/auth";
 import { createTicketAction } from "@/lib/tickets/actions";
-import { fetchTickets, resolveAssignedExecutiveId } from "@/lib/tickets/api";
+import { fetchTickets } from "@/lib/tickets/api";
+import {
+  fetchPendingReplyTicketIds,
+  fetchStaffDirectory,
+} from "@/lib/tickets/ops-api";
+import { fetchActiveStaffOptions } from "@/lib/tickets/workflow-api";
+import type { StaffOption } from "@/lib/tickets/workflow-types";
 import type {
+  InboxView,
   NavItem,
   NewTicketFormData,
-  StatusFilter,
+  StaffDirectoryMember,
   Ticket,
 } from "@/lib/types";
-import { matchesStatusFilter } from "@/lib/utils";
+import {
+  countTicketsForView,
+  ticketMatchesInboxView,
+  ticketMatchesSearch,
+} from "@/lib/utils";
 
 interface CreatorSupportAppProps {
   staffProfile: StaffProfile;
   initialTickets: Ticket[];
   initialLoadError: string | null;
+}
+
+const INBOX_VIEWS: InboxView[] = [
+  "all-active",
+  "my-tickets",
+  "unassigned",
+  "open",
+  "in-progress",
+  "waiting",
+  "urgent",
+  "pending-reply",
+  "resolved",
+];
+
+function navToInboxView(nav: NavItem): InboxView | null {
+  switch (nav) {
+    case "inbox":
+      return "all-active";
+    case "my-tickets":
+      return "my-tickets";
+    case "unassigned":
+      return "unassigned";
+    case "waiting":
+      return "waiting";
+    case "resolved":
+      return "resolved";
+    default:
+      return null;
+  }
+}
+
+function inboxTitle(view: InboxView): string {
+  switch (view) {
+    case "my-tickets":
+      return "My Tickets";
+    case "unassigned":
+      return "Unassigned";
+    case "open":
+      return "Open";
+    case "in-progress":
+      return "In Progress";
+    case "waiting":
+      return "Waiting";
+    case "urgent":
+      return "Urgent";
+    case "pending-reply":
+      return "Pending Reply";
+    case "resolved":
+      return "Resolved";
+    default:
+      return "Unified Inbox";
+  }
 }
 
 export default function CreatorSupportApp({
@@ -35,17 +115,83 @@ export default function CreatorSupportApp({
   const [tickets, setTickets] = useState<Ticket[]>(initialTickets);
   const [loadError, setLoadError] = useState<string | null>(initialLoadError);
   const [isRefreshing, startRefreshTransition] = useTransition();
-  const [activeNav, setActiveNav] = useState<NavItem>("inbox");
+  const [activeNav, setActiveNav] = useState<NavItem>("command-centre");
+  const [inboxView, setInboxView] = useState<InboxView>("all-active");
   const [selectedId, setSelectedId] = useState<string | null>(
     initialTickets[0]?.id ?? null,
   );
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("All");
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [queueSearch, setQueueSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [queueWidth, setQueueWidth] = useState(360);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [emailAcknowledgements, setEmailAcknowledgements] = useState(true);
+  const [staffOptions, setStaffOptions] = useState<StaffOption[]>([]);
+  const [pendingReplyIds, setPendingReplyIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [staffDirectory, setStaffDirectory] = useState<StaffDirectoryMember[]>(
+    [],
+  );
+  const [staffDirectoryError, setStaffDirectoryError] = useState<string | null>(
+    null,
+  );
+  const [staffDirectoryLoading, setStaffDirectoryLoading] = useState(true);
+
+  const staffName = staffProfile.full_name?.trim() ?? "";
+  const staffUserId = staffProfile.user_id;
+
+  const refreshPendingReplies = useCallback(async () => {
+    const result = await fetchPendingReplyTicketIds();
+    if ("error" in result) return;
+    setPendingReplyIds(new Set(result.ticketIds));
+  }, []);
+
+  const refreshStaffDirectory = useCallback(async () => {
+    setStaffDirectoryLoading(true);
+    const result = await fetchStaffDirectory();
+    setStaffDirectoryLoading(false);
+    if ("error" in result) {
+      setStaffDirectoryError(result.error);
+      return;
+    }
+    setStaffDirectoryError(null);
+    setStaffDirectory(result.data);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetchActiveStaffOptions().then((result) => {
+      if (cancelled) return;
+      if ("data" in result) setStaffOptions(result.data);
+    });
+
+    void fetchPendingReplyTicketIds().then((result) => {
+      if (cancelled) return;
+      if ("ticketIds" in result) {
+        setPendingReplyIds(new Set(result.ticketIds));
+      }
+    });
+
+    void fetchStaffDirectory().then((result) => {
+      if (cancelled) return;
+      setStaffDirectoryLoading(false);
+      if ("error" in result) {
+        setStaffDirectoryError(result.error);
+        return;
+      }
+      setStaffDirectoryError(null);
+      setStaffDirectory(result.data);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function refreshTickets() {
     startRefreshTransition(async () => {
@@ -63,6 +209,7 @@ export default function CreatorSupportApp({
         }
         return result.tickets[0]?.id ?? null;
       });
+      await refreshPendingReplies();
     });
   }
 
@@ -73,88 +220,142 @@ export default function CreatorSupportApp({
     }, 3200);
   }
 
+  function handleTicketUpdated(updated: Ticket) {
+    setTickets((prev) =>
+      prev.map((ticket) => (ticket.id === updated.id ? updated : ticket)),
+    );
+  }
+
+  function handleTicketResolved(updated: Ticket) {
+    handleTicketUpdated(updated);
+    setSelectedId(updated.id);
+    setActiveNav("resolved");
+    setInboxView("resolved");
+    setMobileDetailOpen(true);
+    showSuccess(`Ticket ${updated.ticketNumber} marked as resolved.`);
+  }
+
+  const viewCounts = useMemo(() => {
+    return Object.fromEntries(
+      INBOX_VIEWS.map((view) => [
+        view,
+        countTicketsForView(
+          tickets,
+          view,
+          staffUserId,
+          staffName,
+          pendingReplyIds,
+        ),
+      ]),
+    ) as Record<InboxView, number>;
+  }, [tickets, staffUserId, staffName, pendingReplyIds]);
+
   const filteredTickets = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    const currentName = staffProfile.full_name?.trim() ?? "";
+    const globalQuery = globalSearch.trim().toLowerCase();
+    const localQuery = queueSearch.trim().toLowerCase();
 
     return tickets
-      .filter((ticket) => {
-        if (activeNav === "my-tickets") {
-          const matchesId =
-            !!ticket.assignedExecutiveId &&
-            ticket.assignedExecutiveId === staffProfile.user_id;
-          const matchesName =
-            !!currentName &&
-            ticket.assignedExecutive.toLowerCase() ===
-              currentName.toLowerCase();
-          return matchesId || matchesName;
-        }
-        if (activeNav === "resolved") {
-          return ticket.status === "Resolved";
-        }
-        return true;
-      })
-      .filter((ticket) => {
-        if (activeNav === "resolved") return true;
-        return matchesStatusFilter(ticket.status, statusFilter);
-      })
-      .filter((ticket) => {
-        if (!query) return true;
-        return [
-          ticket.ticketNumber,
-          ticket.creatorName,
-          ticket.brand,
-          ticket.issueCategory,
-          ticket.issueType,
-          ticket.sourceChannel,
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(query);
-      })
+      .filter((ticket) =>
+        ticketMatchesInboxView(
+          ticket,
+          inboxView,
+          staffUserId,
+          staffName,
+          pendingReplyIds,
+        ),
+      )
+      .filter((ticket) => ticketMatchesSearch(ticket, globalQuery))
+      .filter((ticket) => ticketMatchesSearch(ticket, localQuery))
       .sort(
         (a, b) =>
           new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
       );
   }, [
     tickets,
-    activeNav,
-    search,
-    statusFilter,
-    staffProfile.full_name,
-    staffProfile.user_id,
+    inboxView,
+    globalSearch,
+    queueSearch,
+    staffName,
+    staffUserId,
+    pendingReplyIds,
   ]);
 
-  const selectedTicket =
-    tickets.find((ticket) => ticket.id === selectedId) ?? null;
+  // Selection is only valid when the ticket is still in the current filtered view.
+  // Otherwise fall back to the first visible ticket, or null for an empty queue.
+  const visibleSelectedId = useMemo(() => {
+    if (
+      selectedId &&
+      filteredTickets.some((ticket) => ticket.id === selectedId)
+    ) {
+      return selectedId;
+    }
+    return filteredTickets[0]?.id ?? null;
+  }, [filteredTickets, selectedId]);
+
+  const selectedTicket = useMemo(() => {
+    if (!visibleSelectedId) return null;
+    return (
+      filteredTickets.find((ticket) => ticket.id === visibleSelectedId) ?? null
+    );
+  }, [filteredTickets, visibleSelectedId]);
 
   function handleNavigate(item: NavItem) {
     setActiveNav(item);
     setMobileDetailOpen(false);
-
-    if (item === "resolved") {
-      setStatusFilter("Resolved");
-    } else if (item === "inbox" || item === "my-tickets") {
-      setStatusFilter("All");
+    const view = navToInboxView(item);
+    if (view) {
+      setInboxView(view);
+      setQueueSearch("");
     }
+  }
+
+  function handleInboxViewChange(view: InboxView) {
+    setInboxView(view);
+    if (view === "my-tickets") setActiveNav("my-tickets");
+    else if (view === "unassigned") setActiveNav("unassigned");
+    else if (view === "waiting") setActiveNav("waiting");
+    else if (view === "resolved") setActiveNav("resolved");
+    else setActiveNav("inbox");
   }
 
   function handleSelectTicket(id: string) {
     setSelectedId(id);
+    setMobileDetailOpen(true);
+    if (navToInboxView(activeNav) === null && activeNav !== "inbox") {
+      setActiveNav("inbox");
+      setInboxView("all-active");
+    }
+  }
+
+  function openTicketFromModule(id: string) {
+    setSelectedId(id);
+    setActiveNav("inbox");
+    setInboxView("all-active");
     setMobileDetailOpen(true);
   }
 
   async function handleCreateTicket(
     data: NewTicketFormData,
   ): Promise<{ ok: true } | { ok: false; message: string }> {
-    const assignedExecutiveId = await resolveAssignedExecutiveId(
-      data.assignedExecutive,
+    const selectedStaff = staffOptions.find(
+      (option) => option.userId === data.assignedExecutive,
     );
 
+    if (!selectedStaff) {
+      return {
+        ok: false,
+        message: "Select an active assigned executive.",
+      };
+    }
+
     const result = await createTicketAction({
-      form: data,
-      assignedTeam: staffProfile.team || "Creator Support",
-      assignedExecutiveId,
+      form: {
+        ...data,
+        assignedExecutive: selectedStaff.fullName,
+      },
+      assignedTeam:
+        selectedStaff.team || staffProfile.team || "Creator Support",
+      assignedExecutiveId: selectedStaff.userId,
     });
 
     if ("error" in result) {
@@ -164,8 +365,9 @@ export default function CreatorSupportApp({
     setTickets((prev) => [result.ticket, ...prev]);
     setSelectedId(result.ticket.id);
     setActiveNav("inbox");
-    setStatusFilter("All");
-    setSearch("");
+    setInboxView("all-active");
+    setGlobalSearch("");
+    setQueueSearch("");
     setLoadError(null);
     setModalOpen(false);
     setMobileDetailOpen(true);
@@ -173,91 +375,178 @@ export default function CreatorSupportApp({
     return { ok: true };
   }
 
-  const showTicketWorkspace =
-    activeNav === "inbox" ||
-    activeNav === "my-tickets" ||
-    activeNav === "resolved";
-
-  const listTitle =
-    activeNav === "my-tickets"
-      ? "My Tickets"
-      : activeNav === "resolved"
-        ? "Resolved Tickets"
-        : "Creator Support Inbox";
+  const showTicketWorkspace = navToInboxView(activeNav) !== null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <Sidebar
+      <NavigationRail
         activeNav={activeNav}
         onNavigate={handleNavigate}
+        staffProfile={staffProfile}
+        collapsed={navCollapsed}
+        onToggleCollapsed={() => setNavCollapsed((prev) => !prev)}
         mobileOpen={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-border bg-surface px-4 py-3 lg:hidden">
-          <button
-            type="button"
-            onClick={() => setMobileSidebarOpen(true)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground"
-          >
-            Menu
-          </button>
-          <p className="text-sm font-semibold text-foreground">
-            Creator Support
-          </p>
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white"
-          >
-            New
-          </button>
-        </header>
+        <TopCommandBar
+          search={globalSearch}
+          onSearchChange={setGlobalSearch}
+          onNewTicket={() => setModalOpen(true)}
+          onOpenMenu={() => setMobileSidebarOpen(true)}
+          staffProfile={staffProfile}
+          showMenuButton
+        />
 
         <main className="min-h-0 flex-1">
+          {activeNav === "command-centre" ? (
+            <CommandCentre
+              tickets={tickets}
+              pendingReplyIds={pendingReplyIds}
+              staffName={staffProfile.full_name || "Staff"}
+              onOpenInbox={() => handleNavigate("inbox")}
+              onOpenTicket={openTicketFromModule}
+              onOpenView={(view) => {
+                if (view === "sla-risk") {
+                  handleNavigate("sla-risk");
+                  return;
+                }
+                if (view === "pending-reply") {
+                  setActiveNav("inbox");
+                  setInboxView("pending-reply");
+                  return;
+                }
+                if (view === "urgent") {
+                  setActiveNav("inbox");
+                  setInboxView("urgent");
+                  return;
+                }
+                handleNavigate(view);
+              }}
+            />
+          ) : null}
+
           {showTicketWorkspace ? (
-            <div className="grid h-full min-h-0 lg:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+            <div className="flex h-full min-h-0">
               <div
-                className={`min-h-0 ${mobileDetailOpen ? "hidden lg:block" : "block"}`}
+                className={`min-h-0 shrink-0 ${
+                  mobileDetailOpen
+                    ? "hidden lg:block lg:w-[var(--queue-width)]"
+                    : "block w-full lg:w-[var(--queue-width)]"
+                }`}
+                style={
+                  {
+                    "--queue-width": `${queueWidth}px`,
+                  } as CSSProperties
+                }
               >
-                <TicketList
+                <TicketQueue
+                  title={inboxTitle(inboxView)}
                   tickets={filteredTickets}
-                  selectedId={selectedId}
-                  search={search}
-                  statusFilter={statusFilter}
-                  onSearchChange={setSearch}
-                  onStatusFilterChange={setStatusFilter}
+                  viewCounts={viewCounts}
+                  activeView={inboxView}
+                  selectedId={visibleSelectedId}
+                  localSearch={queueSearch}
+                  onLocalSearchChange={setQueueSearch}
+                  onViewChange={handleInboxViewChange}
                   onSelectTicket={handleSelectTicket}
                   onNewTicket={() => setModalOpen(true)}
-                  title={listTitle}
+                  onRefresh={refreshTickets}
                   loading={isRefreshing && tickets.length === 0}
+                  refreshing={isRefreshing}
                   error={loadError}
-                  onRetry={refreshTickets}
                   hasTickets={tickets.length > 0}
+                  pendingReplyIds={pendingReplyIds}
                 />
               </div>
+              <ResizeHandle
+                orientation="vertical"
+                label="Resize inbox column"
+                className="hidden lg:block"
+                onResize={(delta) => {
+                  setQueueWidth((prev) => clampSize(prev + delta, 280, 560));
+                }}
+              />
               <div
-                className={`min-h-0 ${mobileDetailOpen ? "block" : "hidden lg:block"}`}
+                className={`min-h-0 min-w-0 flex-1 ${mobileDetailOpen ? "block" : "hidden lg:block"}`}
               >
-                <TicketDetail
+                <TicketWorkspace
                   ticket={selectedTicket}
+                  staffOptions={staffOptions}
+                  onTicketUpdated={handleTicketUpdated}
+                  onTicketResolved={handleTicketResolved}
+                  onConversationMutated={() => {
+                    void refreshPendingReplies();
+                  }}
                   showClose
                   onClose={() => setMobileDetailOpen(false)}
+                  pendingReplyIds={pendingReplyIds}
                 />
               </div>
             </div>
           ) : null}
 
+          {activeNav === "sla-risk" ? (
+            <SlaRiskView
+              tickets={tickets}
+              onOpenTicket={openTicketFromModule}
+              onOpenInbox={() => handleNavigate("inbox")}
+            />
+          ) : null}
+
+          {activeNav === "creators" ? (
+            <CreatorsView
+              tickets={tickets}
+              onOpenTicket={openTicketFromModule}
+              onOpenInbox={() => handleNavigate("inbox")}
+            />
+          ) : null}
+
+          {activeNav === "campaigns" ? (
+            <CampaignsView
+              tickets={tickets}
+              onOpenTicket={openTicketFromModule}
+              onOpenInbox={() => handleNavigate("inbox")}
+            />
+          ) : null}
+
           {activeNav === "analytics" ? (
             <AnalyticsView
               tickets={tickets}
+              pendingReplyCount={pendingReplyIds.size}
               onOpenInbox={() => handleNavigate("inbox")}
             />
           ) : null}
 
           {activeNav === "resolution-base" ? (
             <ResolutionBaseView onOpenInbox={() => handleNavigate("inbox")} />
+          ) : null}
+
+          {activeNav === "automations" ? (
+            <AutomationsView onOpenInbox={() => handleNavigate("inbox")} />
+          ) : null}
+
+          {activeNav === "ai-agent" ? (
+            <AIAgentStudio onOpenInbox={() => handleNavigate("inbox")} />
+          ) : null}
+
+          {activeNav === "channels" ? (
+            <ChannelsView onOpenInbox={() => handleNavigate("inbox")} />
+          ) : null}
+
+          {activeNav === "team" ? (
+            <TeamManagement
+              staff={staffDirectory}
+              tickets={tickets}
+              loading={staffDirectoryLoading}
+              error={staffDirectoryError}
+              onRetry={() => {
+                void refreshStaffDirectory();
+              }}
+              onOpenInbox={() => handleNavigate("inbox")}
+              currentRole={staffProfile.role}
+            />
           ) : null}
 
           {activeNav === "settings" ? (
@@ -267,6 +556,8 @@ export default function CreatorSupportApp({
                 setEmailAcknowledgements((prev) => !prev)
               }
               onOpenInbox={() => handleNavigate("inbox")}
+              staffName={staffProfile.full_name || "Staff"}
+              staffTeam={staffProfile.team}
             />
           ) : null}
         </main>
@@ -277,12 +568,13 @@ export default function CreatorSupportApp({
         onClose={() => setModalOpen(false)}
         onCreate={handleCreateTicket}
         defaultSendAcknowledgementEmail={emailAcknowledgements}
+        staffOptions={staffOptions}
       />
 
       {successMessage ? (
         <div
           role="status"
-          className="fixed right-4 bottom-4 z-[60] max-w-sm rounded-md border border-border bg-surface px-4 py-3 text-sm text-foreground shadow-lg"
+          className="fixed right-4 bottom-4 z-[60] max-w-sm rounded-md border border-border bg-surface px-4 py-3 text-sm text-foreground shadow-[var(--shadow-md)]"
         >
           <p className="font-medium text-accent">Success</p>
           <p className="mt-0.5 text-muted">{successMessage}</p>

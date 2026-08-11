@@ -15,10 +15,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Cloutflow Creator Support",
   description:
-    "Internal Creator Support CRM for managing creator tickets, escalations, and resolutions.",
+    "Creator Care OS — creator support, engineered for trust. Omnichannel agent workspace for Cloutflow.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html
       lang="en"

@@ -28,7 +28,7 @@ export function toSafeTicketErrorMessage(error: SupabaseLikeError): string {
   }
 
   if (/row-level security|rls/i.test(combined)) {
-    return "You do not have permission to create this ticket.";
+    return "You do not have permission to perform this action.";
   }
 
   if (/campaign_month/i.test(combined)) {

@@ -4,7 +4,6 @@ import {
   type IssueTypeLabel,
 } from "@/lib/ticket-constants";
 import type {
-  ActivityEvent,
   NewTicketFormData,
   Platform,
   SourceChannel,
@@ -183,39 +182,6 @@ function mapIssueTypeFromDb(value: string): string {
   return ISSUE_TYPE_FROM_DB[value] ?? ISSUE_TYPE_FROM_DB[value.toLowerCase()] ?? value;
 }
 
-function buildActivity(row: DbTicket): ActivityEvent[] {
-  const events: ActivityEvent[] = [
-    {
-      id: `${row.id}-created`,
-      timestamp: row.created_at,
-      actor: "System",
-      action: "Ticket created.",
-    },
-  ];
-
-  if (row.first_response_at) {
-    events.push({
-      id: `${row.id}-first-response`,
-      timestamp: row.first_response_at,
-      actor: row.assigned_executive_name || "Staff",
-      action: "First response recorded.",
-    });
-  }
-
-  if (row.resolved_at) {
-    events.push({
-      id: `${row.id}-resolved`,
-      timestamp: row.resolved_at,
-      actor: row.assigned_executive_name || "Staff",
-      action: row.resolution_summary
-        ? `Ticket resolved. ${row.resolution_summary}`
-        : "Ticket resolved.",
-    });
-  }
-
-  return events;
-}
-
 export function mapDbTicketToTicket(row: DbTicket): Ticket {
   return {
     id: row.id,
@@ -240,9 +206,11 @@ export function mapDbTicketToTicket(row: DbTicket): Ticket {
     assignedTeam: row.assigned_team ?? "",
     assignedExecutive: row.assigned_executive_name ?? "",
     assignedExecutiveId: row.assigned_executive_id,
+    resolutionSummary: row.resolution_summary,
+    resolvedAt: row.resolved_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    activity: buildActivity(row),
+    activity: [],
     sendAcknowledgementEmail:
       row.acknowledgement_email_requested ?? undefined,
   };
