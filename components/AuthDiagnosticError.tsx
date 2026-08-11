@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -26,16 +25,13 @@ export default function AuthDiagnosticError({
   return (
     <div className="flex min-h-full flex-1 items-center justify-center bg-background px-4 py-10">
       <div className="w-full max-w-md rounded-xl border border-border bg-surface p-8 text-center shadow-sm">
-        <div className="relative mx-auto mb-5 h-12 w-48 overflow-hidden rounded-md bg-sidebar">
-          <Image
-            src="/cloutflow-logo.png"
-            alt="Cloutflow"
-            fill
-            priority
-            className="object-contain px-3"
-            sizes="192px"
-          />
-        </div>
+        <img
+          src="/cloutflow-brand-logo.png"
+          alt="Cloutflow"
+          width={220}
+          height={41}
+          className="mx-auto mb-5 h-11 w-auto max-w-[220px] object-contain object-center"
+        />
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">
           Staff verification error
         </h1>

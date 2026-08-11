@@ -161,7 +161,7 @@ export default function NavigationRail({
             className={`relative ${collapsed ? "mx-auto h-9 w-9" : "h-9 w-full"}`}
           >
             <Image
-              src="/cloutflow-logo.png"
+              src="/cloutflow-logo-on-dark.png"
               alt="Cloutflow"
               fill
               priority

@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -45,16 +44,14 @@ export default function LoginForm() {
       />
       <div className="relative w-full max-w-md rounded-xl border border-border bg-surface p-8 shadow-[var(--shadow-md)]">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="relative mb-5 h-12 w-48 overflow-hidden rounded-md bg-sidebar">
-            <Image
-              src="/cloutflow-logo.png"
-              alt="Cloutflow"
-              fill
-              priority
-              className="object-contain px-3"
-              sizes="192px"
-            />
-          </div>
+          {/* Native img avoids Next image optimizer flattening/caching opaque backgrounds */}
+          <img
+            src="/cloutflow-brand-logo.png"
+            alt="Cloutflow"
+            width={220}
+            height={41}
+            className="mb-5 h-11 w-auto max-w-[220px] object-contain object-center"
+          />
           <p className="text-[11px] font-semibold tracking-[0.16em] text-muted uppercase">
             Creator Care OS
           </p>
