@@ -38,6 +38,19 @@ export async function OPTIONS(request: NextRequest) {
   });
 }
 
+/** Lightweight availability check — no DB, email, or config exposure. */
+export async function GET() {
+  return NextResponse.json(
+    {
+      success: true,
+      service: "Cloutflow website ticket intake",
+      status: "available",
+      method: "POST",
+    },
+    { status: 200 },
+  );
+}
+
 export async function POST(request: NextRequest) {
   const origin = request.headers.get("origin");
   if (!isOriginPermitted(origin)) {
