@@ -1,8 +1,17 @@
 import {
+  WEBSITE_REQUESTER_TYPE_LABELS,
+  websiteCategoryLabel,
+  type WebsiteRequesterType,
+} from "@/lib/public-intake/constants";
+import {
   ISSUE_TYPE_FROM_DB,
   ISSUE_TYPE_TO_DB,
   type IssueTypeLabel,
 } from "@/lib/ticket-constants";
+import {
+  PHONE_VALIDATION_MESSAGE,
+  normalizePhoneNumber,
+} from "@/lib/phone";
 import type {
   NewTicketFormData,
   Platform,
@@ -157,9 +166,24 @@ function mapSourceChannel(value: string): SourceChannel {
   }
 }
 
-function mapPlatform(value: string | null): Platform {
-  if (value?.toLowerCase() === "youtube") return "YouTube";
-  return "Instagram";
+function mapPlatform(value: string | null): Platform | "" {
+  if (!value?.trim()) return "";
+  if (value.toLowerCase() === "youtube") return "YouTube";
+  if (value.toLowerCase() === "instagram") return "Instagram";
+  return "";
+}
+
+function mapRequesterTypeLabel(value: string | null): string {
+  if (!value) return "";
+  const key = value.toLowerCase() as WebsiteRequesterType;
+  return WEBSITE_REQUESTER_TYPE_LABELS[key] ?? value;
+}
+
+function primaryIssueLabel(row: DbTicket): string {
+  if (row.issue_type) return mapIssueTypeFromDb(row.issue_type);
+  const categoryLabel = websiteCategoryLabel(row.request_category);
+  if (categoryLabel) return categoryLabel;
+  return "Website enquiry";
 }
 
 function mapPlatformToDb(value: Platform): DbPlatform {
@@ -178,11 +202,13 @@ function mapIssueTypeToDb(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-export function mapIssueTypeFromDb(value: string): string {
+export function mapIssueTypeFromDb(value: string | null | undefined): string {
+  if (!value) return "";
   return ISSUE_TYPE_FROM_DB[value] ?? ISSUE_TYPE_FROM_DB[value.toLowerCase()] ?? value;
 }
 
 export function mapDbTicketToTicket(row: DbTicket): Ticket {
+  const issueLabel = primaryIssueLabel(row);
   return {
     id: row.id,
     ticketNumber: row.ticket_code,
@@ -191,8 +217,17 @@ export function mapDbTicketToTicket(row: DbTicket): Ticket {
     email: row.creator_email ?? "",
     socialHandle: row.social_handle ?? "",
     platform: mapPlatform(row.platform),
-    issueType: mapIssueTypeFromDb(row.issue_type),
-    issueCategory: mapIssueTypeFromDb(row.issue_type),
+    issueType: issueLabel,
+    issueCategory: issueLabel,
+    requestCategory: websiteCategoryLabel(row.request_category),
+    requestCategoryKey: row.request_category?.trim() ?? "",
+    companyName: row.company_name ?? "",
+    requesterType: mapRequesterTypeLabel(row.requester_type),
+    topicOrModule: row.topic_or_module ?? "",
+    intakeDetails:
+      row.intake_details && typeof row.intake_details === "object"
+        ? row.intake_details
+        : {},
     campaignName: row.campaign_name ?? "",
     brand: row.brand_name ?? "",
     campaignMonth: formatCampaignMonthForDisplay(row.campaign_month),
@@ -234,10 +269,22 @@ export function mapFormToDbInsert(
     };
   }
 
+  const creatorPhone = normalizePhoneNumber(form.phone);
+  if (!creatorPhone) {
+    return { error: `Creator phone: ${PHONE_VALIDATION_MESSAGE}` };
+  }
+
+  const pocContact = normalizePhoneNumber(form.cloutflowPocContactNumber);
+  if (!pocContact) {
+    return {
+      error: `Cloutflow POC contact number: ${PHONE_VALIDATION_MESSAGE}`,
+    };
+  }
+
   return {
     insert: {
       creator_name: form.creatorName.trim(),
-      creator_phone: emptyToNull(form.phone),
+      creator_phone: creatorPhone,
       creator_email: emptyToNull(form.email),
       social_handle: emptyToNull(form.socialHandle),
       platform: mapPlatformToDb(form.platform),
@@ -246,7 +293,7 @@ export function mapFormToDbInsert(
       brand_name: emptyToNull(form.brand),
       campaign_month: campaignMonth,
       cloutflow_poc_name: emptyToNull(form.cloutflowPoc),
-      cloutflow_poc_contact_number: emptyToNull(form.cloutflowPocContactNumber),
+      cloutflow_poc_contact_number: pocContact,
       source_channel: "phone_call",
       status: "open",
       priority: "normal",

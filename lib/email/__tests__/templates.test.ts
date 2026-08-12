@@ -48,6 +48,11 @@ describe("ticket email display formatting", () => {
       campaign_month: "2026-08-01",
       cloutflow_poc_name: null,
       cloutflow_poc_contact_number: null,
+      request_category: null,
+      company_name: null,
+      requester_type: null,
+      topic_or_module: null,
+      intake_details: null,
       source_channel: "phone_call",
       status: "in_progress",
       priority: "normal",
@@ -82,10 +87,13 @@ describe("acknowledgement template", () => {
     const email = buildTicketAcknowledgementEmail({
       creatorName: `Riya <b>Sharma</b>`,
       ticketCode: "CF-2026-00001",
-      issueType: labels.issueType,
-      brand: "Acme",
-      campaignName: "Summer Launch",
-      campaignMonth: labels.campaignMonth,
+      enquiryCategory: labels.issueType,
+      detailRows: [
+        { label: "Issue type", value: labels.issueType },
+        { label: "Brand", value: "Acme" },
+        { label: "Campaign", value: "Summer Launch" },
+        { label: "Campaign month", value: labels.campaignMonth },
+      ],
     });
 
     expect(email.subject).toBe(
@@ -166,6 +174,11 @@ describe("acknowledgement send gates", () => {
     campaign_month: "2026-08-01",
     cloutflow_poc_name: null,
     cloutflow_poc_contact_number: null,
+    request_category: null,
+    company_name: null,
+    requester_type: null,
+    topic_or_module: null,
+    intake_details: null,
     source_channel: "phone_call",
     status: "open",
     priority: "normal",

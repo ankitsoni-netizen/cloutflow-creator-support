@@ -1,7 +1,20 @@
-import { type NextRequest } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { updateSession } from "@/lib/supabase/proxy";
 
+/**
+ * Session refresh for CRM routes. Public intake routes stay unauthenticated:
+ * - /help
+ * - /api/public/*
+ *
+ * Staff protection remains page-level via requireActiveStaff() on CRM pages.
+ */
 export async function proxy(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  if (pathname === "/help" || pathname.startsWith("/api/public/")) {
+    return NextResponse.next();
+  }
+
   return await updateSession(request);
 }
 

@@ -6,10 +6,19 @@ import {
   sanitizeEmailHeaderValue,
 } from "@/lib/email/html";
 import { sendTransactionalEmail } from "@/lib/email/send";
-import { buildTicketAcknowledgementEmail } from "@/lib/email/templates/ticket-acknowledgement";
+import {
+  buildTicketAcknowledgementEmail,
+  type TicketAcknowledgementContent,
+  type TicketAcknowledgementDetailRow,
+} from "@/lib/email/templates/ticket-acknowledgement";
 import { buildTicketReplyEmail } from "@/lib/email/templates/ticket-reply";
 import { buildTicketResolutionEmail } from "@/lib/email/templates/ticket-resolution";
 import { EmailServiceError } from "@/lib/email/types";
+import {
+  WEBSITE_REQUESTER_TYPE_LABELS,
+  websiteCategoryLabel,
+  type WebsiteRequesterType,
+} from "@/lib/public-intake/constants";
 import {
   formatCampaignMonthForDisplay,
   mapIssueTypeFromDb,
@@ -37,18 +46,85 @@ export function formatTicketEmailLabels(ticket: DbTicket) {
     // Parse YYYY-MM(-DD) as calendar parts — no Date timezone shift.
     campaignMonth: formatCampaignMonthForDisplay(ticket.campaign_month),
     ticketStatus: dbStatusToUiLabel(ticket.status),
+    enquiryCategory:
+      websiteCategoryLabel(ticket.request_category) ||
+      mapIssueTypeFromDb(ticket.issue_type) ||
+      "Support request",
   };
 }
 
-function ticketContext(ticket: DbTicket) {
+function pushDetail(
+  rows: TicketAcknowledgementDetailRow[],
+  label: string,
+  value: string | null | undefined,
+) {
+  const trimmed = value?.trim();
+  if (!trimmed) return;
+  rows.push({ label, value: trimmed });
+}
+
+/** Relevant submitted details for acknowledgement emails. */
+export function buildAcknowledgementDetailRows(
+  ticket: DbTicket,
+): TicketAcknowledgementDetailRow[] {
+  const labels = formatTicketEmailLabels(ticket);
+  const rows: TicketAcknowledgementDetailRow[] = [];
+  const category = ticket.request_category?.trim() ?? "";
+
+  if (category === "creator_support" || (!category && ticket.issue_type)) {
+    pushDetail(rows, "Issue type", labels.issueType);
+    pushDetail(rows, "Platform", ticket.platform);
+    pushDetail(rows, "Social handle", ticket.social_handle);
+    pushDetail(rows, "Brand", ticket.brand_name);
+    pushDetail(rows, "Campaign", ticket.campaign_name);
+    pushDetail(rows, "Campaign month", labels.campaignMonth);
+    pushDetail(rows, "Cloutflow POC", ticket.cloutflow_poc_name);
+  } else if (category === "track_campaign") {
+    pushDetail(rows, "Company", ticket.company_name);
+    pushDetail(rows, "Campaign name or ID", ticket.campaign_name);
+  } else if (category === "product_demo") {
+    pushDetail(rows, "Company", ticket.company_name);
+    pushDetail(rows, "Phone", ticket.creator_phone);
+  } else if (
+    category === "brand_support" ||
+    category === "reporting_analytics"
+  ) {
+    pushDetail(rows, "Company", ticket.company_name);
+  } else if (category === "payments_commercials") {
+    const requesterKey = ticket.requester_type?.toLowerCase() as
+      | WebsiteRequesterType
+      | undefined;
+    pushDetail(
+      rows,
+      "Requester type",
+      requesterKey
+        ? WEBSITE_REQUESTER_TYPE_LABELS[requesterKey] ?? ticket.requester_type
+        : ticket.requester_type,
+    );
+    pushDetail(rows, "Company", ticket.company_name);
+    pushDetail(rows, "Social handle", ticket.social_handle);
+    pushDetail(rows, "Campaign name or ID", ticket.campaign_name);
+  } else if (category === "product_documentation") {
+    pushDetail(rows, "Topic or module", ticket.topic_or_module);
+  } else {
+    pushDetail(rows, "Company", ticket.company_name);
+    pushDetail(rows, "Campaign", ticket.campaign_name);
+    pushDetail(rows, "Brand", ticket.brand_name);
+    pushDetail(rows, "Topic or module", ticket.topic_or_module);
+  }
+
+  return rows;
+}
+
+export function buildAcknowledgementEmailContent(
+  ticket: DbTicket,
+): TicketAcknowledgementContent {
   const labels = formatTicketEmailLabels(ticket);
   return {
     creatorName: ticket.creator_name,
     ticketCode: ticket.ticket_code,
-    issueType: labels.issueType,
-    brand: ticket.brand_name ?? "",
-    campaignName: ticket.campaign_name ?? "",
-    campaignMonth: labels.campaignMonth,
+    enquiryCategory: labels.enquiryCategory,
+    detailRows: buildAcknowledgementDetailRows(ticket),
   };
 }
 
@@ -77,7 +153,9 @@ export async function sendAcknowledgementForTicket(
   }
 
   try {
-    const content = buildTicketAcknowledgementEmail(ticketContext(ticket));
+    const content = buildTicketAcknowledgementEmail(
+      buildAcknowledgementEmailContent(ticket),
+    );
     await sendTransactionalEmail({
       toEmail: recipient,
       toName: sanitizeEmailHeaderValue(ticket.creator_name),
@@ -163,7 +241,7 @@ export async function sendResolutionEmail(options: {
     const content = buildTicketResolutionEmail({
       creatorName: options.ticket.creator_name,
       ticketCode: options.ticket.ticket_code,
-      issueType: labels.issueType,
+      issueType: labels.issueType || labels.enquiryCategory,
       resolutionSummary: summary,
       brand: options.ticket.brand_name ?? "",
       campaignName: options.ticket.campaign_name ?? "",

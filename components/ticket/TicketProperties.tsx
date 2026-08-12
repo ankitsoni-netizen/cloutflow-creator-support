@@ -60,6 +60,10 @@ function ReadRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function hasText(value: string | null | undefined): boolean {
+  return Boolean(value?.trim());
+}
+
 export default function TicketProperties({
   ticket,
   staffOptions,
@@ -70,6 +74,35 @@ export default function TicketProperties({
   onStatusChange,
   onAssignmentChange,
 }: TicketPropertiesProps) {
+  const isWebsite = ticket.sourceChannel === "Website";
+  const isCreatorSupport =
+    ticket.requestCategoryKey === "creator_support" ||
+    (!ticket.requestCategoryKey && Boolean(ticket.brand || ticket.campaignMonth));
+
+  const showRequesterProfile =
+    hasText(ticket.creatorName) ||
+    hasText(ticket.phone) ||
+    hasText(ticket.email) ||
+    hasText(ticket.socialHandle) ||
+    hasText(ticket.platform) ||
+    hasText(ticket.companyName) ||
+    hasText(ticket.requesterType);
+
+  const showCampaignDetails =
+    isCreatorSupport ||
+    hasText(ticket.campaignName) ||
+    hasText(ticket.brand) ||
+    hasText(ticket.campaignMonth) ||
+    hasText(ticket.cloutflowPoc) ||
+    hasText(ticket.cloutflowPocContactNumber);
+
+  const showEnquiryExtras =
+    isWebsite &&
+    (hasText(ticket.requestCategory) ||
+      hasText(ticket.companyName) ||
+      hasText(ticket.requesterType) ||
+      hasText(ticket.topicOrModule));
+
   return (
     <div className="h-full overflow-y-auto bg-surface">
       <Section title="Ticket properties">
@@ -81,7 +114,12 @@ export default function TicketProperties({
             onChange={onStatusChange}
           />
           <ReadRow label="Priority" value={ticket.priority} />
-          <ReadRow label="Issue type" value={ticket.issueType} />
+          {hasText(ticket.requestCategory) ? (
+            <ReadRow label="Enquiry category" value={ticket.requestCategory} />
+          ) : null}
+          {isCreatorSupport || !isWebsite ? (
+            <ReadRow label="Issue type" value={ticket.issueType} />
+          ) : null}
           <div className="py-2">
             <dt className="text-[11px] font-medium tracking-wide text-muted uppercase">
               Source channel
@@ -101,37 +139,88 @@ export default function TicketProperties({
         </div>
       </Section>
 
-      <Section title="Creator profile">
-        <dl className="divide-y divide-border">
-          <ReadRow label="Name" value={ticket.creatorName} />
-          <CopyField label="Phone" value={ticket.phone} />
-          <CopyField label="Email" value={ticket.email} />
-          <CopyField label="Social handle" value={ticket.socialHandle} />
-          <ReadRow label="Platform" value={ticket.platform} />
-        </dl>
-      </Section>
+      {showRequesterProfile ? (
+        <Section title={isWebsite && !isCreatorSupport ? "Requester" : "Creator profile"}>
+          <dl className="divide-y divide-border">
+            <ReadRow label="Name" value={ticket.creatorName} />
+            {hasText(ticket.requesterType) ? (
+              <ReadRow label="Requester type" value={ticket.requesterType} />
+            ) : null}
+            {hasText(ticket.companyName) ? (
+              <ReadRow label="Company" value={ticket.companyName} />
+            ) : null}
+            {hasText(ticket.phone) ? (
+              <CopyField label="Phone" value={ticket.phone} />
+            ) : null}
+            {hasText(ticket.email) ? (
+              <CopyField label="Email" value={ticket.email} />
+            ) : null}
+            {hasText(ticket.socialHandle) ? (
+              <CopyField label="Social handle" value={ticket.socialHandle} />
+            ) : null}
+            {hasText(ticket.platform) ? (
+              <ReadRow label="Platform" value={ticket.platform} />
+            ) : null}
+          </dl>
+        </Section>
+      ) : null}
 
-      <Section title="Campaign details">
-        <dl className="divide-y divide-border">
-          <ReadRow
-            label="Campaign"
-            value={displayOrFallback(ticket.campaignName)}
-          />
-          <ReadRow label="Brand" value={displayOrFallback(ticket.brand)} />
-          <ReadRow
-            label="Campaign month"
-            value={displayOrFallback(ticket.campaignMonth)}
-          />
-          <ReadRow
-            label="Cloutflow POC"
-            value={displayOrFallback(ticket.cloutflowPoc)}
-          />
-          <CopyField
-            label="POC contact number"
-            value={ticket.cloutflowPocContactNumber}
-          />
-        </dl>
-      </Section>
+      {showEnquiryExtras && !isCreatorSupport ? (
+        <Section title="Website enquiry details" defaultOpen>
+          <dl className="divide-y divide-border">
+            <ReadRow label="Enquiry category" value={ticket.requestCategory} />
+            {hasText(ticket.companyName) ? (
+              <ReadRow label="Company" value={ticket.companyName} />
+            ) : null}
+            {hasText(ticket.requesterType) ? (
+              <ReadRow label="Requester type" value={ticket.requesterType} />
+            ) : null}
+            {hasText(ticket.topicOrModule) ? (
+              <ReadRow label="Topic or module" value={ticket.topicOrModule} />
+            ) : null}
+            {hasText(ticket.campaignName) ? (
+              <ReadRow
+                label="Campaign name or ID"
+                value={ticket.campaignName}
+              />
+            ) : null}
+          </dl>
+        </Section>
+      ) : null}
+
+      {showCampaignDetails ? (
+        <Section title="Campaign details">
+          <dl className="divide-y divide-border">
+            {hasText(ticket.campaignName) ? (
+              <ReadRow label="Campaign" value={ticket.campaignName} />
+            ) : null}
+            {hasText(ticket.brand) ? (
+              <ReadRow label="Brand" value={ticket.brand} />
+            ) : null}
+            {hasText(ticket.campaignMonth) ? (
+              <ReadRow label="Campaign month" value={ticket.campaignMonth} />
+            ) : null}
+            {hasText(ticket.cloutflowPoc) ? (
+              <ReadRow label="Cloutflow POC" value={ticket.cloutflowPoc} />
+            ) : null}
+            {hasText(ticket.cloutflowPocContactNumber) ? (
+              <CopyField
+                label="POC contact number"
+                value={ticket.cloutflowPocContactNumber}
+              />
+            ) : null}
+            {!hasText(ticket.campaignName) &&
+            !hasText(ticket.brand) &&
+            !hasText(ticket.campaignMonth) &&
+            !hasText(ticket.cloutflowPoc) &&
+            !hasText(ticket.cloutflowPocContactNumber) ? (
+              <p className="py-2 text-sm text-muted">
+                No campaign details on this ticket.
+              </p>
+            ) : null}
+          </dl>
+        </Section>
+      ) : null}
 
       <Section title="Assignment">
         <div className="space-y-3">

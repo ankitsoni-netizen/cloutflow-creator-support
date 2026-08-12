@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import PhoneInput from "@/components/ui/PhoneInput";
 import { ISSUE_TYPES } from "@/lib/ticket-constants";
+import { PHONE_VALIDATION_MESSAGE, isValidPhoneNumber } from "@/lib/phone";
 import type { NewTicketFormData, Platform } from "@/lib/types";
 import type { StaffOption } from "@/lib/tickets/workflow-types";
 
@@ -25,7 +27,11 @@ function validate(form: NewTicketFormData): FormErrors {
 
   if (!form.issueType) errors.issueType = "Issue type is required.";
   if (!form.creatorName.trim()) errors.creatorName = "Creator name is required.";
-  if (!form.phone.trim()) errors.phone = "Phone number is required.";
+  if (!form.phone.trim()) {
+    errors.phone = "Phone number is required.";
+  } else if (!isValidPhoneNumber(form.phone)) {
+    errors.phone = PHONE_VALIDATION_MESSAGE;
+  }
   if (!form.email.trim()) {
     errors.email = "Email address is required.";
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
@@ -47,6 +53,8 @@ function validate(form: NewTicketFormData): FormErrors {
   if (!form.cloutflowPocContactNumber.trim()) {
     errors.cloutflowPocContactNumber =
       "Cloutflow POC contact number is required.";
+  } else if (!isValidPhoneNumber(form.cloutflowPocContactNumber)) {
+    errors.cloutflowPocContactNumber = PHONE_VALIDATION_MESSAGE;
   }
   if (!form.issueDescription.trim()) {
     errors.issueDescription = "Issue description is required.";
@@ -259,12 +267,12 @@ function NewTicketModalForm({
                     />
                   </Field>
                   <Field label="Phone" required error={errors.phone}>
-                    <input
-                      type="tel"
+                    <PhoneInput
                       value={form.phone}
-                      onChange={(e) => updateField("phone", e.target.value)}
-                      className={fieldInputClass}
-                      placeholder="+91 XXXXX XXXXX"
+                      onChange={(value) => updateField("phone", value)}
+                      invalid={Boolean(errors.phone)}
+                      inputClassName={fieldInputClass}
+                      selectClassName="w-[7.5rem] shrink-0 rounded-md border border-border bg-surface px-2 py-2 text-sm text-foreground outline-none transition focus:border-accent disabled:opacity-70"
                     />
                   </Field>
                   <Field label="Email" required error={errors.email}>
@@ -374,14 +382,14 @@ function NewTicketModalForm({
                     required
                     error={errors.cloutflowPocContactNumber}
                   >
-                    <input
-                      type="tel"
+                    <PhoneInput
                       value={form.cloutflowPocContactNumber}
-                      onChange={(e) =>
-                        updateField("cloutflowPocContactNumber", e.target.value)
+                      onChange={(value) =>
+                        updateField("cloutflowPocContactNumber", value)
                       }
-                      className={fieldInputClass}
-                      placeholder="+91 XXXXX XXXXX"
+                      invalid={Boolean(errors.cloutflowPocContactNumber)}
+                      inputClassName={fieldInputClass}
+                      selectClassName="w-[7.5rem] shrink-0 rounded-md border border-border bg-surface px-2 py-2 text-sm text-foreground outline-none transition focus:border-accent disabled:opacity-70"
                     />
                   </Field>
                   <Field

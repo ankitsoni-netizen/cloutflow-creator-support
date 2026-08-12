@@ -61,9 +61,17 @@ export interface Ticket {
   phone: string;
   email: string;
   socialHandle: string;
-  platform: Platform;
+  /** Empty when the enquiry has no social platform (general website forms). */
+  platform: Platform | "";
   issueType: string;
   issueCategory: string;
+  /** Website enquiry category label when source is Website. */
+  requestCategory: string;
+  requestCategoryKey: string;
+  companyName: string;
+  requesterType: string;
+  topicOrModule: string;
+  intakeDetails: Record<string, unknown>;
   campaignName: string;
   brand: string;
   campaignMonth: string;

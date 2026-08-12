@@ -4,13 +4,17 @@ import {
   renderEmailLayout,
 } from "@/lib/email/templates/layout";
 
+export interface TicketAcknowledgementDetailRow {
+  label: string;
+  value: string;
+}
+
 export interface TicketAcknowledgementContent {
   creatorName: string;
   ticketCode: string;
-  issueType: string;
-  brand: string;
-  campaignName: string;
-  campaignMonth: string;
+  /** Readable enquiry category or legacy issue type headline. */
+  enquiryCategory: string;
+  detailRows: TicketAcknowledgementDetailRow[];
 }
 
 export function buildTicketAcknowledgementEmail(
@@ -18,10 +22,17 @@ export function buildTicketAcknowledgementEmail(
 ): { subject: string; html: string; text: string } {
   const creatorName = displayOrDash(input.creatorName);
   const ticketCode = displayOrDash(input.ticketCode);
-  const issueType = displayOrDash(input.issueType);
-  const brand = displayOrDash(input.brand);
-  const campaignName = displayOrDash(input.campaignName);
-  const campaignMonth = displayOrDash(input.campaignMonth);
+  const enquiryCategory = displayOrDash(input.enquiryCategory);
+  const detailRows = [
+    { label: "Ticket code", value: ticketCode },
+    { label: "Enquiry category", value: enquiryCategory },
+    ...input.detailRows
+      .map((row) => ({
+        label: row.label.trim(),
+        value: row.value.trim(),
+      }))
+      .filter((row) => row.label && row.value),
+  ];
 
   const subject = `We've received your request — ${ticketCode}`;
 
@@ -31,13 +42,7 @@ export function buildTicketAcknowledgementEmail(
       Cloutflow Creator Support has logged your request. Our team will review it
       and follow up as soon as possible.
     </p>
-    ${renderDetailRows([
-      { label: "Ticket code", value: ticketCode },
-      { label: "Issue type", value: issueType },
-      { label: "Brand", value: brand },
-      { label: "Campaign", value: campaignName },
-      { label: "Campaign month", value: campaignMonth },
-    ])}
+    ${renderDetailRows(detailRows)}
     <p style="margin:16px 0 0;">
       Please keep ticket code <strong>${escapeHtml(ticketCode)}</strong> for
       future communication about this request.
@@ -48,11 +53,7 @@ export function buildTicketAcknowledgementEmail(
     "",
     "Cloutflow Creator Support has logged your request. Our team will review it and follow up as soon as possible.",
     "",
-    `Ticket code: ${ticketCode}`,
-    `Issue type: ${issueType}`,
-    `Brand: ${brand}`,
-    `Campaign: ${campaignName}`,
-    `Campaign month: ${campaignMonth}`,
+    ...detailRows.map((row) => `${row.label}: ${row.value}`),
     "",
     `Please keep ticket code ${ticketCode} for future communication about this request.`,
     "",

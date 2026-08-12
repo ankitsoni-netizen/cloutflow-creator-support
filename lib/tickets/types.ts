@@ -8,6 +8,17 @@ export type DbSourceChannel =
   | "email";
 export type DbPlatform = "instagram" | "youtube";
 
+export type DbRequestCategory =
+  | "creator_support"
+  | "track_campaign"
+  | "product_demo"
+  | "brand_support"
+  | "reporting_analytics"
+  | "payments_commercials"
+  | "product_documentation";
+
+export type DbRequesterType = "brand" | "creator" | "agency";
+
 export interface DbTicket {
   id: string;
   ticket_code: string;
@@ -16,12 +27,18 @@ export interface DbTicket {
   creator_email: string | null;
   social_handle: string | null;
   platform: string | null;
-  issue_type: string;
+  /** Creator-support issue taxonomy; null for general website enquiries. */
+  issue_type: string | null;
   campaign_name: string | null;
   brand_name: string | null;
   campaign_month: string | null;
   cloutflow_poc_name: string | null;
   cloutflow_poc_contact_number: string | null;
+  request_category: string | null;
+  company_name: string | null;
+  requester_type: string | null;
+  topic_or_module: string | null;
+  intake_details: Record<string, unknown> | null;
   source_channel: string;
   status: string;
   priority: string;
@@ -46,14 +63,19 @@ export type DbTicketInsert = {
   creator_phone: string | null;
   creator_email: string | null;
   social_handle: string | null;
-  platform: DbPlatform;
-  issue_type: string;
+  platform: DbPlatform | null;
+  issue_type: string | null;
   campaign_name: string | null;
   brand_name: string | null;
   campaign_month: string | null;
   cloutflow_poc_name: string | null;
   cloutflow_poc_contact_number: string | null;
-  source_channel: "phone_call";
+  request_category?: DbRequestCategory | null;
+  company_name?: string | null;
+  requester_type?: DbRequesterType | null;
+  topic_or_module?: string | null;
+  intake_details?: Record<string, unknown> | null;
+  source_channel: Extract<DbSourceChannel, "phone_call" | "website">;
   status: "open";
   priority: "normal";
   assigned_team: string | null;
