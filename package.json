@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "email:test": "node scripts/test-brevo-email.mjs"
+    "email:test": "node scripts/test-brevo-email.mjs",
+    "whatsapp:test": "node scripts/test-whatsapp-intake.mjs"
   },
   "dependencies": {
     "@next/env": "^16.3.0",

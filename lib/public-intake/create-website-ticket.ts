@@ -4,6 +4,7 @@ import {
   sendAcknowledgementForTicket,
   sendInternalSupportNotificationForTicket,
 } from "@/lib/email/ticket-mail";
+import type { IntakeSourceChannel } from "@/lib/public-intake/constants";
 import type { ValidatedWebsiteTicketInput } from "@/lib/public-intake/validate";
 import { mapWebsiteFormToDbInsert } from "@/lib/public-intake/map";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -28,10 +29,12 @@ export type PublicWebsiteTicketResult =
   | PublicWebsiteTicketSuccess
   | PublicWebsiteTicketFailure;
 
-type CreateDeps = {
+export type CreateWebsiteTicketDeps = {
   supabase?: SupabaseClient;
   sendAcknowledgement?: typeof sendAcknowledgementForTicket;
   sendInternalNotification?: typeof sendInternalSupportNotificationForTicket;
+  /** Defaults to "website". WhatsApp intake passes "whatsapp". */
+  sourceChannel?: IntakeSourceChannel;
 };
 
 function safePublicMessage(acknowledgementSent: boolean): string {
@@ -58,12 +61,12 @@ function logInternalNotificationFailure(
  */
 export async function createWebsiteTicketFromValidatedInput(
   input: ValidatedWebsiteTicketInput,
-  deps: CreateDeps = {},
+  deps: CreateWebsiteTicketDeps = {},
 ): Promise<
   | { ok: true; response: PublicWebsiteTicketSuccess }
   | { ok: false; status: number; response: PublicWebsiteTicketFailure }
 > {
-  const mapped = mapWebsiteFormToDbInsert(input);
+  const mapped = mapWebsiteFormToDbInsert(input, deps.sourceChannel);
   if ("error" in mapped) {
     return {
       ok: false,

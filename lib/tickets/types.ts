@@ -75,7 +75,10 @@ export type DbTicketInsert = {
   requester_type?: DbRequesterType | null;
   topic_or_module?: string | null;
   intake_details?: Record<string, unknown> | null;
-  source_channel: Extract<DbSourceChannel, "phone_call" | "website">;
+  source_channel: Extract<
+    DbSourceChannel,
+    "phone_call" | "website" | "whatsapp"
+  >;
   status: "open";
   priority: "normal";
   assigned_team: string | null;

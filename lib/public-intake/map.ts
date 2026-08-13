@@ -4,6 +4,7 @@ import {
   WEBSITE_PLATFORM_TO_DB,
   WEBSITE_REQUESTER_TYPE_LABELS,
   WEBSITE_TICKET_TRUSTED_DEFAULTS,
+  type IntakeSourceChannel,
 } from "@/lib/public-intake/constants";
 import type { ValidatedWebsiteTicketInput } from "@/lib/public-intake/validate";
 import { parseCampaignMonthForDb } from "@/lib/tickets/map";
@@ -14,7 +15,7 @@ import type {
 } from "@/lib/tickets/types";
 
 export type WebsiteTicketInsert = Omit<DbTicketInsert, "source_channel"> & {
-  source_channel: "website";
+  source_channel: IntakeSourceChannel;
   request_category: DbRequestCategory;
   company_name: string | null;
   requester_type: DbRequesterType | null;
@@ -22,9 +23,11 @@ export type WebsiteTicketInsert = Omit<DbTicketInsert, "source_channel"> & {
   intake_details: Record<string, unknown>;
 };
 
-function baseTrustedFields() {
+function baseTrustedFields(
+  sourceChannel: IntakeSourceChannel = WEBSITE_TICKET_TRUSTED_DEFAULTS.source_channel,
+) {
   return {
-    source_channel: WEBSITE_TICKET_TRUSTED_DEFAULTS.source_channel,
+    source_channel: sourceChannel,
     status: WEBSITE_TICKET_TRUSTED_DEFAULTS.status,
     priority: WEBSITE_TICKET_TRUSTED_DEFAULTS.priority,
     assigned_team: WEBSITE_TICKET_TRUSTED_DEFAULTS.assigned_team,
@@ -40,11 +43,13 @@ function baseTrustedFields() {
  * Maps a validated public website form payload to a tickets insert row.
  * Workflow fields are hardcoded server-side and never taken from the browser.
  * Missing campaign fields stay null — never filled with fake placeholders.
+ * `sourceChannel` defaults to "website"; WhatsApp intake passes "whatsapp".
  */
 export function mapWebsiteFormToDbInsert(
   input: ValidatedWebsiteTicketInput,
+  sourceChannel: IntakeSourceChannel = WEBSITE_TICKET_TRUSTED_DEFAULTS.source_channel,
 ): { insert: WebsiteTicketInsert } | { error: string } {
-  const trusted = baseTrustedFields();
+  const trusted = baseTrustedFields(sourceChannel);
 
   if (input.category === "creator_support") {
     const campaignMonth = parseCampaignMonthForDb(input.campaignMonth);

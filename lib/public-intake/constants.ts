@@ -71,6 +71,31 @@ export const WEBSITE_ISSUE_TYPE_TO_DB: Record<WebsiteIssueTypeLabel, string> = {
   Other: "other",
 };
 
+/**
+ * Case-insensitive aliases for creator_support issueType.
+ * Canonical website labels stay valid; WhatsApp can send short / snake_case values.
+ */
+export const WEBSITE_ISSUE_TYPE_ALIASES: Record<string, WebsiteIssueTypeLabel> = {
+  "payment delayed / not received": "Payment Delayed / Not Received",
+  "payment delayed": "Payment Delayed / Not Received",
+  payment_delayed: "Payment Delayed / Not Received",
+  "tds query": "TDS Query",
+  tds_query: "TDS Query",
+  "gst query": "GST Query",
+  gst_query: "GST Query",
+  "poc / conduct concern": "POC / Conduct Concern",
+  poc_conduct_concern: "POC / Conduct Concern",
+  other: "Other",
+};
+
+export function normalizeWebsiteIssueType(
+  value: string | null | undefined,
+): WebsiteIssueTypeLabel | null {
+  if (!value) return null;
+  const key = value.trim().toLowerCase();
+  return WEBSITE_ISSUE_TYPE_ALIASES[key] ?? null;
+}
+
 export const WEBSITE_PLATFORMS = ["Instagram", "YouTube"] as const;
 export type WebsitePlatformLabel = (typeof WEBSITE_PLATFORMS)[number];
 
@@ -81,6 +106,24 @@ export const WEBSITE_PLATFORM_TO_DB: Record<
   Instagram: "instagram",
   YouTube: "youtube",
 };
+
+/** Case-insensitive aliases for creator_support platform. */
+export const WEBSITE_PLATFORM_ALIASES: Record<string, WebsitePlatformLabel> = {
+  instagram: "Instagram",
+  youtube: "YouTube",
+};
+
+export function normalizeWebsitePlatform(
+  value: string | null | undefined,
+): WebsitePlatformLabel | null {
+  if (!value) return null;
+  const key = value.trim().toLowerCase();
+  return WEBSITE_PLATFORM_ALIASES[key] ?? null;
+}
+
+/** Trusted server-side intake source channels — never accept these from the client. */
+export const INTAKE_SOURCE_CHANNELS = ["website", "whatsapp"] as const;
+export type IntakeSourceChannel = (typeof INTAKE_SOURCE_CHANNELS)[number];
 
 /** Trusted server-side defaults — never accept these from the browser. */
 export const WEBSITE_TICKET_TRUSTED_DEFAULTS = {

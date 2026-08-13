@@ -8,6 +8,12 @@ import {
   createWebsiteTicketFromValidatedInput,
   toPublicWebsiteTicketResponse,
 } from "@/lib/public-intake/create-website-ticket";
+import {
+  normalizeWebsiteIssueType,
+  normalizeWebsitePlatform,
+  WEBSITE_ISSUE_TYPES,
+  WEBSITE_PLATFORMS,
+} from "@/lib/public-intake/constants";
 import { mapWebsiteFormToDbInsert } from "@/lib/public-intake/map";
 import { validateWebsiteTicketBody } from "@/lib/public-intake/validate";
 import {
@@ -243,6 +249,26 @@ describe("website intake validation by category", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("rejects unknown issueType with the existing error", () => {
+    const result = validateWebsiteTicketBody({
+      ...creatorSupportBody,
+      issueType: "not-a-real-issue",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("Select a valid issue type.");
+  });
+
+  it("rejects unknown platform with the existing error", () => {
+    const result = validateWebsiteTicketBody({
+      ...creatorSupportBody,
+      platform: "TikTok",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("Platform must be Instagram or YouTube.");
+  });
+
   it("rejects honeypot submissions from either honeypot field", () => {
     expect(
       validateWebsiteTicketBody({
@@ -260,6 +286,108 @@ describe("website intake validation by category", () => {
         website: "bot",
       }).ok,
     ).toBe(false);
+  });
+});
+
+describe("creator_support issueType and platform aliases", () => {
+  const issueTypeAliases: Array<[string, (typeof WEBSITE_ISSUE_TYPES)[number]]> =
+    [
+      ["Payment delayed", "Payment Delayed / Not Received"],
+      ["payment_delayed", "Payment Delayed / Not Received"],
+      ["TDS query", "TDS Query"],
+      ["tds_query", "TDS Query"],
+      ["GST query", "GST Query"],
+      ["gst_query", "GST Query"],
+      ["POC / conduct concern", "POC / Conduct Concern"],
+      ["poc_conduct_concern", "POC / Conduct Concern"],
+      ["Other", "Other"],
+      ["other", "Other"],
+    ];
+
+  it.each(issueTypeAliases)(
+    "maps issueType alias %s to %s",
+    (alias, canonical) => {
+      expect(normalizeWebsiteIssueType(alias)).toBe(canonical);
+      expect(normalizeWebsiteIssueType(alias.toUpperCase())).toBe(canonical);
+      expect(normalizeWebsiteIssueType(` ${alias} `)).toBe(canonical);
+
+      const result = validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        issueType: alias,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      if (result.value.category !== "creator_support") return;
+      expect(result.value.issueType).toBe(canonical);
+    },
+  );
+
+  it.each([...WEBSITE_ISSUE_TYPES])(
+    "still accepts the exact issueType label %s",
+    (label) => {
+      expect(normalizeWebsiteIssueType(label)).toBe(label);
+
+      const result = validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        issueType: label,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      if (result.value.category !== "creator_support") return;
+      expect(result.value.issueType).toBe(label);
+    },
+  );
+
+  it("returns null for an unknown issueType", () => {
+    expect(normalizeWebsiteIssueType("not-a-real-issue")).toBeNull();
+    expect(normalizeWebsiteIssueType("")).toBeNull();
+    expect(normalizeWebsiteIssueType(null)).toBeNull();
+  });
+
+  const platformAliases: Array<[string, (typeof WEBSITE_PLATFORMS)[number]]> = [
+    ["instagram", "Instagram"],
+    ["INSTAGRAM", "Instagram"],
+    ["youtube", "YouTube"],
+    ["YOUTUBE", "YouTube"],
+    ["YouTube", "YouTube"],
+  ];
+
+  it.each(platformAliases)(
+    "maps platform alias %s to %s",
+    (alias, canonical) => {
+      expect(normalizeWebsitePlatform(alias)).toBe(canonical);
+
+      const result = validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        platform: alias,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      if (result.value.category !== "creator_support") return;
+      expect(result.value.platform).toBe(canonical);
+    },
+  );
+
+  it.each([...WEBSITE_PLATFORMS])(
+    "still accepts the exact platform label %s",
+    (label) => {
+      expect(normalizeWebsitePlatform(label)).toBe(label);
+
+      const result = validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        platform: label,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      if (result.value.category !== "creator_support") return;
+      expect(result.value.platform).toBe(label);
+    },
+  );
+
+  it("returns null for an unknown platform", () => {
+    expect(normalizeWebsitePlatform("TikTok")).toBeNull();
+    expect(normalizeWebsitePlatform("")).toBeNull();
+    expect(normalizeWebsitePlatform(null)).toBeNull();
   });
 });
 

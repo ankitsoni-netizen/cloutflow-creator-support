@@ -6,10 +6,10 @@ import {
 import {
   WEBSITE_FIELD_LIMITS,
   WEBSITE_HONEYPOT_FIELDS,
-  WEBSITE_ISSUE_TYPES,
-  WEBSITE_PLATFORMS,
   WEBSITE_REQUESTER_TYPES,
   normalizeWebsiteCategory,
+  normalizeWebsiteIssueType,
+  normalizeWebsitePlatform,
   type WebsiteIssueTypeLabel,
   type WebsitePlatformLabel,
   type WebsiteRequestCategory,
@@ -184,11 +184,8 @@ function validateCreatorSupport(
     return { ok: false, status: 400, error: socialHandle.error };
   }
 
-  const platformRaw = asTrimmedString(raw.platform);
-  if (
-    !platformRaw ||
-    !WEBSITE_PLATFORMS.includes(platformRaw as WebsitePlatformLabel)
-  ) {
+  const platform = normalizeWebsitePlatform(asTrimmedString(raw.platform));
+  if (!platform) {
     return {
       ok: false,
       status: 400,
@@ -196,11 +193,8 @@ function validateCreatorSupport(
     };
   }
 
-  const issueTypeRaw = asTrimmedString(raw.issueType);
-  if (
-    !issueTypeRaw ||
-    !WEBSITE_ISSUE_TYPES.includes(issueTypeRaw as WebsiteIssueTypeLabel)
-  ) {
+  const issueType = normalizeWebsiteIssueType(asTrimmedString(raw.issueType));
+  if (!issueType) {
     return {
       ok: false,
       status: 400,
@@ -257,8 +251,8 @@ function validateCreatorSupport(
       category: "creator_support",
       phone: phone.value,
       socialHandle: socialHandle.value,
-      platform: platformRaw as WebsitePlatformLabel,
-      issueType: issueTypeRaw as WebsiteIssueTypeLabel,
+      platform,
+      issueType,
       campaignName: campaignName.value,
       brandName: brandName.value,
       campaignMonth: campaignMonth.value,
