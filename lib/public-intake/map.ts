@@ -78,7 +78,7 @@ export function mapWebsiteFormToDbInsert(
           platform: input.platform,
           issueType: input.issueType,
         },
-        issue_description: input.message,
+        issue_description: input.message || null,
         ...trusted,
       },
     };

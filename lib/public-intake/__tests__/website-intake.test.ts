@@ -20,8 +20,13 @@ import type { ValidatedWebsiteTicketInput } from "@/lib/public-intake/validate";
 import {
   buildAcknowledgementDetailRows,
   buildAcknowledgementEmailContent,
+  buildInternalNotificationDetailRows,
+  buildInternalNotificationEmailContent,
+  sendInternalSupportNotificationForTicket,
 } from "@/lib/email/ticket-mail";
 import { buildTicketAcknowledgementEmail } from "@/lib/email/templates/ticket-acknowledgement";
+import { buildWebsiteInternalNotificationEmail } from "@/lib/email/templates/website-internal-notification";
+import { formatDateTime } from "@/lib/utils";
 
 const creatorSupportBody = {
   category: "creator_support",
@@ -88,6 +93,29 @@ describe("website intake validation by category", () => {
     if (!result.ok) return;
     expect(result.value.category).toBe("creator_support");
     expect(result.value.email).toBe("riya@example.com");
+  });
+
+  it("accepts creator_support without optional message and POC fields", () => {
+    const result = validateWebsiteTicketBody({
+      ticketType: "creator-support",
+      name: "Riya Sharma",
+      email: "riya@example.com",
+      phone: "+919876543210",
+      socialHandle: "@riya",
+      platform: "Instagram",
+      issueType: "Other",
+      campaignName: "Summer Launch",
+      brandName: "Acme",
+      campaignMonth: "August 2026",
+      website: "",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.category).toBe("creator_support");
+    if (result.value.category !== "creator_support") return;
+    expect(result.value.message).toBe("");
+    expect(result.value.cloutflowPocName).toBeNull();
+    expect(result.value.cloutflowPocContactNumber).toBeNull();
   });
 
   it("accepts kebab-case ticketType aliases from cloutflow.com/help", () => {
@@ -376,6 +404,7 @@ describe("website intake create + acknowledgement", () => {
         outcome: "failed",
         error: "SMTP exploded with credentials",
       }),
+      sendInternalNotification: async () => ({ outcome: "sent" }),
     });
 
     expect(result.ok).toBe(true);
@@ -418,5 +447,185 @@ describe("website intake create + acknowledgement", () => {
     const rows = buildAcknowledgementDetailRows(sampleTicket());
     expect(rows.some((row) => row.label === "Issue type")).toBe(true);
     expect(rows.some((row) => row.label === "Campaign month")).toBe(true);
+  });
+
+  it("still attempts internal notification when acknowledgement fails", async () => {
+    const created = sampleTicket();
+    const updateEq = vi.fn(async () => ({ error: null }));
+    const supabase = {
+      from: vi.fn(() => ({
+        insert: vi.fn(() => ({
+          select: vi.fn(() => ({
+            single: vi.fn(async () => ({ data: created, error: null })),
+          })),
+        })),
+        update: vi.fn(() => ({
+          eq: updateEq,
+        })),
+      })),
+    };
+    const sendInternalNotification = vi.fn(async () => ({ outcome: "sent" as const }));
+
+    const result = await createWebsiteTicketFromValidatedInput(input, {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      supabase: supabase as any,
+      sendAcknowledgement: async () => ({
+        outcome: "failed",
+        error: "SMTP exploded with credentials",
+      }),
+      sendInternalNotification,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.response.acknowledgementSent).toBe(false);
+    expect(sendInternalNotification).toHaveBeenCalledTimes(1);
+    expect(sendInternalNotification).toHaveBeenCalledWith(created);
+    expect(updateEq).not.toHaveBeenCalled();
+    expect(JSON.stringify(result.response)).not.toMatch(/SMTP|credentials/i);
+  });
+});
+
+describe("website intake internal support notification", () => {
+  it("builds creator-support internal notification with readable labels", () => {
+    const ticket = sampleTicket({ ticket_code: "CF-2026-00005" });
+    const content = buildInternalNotificationEmailContent(ticket);
+    const email = buildWebsiteInternalNotificationEmail(content);
+
+    expect(content.enquiryCategory).toBe("Creator support");
+    expect(email.subject).toBe(
+      "New website enquiry [CF-2026-00005] — Creator Support — Riya Sharma",
+    );
+    expect(email.html).toContain("Creator support");
+    expect(email.html).toContain("Payment Delayed");
+    expect(email.html).toContain("Instagram");
+    expect(email.html).toContain("August 2026");
+    expect(email.html).toContain("Website");
+    expect(email.html).toContain(formatDateTime(ticket.created_at));
+    expect(email.html).toContain("Payment pending");
+    expect(email.html).not.toContain("creator_support");
+    expect(email.html).not.toContain("payment_delayed");
+    expect(email.html).not.toContain("instagram");
+    expect(email.text).toContain("Issue type: Payment Delayed");
+    expect(email.text).toContain("Source channel: Website");
+
+    const rows = buildInternalNotificationDetailRows(ticket);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { label: "Email", value: "riya@example.com" },
+        { label: "Phone", value: "+919876543210" },
+        { label: "Social handle", value: "@riya" },
+        { label: "Platform", value: "Instagram" },
+        { label: "Issue type", value: "Payment Delayed" },
+        { label: "Brand", value: "Acme" },
+        { label: "Campaign name / ID", value: "Summer Launch" },
+        { label: "Campaign month", value: "August 2026" },
+        { label: "Cloutflow POC", value: "Priya Sharma" },
+        { label: "Cloutflow POC contact", value: "+919876543210" },
+        { label: "Source channel", value: "Website" },
+        { label: "Created", value: formatDateTime(ticket.created_at) },
+      ]),
+    );
+  });
+
+  it("omits nullable campaign fields for general website categories", () => {
+    const ticket = sampleTicket({
+      issue_type: null,
+      platform: null,
+      brand_name: null,
+      campaign_month: null,
+      campaign_name: null,
+      social_handle: null,
+      creator_phone: null,
+      cloutflow_poc_name: null,
+      cloutflow_poc_contact_number: null,
+      request_category: "brand_support",
+      company_name: "Acme Brands",
+      issue_description: "Need account help",
+    });
+
+    const content = buildInternalNotificationEmailContent(ticket);
+    const email = buildWebsiteInternalNotificationEmail(content);
+    const rowLabels = content.detailRows.map((row) => row.label);
+
+    expect(content.enquiryCategory).toBe("Brand support");
+    expect(rowLabels).toContain("Company");
+    expect(rowLabels).toContain("Email");
+    expect(rowLabels).toContain("Source channel");
+    expect(rowLabels).toContain("Created");
+    expect(rowLabels).not.toContain("Campaign name / ID");
+    expect(rowLabels).not.toContain("Campaign month");
+    expect(rowLabels).not.toContain("Platform");
+    expect(rowLabels).not.toContain("Issue type");
+    expect(rowLabels).not.toContain("Social handle");
+    expect(rowLabels).not.toContain("Phone");
+    expect(email.html).toContain("Acme Brands");
+    expect(email.html).toContain("Need account help");
+    expect(email.html).not.toContain("creator_support");
+    expect(email.html).not.toContain("brand_support");
+  });
+
+  it("escapes HTML in the internal notification template", () => {
+    const email = buildWebsiteInternalNotificationEmail({
+      ticketCode: "CF-2026-00005",
+      deskLabel: "Creator Support",
+      requesterName: `Riya <img src=x onerror=alert(1)>`,
+      enquiryCategory: `Creator <b>support</b>`,
+      detailRows: [
+        { label: "Email", value: `riya+"@example.com` },
+        { label: "Brand", value: `Acme <script>alert(1)</script>` },
+      ],
+      enquiryMessage: `Please help <script>alert("x")</script> & more`,
+    });
+
+    expect(email.html).toContain("Riya &lt;img src=x onerror=alert(1)&gt;");
+    expect(email.html).toContain("Creator &lt;b&gt;support&lt;/b&gt;");
+    expect(email.html).toContain("Acme &lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(email.html).toContain(
+      "Please help &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; more",
+    );
+    expect(email.html).not.toContain("<script>alert");
+    expect(email.html).not.toContain("<b>support</b>");
+    expect(email.html).not.toContain("<img src=x");
+  });
+
+  it("sets Reply-To to the requester email for the support inbox", async () => {
+    const ticket = sampleTicket({ creator_email: "riya@example.com" });
+    const sendEmail = vi.fn(async () => ({
+      messageId: "msg-1",
+      accepted: ["help@cloutflow.com"],
+      rejected: [],
+      status: "accepted_by_brevo" as const,
+    }));
+
+    const result = await sendInternalSupportNotificationForTicket(ticket, {
+      getSupportInboxEmail: () => "help@cloutflow.com",
+      isEmailConfigured: () => true,
+      sendEmail,
+    });
+
+    expect(result.outcome).toBe("sent");
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toEmail: "help@cloutflow.com",
+        replyTo: "riya@example.com",
+        subject:
+          "New website enquiry [CF-2026-00042] — Creator Support — Riya Sharma",
+      }),
+    );
+  });
+
+  it("fails safely when SUPPORT_INBOX_EMAIL is missing without sending mail", async () => {
+    const sendEmail = vi.fn();
+    const result = await sendInternalSupportNotificationForTicket(sampleTicket(), {
+      getSupportInboxEmail: () => undefined,
+      isEmailConfigured: () => true,
+      sendEmail,
+    });
+
+    expect(result.outcome).toBe("failed");
+    expect(result.error).toBe("Support inbox email is not configured.");
+    expect(sendEmail).not.toHaveBeenCalled();
   });
 });

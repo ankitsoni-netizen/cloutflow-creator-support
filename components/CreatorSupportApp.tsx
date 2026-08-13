@@ -158,6 +158,16 @@ export default function CreatorSupportApp({
     setStaffDirectory(result.data);
   }, []);
 
+  const refreshStaffOptions = useCallback(async () => {
+    const result = await fetchActiveStaffOptions();
+    if ("data" in result) setStaffOptions(result.data);
+  }, []);
+
+  const handleStaffChanged = useCallback(() => {
+    void refreshStaffDirectory();
+    void refreshStaffOptions();
+  }, [refreshStaffDirectory, refreshStaffOptions]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -230,9 +240,6 @@ export default function CreatorSupportApp({
 
   function handleTicketResolved(updated: Ticket) {
     handleTicketUpdated(updated);
-    setSelectedId(updated.id);
-    setActiveNav("resolved");
-    setInboxView("resolved");
     setMobileDetailOpen(true);
     showSuccess(`Ticket ${updated.ticketNumber} marked as resolved.`);
   }
@@ -540,8 +547,10 @@ export default function CreatorSupportApp({
               onRetry={() => {
                 void refreshStaffDirectory();
               }}
+              onStaffChanged={handleStaffChanged}
               onOpenInbox={() => handleNavigate("inbox")}
               currentRole={staffProfile.role}
+              currentUserId={staffProfile.user_id}
             />
           ) : null}
 

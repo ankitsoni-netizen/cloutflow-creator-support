@@ -36,8 +36,8 @@ export type ValidatedCreatorSupportInput = CommonValidated & {
   campaignName: string;
   brandName: string;
   campaignMonth: string;
-  cloutflowPocName: string;
-  cloutflowPocContactNumber: string;
+  cloutflowPocName: string | null;
+  cloutflowPocContactNumber: string | null;
 };
 
 export type ValidatedTrackCampaignInput = CommonValidated & {
@@ -233,7 +233,7 @@ function validateCreatorSupport(
     return { ok: false, status: 400, error: campaignMonth.error };
   }
 
-  const cloutflowPocName = requireString(
+  const cloutflowPocName = optionalString(
     raw.cloutflowPocName,
     "Cloutflow POC name",
     WEBSITE_FIELD_LIMITS.cloutflowPocName,
@@ -242,7 +242,7 @@ function validateCreatorSupport(
     return { ok: false, status: 400, error: cloutflowPocName.error };
   }
 
-  const cloutflowPocContactNumber = requirePhone(
+  const cloutflowPocContactNumber = optionalPhone(
     raw.cloutflowPocContactNumber,
     "Cloutflow POC contact number",
   );
@@ -494,7 +494,7 @@ export function validateWebsiteTicketBody(
     return { ok: false, status: 400, error: "Enter a valid email address." };
   }
 
-  const message = requireString(
+  const message = optionalString(
     firstPresent(raw.message, raw.issueDescription),
     "Message",
     WEBSITE_FIELD_LIMITS.message,
@@ -505,7 +505,7 @@ export function validateWebsiteTicketBody(
     category,
     name: name.value,
     email: email.value.toLowerCase(),
-    message: message.value,
+    message: message.value ?? "",
   };
 
   switch (category) {

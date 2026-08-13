@@ -25,8 +25,11 @@ Common required fields for every category:
 
 - `name` (alias: `creatorName`)
 - `email`
-- `message` (alias: `issueDescription`)
 - `category` (aliases: `ticketType`, `requestCategory`)
+
+Optional for every category:
+
+- `message` (alias: `issueDescription`)
 
 Honeypot (must be empty / omit):
 
@@ -48,6 +51,9 @@ Also required:
 - `campaignName` (or `campaignNameOrId`)
 - `brandName`
 - `campaignMonth` — e.g. `August 2026` or `2026-08`
+
+Optional for creator_support:
+
 - `cloutflowPocName`
 - `cloutflowPocContactNumber`
 
@@ -198,7 +204,16 @@ Exact matches only. No `*`. Localhost allowed only outside production.
 | `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL |
 | `SUPABASE_SECRET_KEY` (or `SUPABASE_SERVICE_ROLE_KEY`) | Yes | Server-only admin insert |
 | `WEBSITE_INTAKE_ALLOWED_ORIGINS` | Yes | Exact browser origins |
-| Existing Brevo SMTP vars | Yes for email | Acknowledgement delivery |
+| Existing Brevo SMTP vars | Yes for email | Acknowledgement and internal notification delivery |
+| `SUPPORT_INBOX_EMAIL` | Yes for inbox notify | Internal Brevo notification To for new website tickets (e.g. `help@cloutflow.com`) |
+
+Brevo sender notes:
+
+- Set `BREVO_FROM_EMAIL` to a **Brevo-verified** transactional address that is **not** the same as `SUPPORT_INBOX_EMAIL` (e.g. `noreply@cloutflow.com`). Same From/To often fails to show as new inbox mail.
+- Keep `BREVO_REPLY_TO_EMAIL=help@cloutflow.com` so customer replies still go to the support inbox.
+- Keep `SUPPORT_INBOX_EMAIL=help@cloutflow.com` as the internal notification recipient.
+
+Redeploy after changing Vercel env vars — they are not applied to already-running deployments until redeploy.
 
 ## 7. Database migration
 
@@ -219,16 +234,19 @@ And makes `issue_type` / `platform` nullable for general enquiries.
 ## 8. Testing locally
 
 1. Apply the migration to your local/dev Supabase project.
-2. Set secret key + allowed origins.
+2. Set secret key + allowed origins + `SUPPORT_INBOX_EMAIL`.
 3. `npm run dev`
 4. Submit from `/help` or curl with each category.
 5. Confirm CRM shows **Source: Website**, enquiry category, and only relevant fields.
+6. Confirm the customer acknowledgement email arrived.
+7. Confirm `SUPPORT_INBOX_EMAIL` received the internal notification (subject like `New website enquiry [CF-…] — Creator Support — …`).
 
 ## 9. Testing production
 
-1. Deploy with env vars + applied migration.
+1. Deploy with env vars (including `SUPPORT_INBOX_EMAIL`) + applied migration.
 2. Submit from an allowed marketing origin.
-3. Confirm ticket code, acknowledgement email, and CRM display.
+3. Confirm ticket code, CRM display, customer acknowledgement email, and mail in the support inbox (`SUPPORT_INBOX_EMAIL`).
+4. If CRM + acknowledgement succeed but the inbox is empty, check Vercel Runtime Logs for `website intake internal support notification failed` and Brevo transactional logs for `website-internal-notification`.
 
 ## 10. Security limitations
 

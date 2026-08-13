@@ -1,6 +1,9 @@
 import "server-only";
 
-import { sendAcknowledgementForTicket } from "@/lib/email/ticket-mail";
+import {
+  sendAcknowledgementForTicket,
+  sendInternalSupportNotificationForTicket,
+} from "@/lib/email/ticket-mail";
 import type { ValidatedWebsiteTicketInput } from "@/lib/public-intake/validate";
 import { mapWebsiteFormToDbInsert } from "@/lib/public-intake/map";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -28,6 +31,7 @@ export type PublicWebsiteTicketResult =
 type CreateDeps = {
   supabase?: SupabaseClient;
   sendAcknowledgement?: typeof sendAcknowledgementForTicket;
+  sendInternalNotification?: typeof sendInternalSupportNotificationForTicket;
 };
 
 function safePublicMessage(acknowledgementSent: boolean): string {
@@ -37,8 +41,19 @@ function safePublicMessage(acknowledgementSent: boolean): string {
   return "Your ticket was created successfully. Our team will contact you shortly.";
 }
 
+function logInternalNotificationFailure(
+  ticketCode: string,
+  reason: string,
+): void {
+  console.warn("website intake internal support notification failed", {
+    ticketCode,
+    reason,
+  });
+}
+
 /**
- * Creates a website-sourced ticket and attempts the existing Brevo acknowledgement.
+ * Creates a website-sourced ticket and attempts the existing Brevo acknowledgement
+ * plus an internal support-inbox notification.
  * Email failure never rolls back the ticket or hides the ticket code.
  */
 export async function createWebsiteTicketFromValidatedInput(
@@ -74,6 +89,8 @@ export async function createWebsiteTicketFromValidatedInput(
 
   const sendAcknowledgement =
     deps.sendAcknowledgement ?? sendAcknowledgementForTicket;
+  const sendInternalNotification =
+    deps.sendInternalNotification ?? sendInternalSupportNotificationForTicket;
 
   const { data, error } = await supabase
     .from("tickets")
@@ -98,29 +115,61 @@ export async function createWebsiteTicketFromValidatedInput(
   }
 
   const created = data as DbTicket;
-  const acknowledgement = await sendAcknowledgement(created);
-  let acknowledgementSent = acknowledgement.outcome === "sent";
+  let acknowledgementSent = false;
 
-  if (acknowledgement.outcome === "sent") {
-    const sentAt = new Date().toISOString();
-    const { error: ackError } = await supabase
-      .from("tickets")
-      .update({ acknowledgement_email_sent_at: sentAt })
-      .eq("id", created.id);
+  try {
+    const acknowledgement = await sendAcknowledgement(created);
+    acknowledgementSent = acknowledgement.outcome === "sent";
 
-    if (ackError) {
-      logSupabaseError(
-        "website intake acknowledgement_email_sent_at update failed",
-        ackError,
-      );
-      // Ticket exists and Brevo accepted mail — still report sent to the creator.
-      acknowledgementSent = true;
+    if (acknowledgement.outcome === "sent") {
+      const sentAt = new Date().toISOString();
+      const { error: ackError } = await supabase
+        .from("tickets")
+        .update({ acknowledgement_email_sent_at: sentAt })
+        .eq("id", created.id);
+
+      if (ackError) {
+        logSupabaseError(
+          "website intake acknowledgement_email_sent_at update failed",
+          ackError,
+        );
+        // Ticket exists and Brevo accepted mail — still report sent to the creator.
+        acknowledgementSent = true;
+      }
+    } else if (acknowledgement.outcome === "failed") {
+      console.error("website intake acknowledgement email failed", {
+        ticketCode: created.ticket_code,
+        outcome: acknowledgement.outcome,
+      });
     }
-  } else if (acknowledgement.outcome === "failed") {
+  } catch {
     console.error("website intake acknowledgement email failed", {
       ticketCode: created.ticket_code,
-      outcome: acknowledgement.outcome,
+      outcome: "failed",
     });
+    acknowledgementSent = false;
+  }
+
+  // Always attempt internal notification after acknowledgement attempt.
+  // Failures must not roll back the ticket or change acknowledgement state.
+  try {
+    const internal = await sendInternalNotification(created);
+    if (internal.outcome !== "sent") {
+      logInternalNotificationFailure(
+        created.ticket_code,
+        internal.error === "Support inbox email is not configured."
+          ? "missing_support_inbox_email"
+          : internal.error === "Support inbox email is invalid."
+            ? "invalid_support_inbox_email"
+            : internal.error === "Requester email is missing or invalid."
+              ? "invalid_requester_email"
+              : internal.error === "Email is not configured on the server."
+                ? "email_not_configured"
+                : "send_failed",
+      );
+    }
+  } catch {
+    logInternalNotificationFailure(created.ticket_code, "unexpected_failure");
   }
 
   return {

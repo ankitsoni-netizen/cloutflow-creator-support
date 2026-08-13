@@ -108,7 +108,6 @@ function validateClient(form: FormState): FormErrors {
   } else if (!isValidEmailAddress(form.email)) {
     errors.email = "Enter a valid email address.";
   }
-  if (!form.message.trim()) errors.message = "Message is required.";
 
   switch (form.category) {
     case "creator_support":
@@ -128,13 +127,10 @@ function validateClient(form: FormState): FormErrors {
       if (!form.campaignMonth.trim()) {
         errors.campaignMonth = "Campaign month is required.";
       }
-      if (!form.cloutflowPocName.trim()) {
-        errors.cloutflowPocName = "Cloutflow POC name is required.";
-      }
-      if (!form.cloutflowPocContactNumber.trim()) {
-        errors.cloutflowPocContactNumber =
-          "Cloutflow POC contact number is required.";
-      } else if (!isValidPhoneNumber(form.cloutflowPocContactNumber)) {
+      if (
+        form.cloutflowPocContactNumber.trim() &&
+        !isValidPhoneNumber(form.cloutflowPocContactNumber)
+      ) {
         errors.cloutflowPocContactNumber = PHONE_VALIDATION_MESSAGE;
       }
       break;
@@ -691,7 +687,6 @@ export default function WebsiteEnquiryForm() {
               id={`${formId}-cloutflowPocName`}
               label="Cloutflow POC name"
               error={errors.cloutflowPocName}
-              required
             >
               <input
                 id={`${formId}-cloutflowPocName`}
@@ -700,7 +695,7 @@ export default function WebsiteEnquiryForm() {
                 value={form.cloutflowPocName}
                 onChange={(e) => updateField("cloutflowPocName", e.target.value)}
                 className={fieldClass}
-                placeholder="Your Cloutflow point of contact"
+                placeholder="Your Cloutflow point of contact (optional)"
               />
             </Field>
 
@@ -708,7 +703,6 @@ export default function WebsiteEnquiryForm() {
               id={`${formId}-cloutflowPocContactNumber`}
               label="Cloutflow POC contact number"
               error={errors.cloutflowPocContactNumber}
-              required
               className="sm:col-span-2"
             >
               <PhoneInput
@@ -733,19 +727,17 @@ export default function WebsiteEnquiryForm() {
               : "Message"
           }
           error={errors.message}
-          required
           className="sm:col-span-2"
         >
           <textarea
             id={`${formId}-message`}
             name="message"
-            required
             disabled={submitting}
             rows={5}
             value={form.message}
             onChange={(e) => updateField("message", e.target.value)}
             className={`${fieldClass} resize-y min-h-[8rem]`}
-            placeholder="Share the details we need to help you quickly."
+            placeholder="Share the details we need to help you quickly. (optional)"
           />
         </Field>
       </div>
