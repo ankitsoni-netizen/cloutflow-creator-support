@@ -1,17 +1,20 @@
+import { isUnauthenticatedProxyPath } from "@/lib/proxy-public-paths";
 import { type NextRequest, NextResponse } from "next/server";
 import { updateSession } from "@/lib/supabase/proxy";
 
 /**
- * Session refresh for CRM routes. Public intake routes stay unauthenticated:
+ * Session refresh for CRM routes. Public routes stay unauthenticated:
  * - /help
  * - /api/public/*
+ * - /api/webhooks/meta
  *
  * Staff protection remains page-level via requireActiveStaff() on CRM pages.
+ * Do not weaken CRM authentication here.
  */
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (pathname === "/help" || pathname.startsWith("/api/public/")) {
+  if (isUnauthenticatedProxyPath(pathname)) {
     return NextResponse.next();
   }
 
