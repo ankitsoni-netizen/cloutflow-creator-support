@@ -87,7 +87,9 @@ export async function handleWhatsAppTicketPost(
     );
   }
 
-  const validated = validateWebsiteTicketBody(body);
+  const validated = validateWebsiteTicketBody(body, {
+    lenientCreatorFields: true,
+  });
   if (!validated.ok) {
     return json({ success: false, message: validated.error }, validated.status);
   }

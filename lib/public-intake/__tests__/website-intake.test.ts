@@ -287,6 +287,45 @@ describe("website intake validation by category", () => {
       }).ok,
     ).toBe(false);
   });
+
+  it("still requires platform, brandName, campaignName, and campaignMonth", () => {
+    expect(
+      validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        platform: "",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: "Platform must be Instagram or YouTube.",
+    });
+    expect(
+      validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        campaignName: "",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: "Campaign name is required.",
+    });
+    expect(
+      validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        brandName: "",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: "Brand name is required.",
+    });
+    expect(
+      validateWebsiteTicketBody({
+        ...creatorSupportBody,
+        campaignMonth: "",
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: "Campaign month is required.",
+    });
+  });
 });
 
 describe("creator_support issueType and platform aliases", () => {

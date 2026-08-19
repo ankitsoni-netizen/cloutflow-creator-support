@@ -31,13 +31,18 @@ export type ValidatedCreatorSupportInput = CommonValidated & {
   category: "creator_support";
   phone: string;
   socialHandle: string;
-  platform: WebsitePlatformLabel;
+  platform: WebsitePlatformLabel | null;
   issueType: WebsiteIssueTypeLabel;
-  campaignName: string;
-  brandName: string;
-  campaignMonth: string;
+  campaignName: string | null;
+  brandName: string | null;
+  campaignMonth: string | null;
   cloutflowPocName: string | null;
   cloutflowPocContactNumber: string | null;
+};
+
+export type ValidateWebsiteTicketOptions = {
+  /** When true, WhatsApp may omit platform / brand / campaign fields. */
+  lenientCreatorFields?: boolean;
 };
 
 export type ValidatedTrackCampaignInput = CommonValidated & {
@@ -171,6 +176,7 @@ function honeypotFilled(raw: WebsiteTicketRequestBody): boolean {
 function validateCreatorSupport(
   raw: WebsiteTicketRequestBody,
   common: CommonValidated,
+  lenientCreatorFields: boolean,
 ): WebsiteValidationResult {
   const phone = requirePhone(raw.phone, "Phone number");
   if (!phone.ok) return { ok: false, status: 400, error: phone.error };
@@ -184,8 +190,9 @@ function validateCreatorSupport(
     return { ok: false, status: 400, error: socialHandle.error };
   }
 
-  const platform = normalizeWebsitePlatform(asTrimmedString(raw.platform));
-  if (!platform) {
+  const platformRaw = asTrimmedString(raw.platform);
+  const platform = normalizeWebsitePlatform(platformRaw);
+  if (!platform && !(lenientCreatorFields && !platformRaw)) {
     return {
       ok: false,
       status: 400,
@@ -202,27 +209,45 @@ function validateCreatorSupport(
     };
   }
 
-  const campaignName = requireString(
-    firstPresent(raw.campaignName, raw.campaignNameOrId),
-    "Campaign name",
-    WEBSITE_FIELD_LIMITS.campaignName,
-  );
+  const campaignName = lenientCreatorFields
+    ? optionalString(
+        firstPresent(raw.campaignName, raw.campaignNameOrId),
+        "Campaign name",
+        WEBSITE_FIELD_LIMITS.campaignName,
+      )
+    : requireString(
+        firstPresent(raw.campaignName, raw.campaignNameOrId),
+        "Campaign name",
+        WEBSITE_FIELD_LIMITS.campaignName,
+      );
   if (!campaignName.ok) {
     return { ok: false, status: 400, error: campaignName.error };
   }
 
-  const brandName = requireString(
-    firstPresent(raw.brandName, raw.brand),
-    "Brand name",
-    WEBSITE_FIELD_LIMITS.brandName,
-  );
+  const brandName = lenientCreatorFields
+    ? optionalString(
+        firstPresent(raw.brandName, raw.brand),
+        "Brand name",
+        WEBSITE_FIELD_LIMITS.brandName,
+      )
+    : requireString(
+        firstPresent(raw.brandName, raw.brand),
+        "Brand name",
+        WEBSITE_FIELD_LIMITS.brandName,
+      );
   if (!brandName.ok) return { ok: false, status: 400, error: brandName.error };
 
-  const campaignMonth = requireString(
-    raw.campaignMonth,
-    "Campaign month",
-    WEBSITE_FIELD_LIMITS.campaignMonth,
-  );
+  const campaignMonth = lenientCreatorFields
+    ? optionalString(
+        raw.campaignMonth,
+        "Campaign month",
+        WEBSITE_FIELD_LIMITS.campaignMonth,
+      )
+    : requireString(
+        raw.campaignMonth,
+        "Campaign month",
+        WEBSITE_FIELD_LIMITS.campaignMonth,
+      );
   if (!campaignMonth.ok) {
     return { ok: false, status: 400, error: campaignMonth.error };
   }
@@ -437,9 +462,12 @@ function validateProductDocumentation(
  * Category-aware public website intake validation.
  * Accepts both the richer creator-support payload and general enquiry shapes
  * used by cloutflow.com/help (including kebab-case aliases).
+ * Pass `{ lenientCreatorFields: true }` for WhatsApp so platform / brand /
+ * campaign fields may be omitted. Website callers must leave the flag unset.
  */
 export function validateWebsiteTicketBody(
   body: unknown,
+  options: ValidateWebsiteTicketOptions = {},
 ): WebsiteValidationResult {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return {
@@ -504,7 +532,11 @@ export function validateWebsiteTicketBody(
 
   switch (category) {
     case "creator_support":
-      return validateCreatorSupport(raw, common);
+      return validateCreatorSupport(
+        raw,
+        common,
+        options.lenientCreatorFields === true,
+      );
     case "track_campaign":
       return validateTrackCampaign(raw, common);
     case "product_demo":

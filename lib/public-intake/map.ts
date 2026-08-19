@@ -52,12 +52,15 @@ export function mapWebsiteFormToDbInsert(
   const trusted = baseTrustedFields(sourceChannel);
 
   if (input.category === "creator_support") {
-    const campaignMonth = parseCampaignMonthForDb(input.campaignMonth);
-    if (!campaignMonth) {
-      return {
-        error:
-          "Enter campaign month as a month and year, for example August 2026.",
-      };
+    let campaignMonth: string | null = null;
+    if (input.campaignMonth) {
+      campaignMonth = parseCampaignMonthForDb(input.campaignMonth);
+      if (!campaignMonth) {
+        return {
+          error:
+            "Enter campaign month as a month and year, for example August 2026.",
+        };
+      }
     }
 
     return {
@@ -66,7 +69,9 @@ export function mapWebsiteFormToDbInsert(
         creator_phone: input.phone,
         creator_email: input.email,
         social_handle: input.socialHandle,
-        platform: WEBSITE_PLATFORM_TO_DB[input.platform],
+        platform: input.platform
+          ? WEBSITE_PLATFORM_TO_DB[input.platform]
+          : null,
         issue_type: WEBSITE_ISSUE_TYPE_TO_DB[input.issueType],
         campaign_name: input.campaignName,
         brand_name: input.brandName,

@@ -206,6 +206,85 @@ describe("whatsapp intake POST", () => {
     errorSpy.mockRestore();
   });
 
+  it("accepts a lean creator_support payload and stores null for optional fields", async () => {
+    const leanBody = {
+      category: "creator_support",
+      name: "Riya Sharma",
+      phone: "+919876543210",
+      email: "riya@example.com",
+      socialHandle: "@riya",
+      issueType: "Payment Delayed / Not Received",
+      message: "Payment for July deliverables is still pending.",
+    };
+
+    const validated = validateWebsiteTicketBody(leanBody, {
+      lenientCreatorFields: true,
+    });
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    if (validated.value.category !== "creator_support") return;
+    expect(validated.value.platform).toBeNull();
+    expect(validated.value.brandName).toBeNull();
+    expect(validated.value.campaignName).toBeNull();
+    expect(validated.value.campaignMonth).toBeNull();
+
+    const mapped = mapWebsiteFormToDbInsert(validated.value, "whatsapp");
+    expect("insert" in mapped).toBe(true);
+    if (!("insert" in mapped)) return;
+    expect(mapped.insert.platform).toBeNull();
+    expect(mapped.insert.brand_name).toBeNull();
+    expect(mapped.insert.campaign_name).toBeNull();
+    expect(mapped.insert.campaign_month).toBeNull();
+    expect(mapped.insert.source_channel).toBe("whatsapp");
+
+    let inserted: Record<string, unknown> | undefined;
+    const created = sampleTicket({
+      platform: null,
+      brand_name: null,
+      campaign_name: null,
+      campaign_month: null,
+    });
+    const supabase = stubSupabase(created, (row) => {
+      inserted = row as Record<string, unknown>;
+    });
+    const response = await handleWhatsAppTicketPost(
+      postRequest(leanBody, { "x-api-key": TEST_API_KEY }),
+      {
+        env: authorizedEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        supabase: supabase as any,
+        sendAcknowledgement: async () => ({ outcome: "sent" }),
+        sendInternalNotification: async () => ({ outcome: "sent" }),
+      },
+    );
+
+    const body = await response.json();
+    expect(response.status).toBe(201);
+    expect(body.success).toBe(true);
+    expect(inserted?.platform).toBeNull();
+    expect(inserted?.brand_name).toBeNull();
+    expect(inserted?.campaign_name).toBeNull();
+    expect(inserted?.campaign_month).toBeNull();
+    expect(inserted?.source_channel).toBe("whatsapp");
+  });
+
+  it("rejects the same lean payload on the website path without the flag", () => {
+    const leanBody = {
+      category: "creator_support",
+      name: "Riya Sharma",
+      phone: "+919876543210",
+      email: "riya@example.com",
+      socialHandle: "@riya",
+      issueType: "Payment Delayed / Not Received",
+      message: "Payment for July deliverables is still pending.",
+    };
+
+    const result = validateWebsiteTicketBody(leanBody);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("Platform must be Instagram or YouTube.");
+  });
+
   it("reuses shared validation for an invalid platform", async () => {
     const response = await handleWhatsAppTicketPost(
       postRequest(
