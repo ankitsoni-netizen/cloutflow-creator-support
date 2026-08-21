@@ -3,8 +3,9 @@ import { isUnauthenticatedProxyPath } from "@/lib/proxy-public-paths";
 
 describe("isUnauthenticatedProxyPath", () => {
   it("keeps the Meta webhook publicly reachable", () => {
-    expect(isUnauthenticatedProxyPath("/api/webhooks/meta")).toBe(true);
-    expect(isUnauthenticatedProxyPath("/api/webhooks/meta/")).toBe(true);
+    expect(isUnauthenticatedProxyPath("/api/webhooks/meta/instagram")).toBe(
+      true,
+    );
   });
 
   it("keeps existing public intake paths unauthenticated", () => {

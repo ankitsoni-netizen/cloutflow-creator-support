@@ -140,7 +140,7 @@ export function buildAcknowledgementEmailContent(
 ): TicketAcknowledgementContent {
   const labels = formatTicketEmailLabels(ticket);
   return {
-    creatorName: ticket.creator_name,
+    creatorName: ticket.creator_name ?? "",
     ticketCode: ticket.ticket_code,
     enquiryCategory: labels.enquiryCategory,
     detailRows: buildAcknowledgementDetailRows(ticket),
@@ -198,7 +198,7 @@ export function buildInternalNotificationEmailContent(
   return {
     ticketCode: ticket.ticket_code,
     deskLabel: ticket.assigned_team?.trim() || "Creator Support",
-    requesterName: ticket.creator_name,
+    requesterName: ticket.creator_name ?? "",
     enquiryCategory: labels.enquiryCategory,
     detailRows: buildInternalNotificationDetailRows(ticket),
     enquiryMessage: ticket.issue_description ?? "",
@@ -309,7 +309,7 @@ export async function sendAcknowledgementForTicket(
     );
     await sendTransactionalEmail({
       toEmail: recipient,
-      toName: sanitizeEmailHeaderValue(ticket.creator_name),
+      toName: sanitizeEmailHeaderValue(ticket.creator_name ?? ""),
       subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,
@@ -344,7 +344,7 @@ export async function sendCreatorReplyEmail(options: {
   try {
     const labels = formatTicketEmailLabels(options.ticket);
     const content = buildTicketReplyEmail({
-      creatorName: options.ticket.creator_name,
+      creatorName: options.ticket.creator_name ?? "",
       ticketCode: options.ticket.ticket_code,
       staffReply: reply,
       ticketStatus: labels.ticketStatus,
@@ -355,7 +355,7 @@ export async function sendCreatorReplyEmail(options: {
 
     await sendTransactionalEmail({
       toEmail: recipient,
-      toName: sanitizeEmailHeaderValue(options.ticket.creator_name),
+      toName: sanitizeEmailHeaderValue(options.ticket.creator_name ?? ""),
       subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,
@@ -390,7 +390,7 @@ export async function sendResolutionEmail(options: {
   try {
     const labels = formatTicketEmailLabels(options.ticket);
     const content = buildTicketResolutionEmail({
-      creatorName: options.ticket.creator_name,
+      creatorName: options.ticket.creator_name ?? "",
       ticketCode: options.ticket.ticket_code,
       issueType: labels.issueType || labels.enquiryCategory,
       resolutionSummary: summary,
@@ -401,7 +401,7 @@ export async function sendResolutionEmail(options: {
 
     await sendTransactionalEmail({
       toEmail: recipient,
-      toName: sanitizeEmailHeaderValue(options.ticket.creator_name),
+      toName: sanitizeEmailHeaderValue(options.ticket.creator_name ?? ""),
       subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,

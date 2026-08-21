@@ -99,6 +99,7 @@ function createMemoryStore(): MetaInboundStore & {
       return {
         id: row.id as string,
         displayName: (row.displayName as string | null) ?? null,
+        ticketId: (row.ticketId as string | null) ?? null,
       };
     },
     async insertConversation(input) {
@@ -132,6 +133,15 @@ function createMemoryStore(): MetaInboundStore & {
       if (nextName) {
         row.displayName = nextName;
       }
+      if (patch.ticketId !== undefined) {
+        row.ticketId = patch.ticketId;
+      }
+      if (patch.state) {
+        row.state = patch.state;
+      }
+      if (patch.collectedData) {
+        row.collectedData = patch.collectedData;
+      }
       return { outcome: "updated" };
     },
     async insertInboundMessage(input) {
@@ -144,7 +154,7 @@ function createMemoryStore(): MetaInboundStore & {
       messages.push({
         id: nextId(),
         conversationId: input.conversationId,
-        ticketId: null,
+        ticketId: input.ticketId ?? null,
         channel: input.channel,
         direction: "inbound",
         externalMessageId: input.externalMessageId,

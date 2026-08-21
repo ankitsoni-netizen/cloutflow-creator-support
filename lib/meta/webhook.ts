@@ -21,6 +21,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export type MetaWebhookDeps = {
   env?: Record<string, string | undefined>;
+  allowHealth?: boolean;
   persistInboundMessage?: (
     event: NormalizedMetaInboundText,
     context: { webhookPayload: unknown },
@@ -68,8 +69,9 @@ export function handleMetaWebhookGet(
   const mode = request.nextUrl.searchParams.get("hub.mode");
   const token = request.nextUrl.searchParams.get("hub.verify_token");
   const challenge = request.nextUrl.searchParams.get("hub.challenge");
+  const allowHealth = deps.allowHealth !== false;
 
-  if (mode === null && token === null && challenge === null) {
+  if (allowHealth && mode === null && token === null && challenge === null) {
     return textResponse(META_WEBHOOK_HEALTH_BODY, 200);
   }
 
@@ -90,15 +92,18 @@ export function handleMetaWebhookGet(
   return textResponse(challenge, 200);
 }
 
-export async function handleMetaWebhookPost(
+export type VerifiedMetaPostResult =
+  | { ok: true; payload: unknown }
+  | { ok: false; response: NextResponse };
+
+export async function readVerifiedMetaWebhookPost(
   request: NextRequest,
-  deps: MetaWebhookDeps = {},
-): Promise<NextResponse> {
-  const env = deps.env ?? process.env;
+  env: Record<string, string | undefined> = process.env,
+): Promise<VerifiedMetaPostResult> {
   const appSecret = getMetaAppSecret(env);
   if (!appSecret) {
     logMetaWebhookMisconfiguration("app_secret_missing");
-    return textResponse("Service unavailable", 503);
+    return { ok: false, response: textResponse("Service unavailable", 503) };
   }
 
   const contentLengthHeader = request.headers.get("content-length");
@@ -108,7 +113,7 @@ export async function handleMetaWebhookPost(
       Number.isFinite(contentLength) &&
       contentLength > META_WEBHOOK_MAX_BODY_BYTES
     ) {
-      return textResponse("Payload too large", 413);
+      return { ok: false, response: textResponse("Payload too large", 413) };
     }
   }
 
@@ -116,26 +121,36 @@ export async function handleMetaWebhookPost(
   try {
     rawBytes = Buffer.from(await request.arrayBuffer());
   } catch {
-    return textResponse("Unable to read request body", 400);
+    return { ok: false, response: textResponse("Unable to read request body", 400) };
   }
 
   if (rawBytes.byteLength > META_WEBHOOK_MAX_BODY_BYTES) {
-    return textResponse("Payload too large", 413);
+    return { ok: false, response: textResponse("Payload too large", 413) };
   }
 
   const signatureHeader = request.headers.get(META_SIGNATURE_HEADER);
   if (!verifyMetaSignature(rawBytes, signatureHeader, appSecret)) {
-    return textResponse("Unauthorized", 401);
+    return { ok: false, response: textResponse("Unauthorized", 401) };
   }
 
-  let payload: unknown;
   try {
     const rawText = rawBytes.toString("utf8");
-    payload = rawText ? JSON.parse(rawText) : null;
+    const payload: unknown = rawText ? JSON.parse(rawText) : null;
+    return { ok: true, payload };
   } catch {
-    return textResponse("Invalid JSON", 400);
+    return { ok: false, response: textResponse("Invalid JSON", 400) };
   }
+}
 
+export async function handleMetaWebhookPost(
+  request: NextRequest,
+  deps: MetaWebhookDeps = {},
+): Promise<NextResponse> {
+  const env = deps.env ?? process.env;
+  const verified = await readVerifiedMetaWebhookPost(request, env);
+  if (!verified.ok) return verified.response;
+
+  const payload = verified.payload;
   const events = normalizeMetaWebhookPayload(payload);
   if (events.length === 0) {
     return textResponse(META_WEBHOOK_EVENT_RECEIVED, 200);

@@ -22,7 +22,7 @@ export type DbRequesterType = "brand" | "creator" | "agency";
 export interface DbTicket {
   id: string;
   ticket_code: string;
-  creator_name: string;
+  creator_name: string | null;
   creator_phone: string | null;
   creator_email: string | null;
   social_handle: string | null;
@@ -54,6 +54,8 @@ export interface DbTicket {
   resolved_at: string | null;
   customer_last_notified_at: string | null;
   metadata: Record<string, unknown> | null;
+  external_contact_id?: string | null;
+  external_conversation_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,7 +79,7 @@ export type DbTicketInsert = {
   intake_details?: Record<string, unknown> | null;
   source_channel: Extract<
     DbSourceChannel,
-    "phone_call" | "website" | "whatsapp"
+    "phone_call" | "website" | "whatsapp" | "instagram"
   >;
   status: "open";
   priority: "normal";

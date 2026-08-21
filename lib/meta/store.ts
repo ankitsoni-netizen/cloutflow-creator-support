@@ -27,6 +27,7 @@ export type PersistContext = {
 type ConversationRow = {
   id: string;
   displayName: string | null;
+  ticketId: string | null;
 };
 
 export type MetaInboundStore = {
@@ -65,6 +66,9 @@ export type MetaInboundStore = {
     patch: {
       lastMessageAt: string;
       displayName: string | null;
+      ticketId?: string | null;
+      state?: string;
+      collectedData?: Record<string, unknown>;
     },
   ): Promise<{ outcome: "updated" } | { outcome: "failed"; errorCode: string }>;
   insertInboundMessage(input: {
@@ -75,6 +79,7 @@ export type MetaInboundStore = {
     senderAddress: string;
     messageBody: string;
     eventFragment: Record<string, unknown>;
+    ticketId?: string | null;
   }): Promise<
     | { outcome: "inserted" }
     | { outcome: "duplicate" }
@@ -298,7 +303,7 @@ export function createSupabaseMetaStore(
     async getConversation(channel, externalConversationId) {
       const { data, error } = await supabase
         .from("channel_conversations")
-        .select("id, display_name")
+        .select("id, display_name, ticket_id")
         .eq("channel", channel)
         .eq("external_conversation_id", externalConversationId)
         .maybeSingle();
@@ -310,6 +315,7 @@ export function createSupabaseMetaStore(
       return {
         id: data.id as string,
         displayName: (data.display_name as string | null) ?? null,
+        ticketId: (data.ticket_id as string | null) ?? null,
       };
     },
 
@@ -341,12 +347,24 @@ export function createSupabaseMetaStore(
       const update: {
         last_message_at: string;
         display_name?: string;
+        ticket_id?: string | null;
+        state?: string;
+        collected_data?: Record<string, unknown>;
       } = {
         last_message_at: patch.lastMessageAt,
       };
       const nextName = patch.displayName?.trim();
       if (nextName) {
         update.display_name = nextName;
+      }
+      if (patch.ticketId !== undefined) {
+        update.ticket_id = patch.ticketId;
+      }
+      if (patch.state) {
+        update.state = patch.state;
+      }
+      if (patch.collectedData) {
+        update.collected_data = patch.collectedData;
       }
 
       const { error } = await supabase
@@ -363,7 +381,7 @@ export function createSupabaseMetaStore(
     async insertInboundMessage(input) {
       const { error } = await supabase.from("channel_messages").insert({
         conversation_id: input.conversationId,
-        ticket_id: null,
+        ticket_id: input.ticketId ?? null,
         channel: input.channel,
         direction: "inbound",
         external_message_id: input.externalMessageId,

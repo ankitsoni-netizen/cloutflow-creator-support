@@ -212,7 +212,7 @@ export function mapDbTicketToTicket(row: DbTicket): Ticket {
   return {
     id: row.id,
     ticketNumber: row.ticket_code,
-    creatorName: row.creator_name,
+    creatorName: row.creator_name ?? "",
     phone: row.creator_phone ?? "",
     email: row.creator_email ?? "",
     socialHandle: row.social_handle ?? "",
