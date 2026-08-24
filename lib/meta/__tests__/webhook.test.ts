@@ -136,6 +136,7 @@ describe("meta webhook GET verification", () => {
 
 describe("meta webhook POST", () => {
   it("returns 401 when the signature is missing", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { persist } = createMemoryPersist();
     const response = await handleMetaWebhookPost(
       postRequest(whatsappTextPayload()),
@@ -143,13 +144,26 @@ describe("meta webhook POST", () => {
     );
     expect(response.status).toBe(401);
     expect(persist).not.toHaveBeenCalled();
+    const logged = errorSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).toContain("signature_missing");
+    expect(logged).not.toContain("signature_invalid");
+    expect(logged).not.toContain(APP_SECRET);
+    expect(logged).not.toContain(VERIFY_TOKEN);
+    expect(logged).not.toContain("Payment is delayed");
+    expect(logged).not.toMatch(/sha256=/i);
+    errorSpy.mockRestore();
   });
 
   it("returns 401 when the signature is invalid", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { persist } = createMemoryPersist();
+    const invalidSignature = sign(
+      JSON.stringify(whatsappTextPayload()),
+      "other",
+    );
     const response = await handleMetaWebhookPost(
       postRequest(whatsappTextPayload(), {
-        "x-hub-signature-256": sign(JSON.stringify(whatsappTextPayload()), "other"),
+        "x-hub-signature-256": invalidSignature,
       }),
       { env: testEnv(), persistInboundMessage: persist },
     );
@@ -158,6 +172,15 @@ describe("meta webhook POST", () => {
     const body = await response.text();
     expect(body).not.toContain(APP_SECRET);
     expect(body).not.toContain("Payment is delayed");
+    const logged = errorSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).toContain("signature_invalid");
+    expect(logged).not.toContain("signature_missing");
+    expect(logged).not.toContain(APP_SECRET);
+    expect(logged).not.toContain(VERIFY_TOKEN);
+    expect(logged).not.toContain("Payment is delayed");
+    expect(logged).not.toContain(invalidSignature);
+    expect(logged).not.toMatch(/sha256=/i);
+    errorSpy.mockRestore();
   });
 
   it("accepts a valid POST signature and stores a WhatsApp text message", async () => {
