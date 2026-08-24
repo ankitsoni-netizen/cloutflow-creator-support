@@ -7,7 +7,11 @@ import {
   META_WEBHOOK_MAX_BODY_BYTES,
 } from "@/lib/meta/constants";
 import { getMetaAppSecret, getMetaVerifyToken } from "@/lib/meta/config";
-import { logMetaWebhookError, logMetaWebhookMisconfiguration } from "@/lib/meta/log";
+import {
+  logMetaWebhookError,
+  logMetaWebhookMisconfiguration,
+  logMetaWebhookSignatureFailure,
+} from "@/lib/meta/log";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
 import { timingSafeEqualString, verifyMetaSignature } from "@/lib/meta/signature";
 import {
@@ -130,6 +134,11 @@ export async function readVerifiedMetaWebhookPost(
 
   const signatureHeader = request.headers.get(META_SIGNATURE_HEADER);
   if (!verifyMetaSignature(rawBytes, signatureHeader, appSecret)) {
+    const signaturePresent =
+      typeof signatureHeader === "string" && signatureHeader.trim().length > 0;
+    logMetaWebhookSignatureFailure(
+      signaturePresent ? "signature_invalid" : "signature_missing",
+    );
     return { ok: false, response: textResponse("Unauthorized", 401) };
   }
 

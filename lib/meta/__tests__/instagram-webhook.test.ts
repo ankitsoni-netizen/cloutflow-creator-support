@@ -98,6 +98,7 @@ describe("instagram webhook GET", () => {
 
 describe("instagram webhook POST", () => {
   it("returns 401 when the signature is missing", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const ingest = vi.spyOn(
       await import("@/lib/meta/instagram-ingest"),
       "ingestInstagramInboundMessage",
@@ -107,17 +108,30 @@ describe("instagram webhook POST", () => {
       { env: testEnv(), instagramStore: stubStore() },
     );
     expect(response.status).toBe(401);
+    const logged = errorSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).toContain("signature_missing");
+    expect(logged).not.toContain(APP_SECRET);
+    expect(logged).not.toContain(VERIFY_TOKEN);
     ingest.mockRestore();
+    errorSpy.mockRestore();
   });
 
   it("returns 401 when the signature is invalid", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const invalidSignature = sign("{}", "other");
     const response = await handleInstagramWebhookPost(
       postRequest(instagramTextPayload(), {
-        "x-hub-signature-256": sign("{}", "other"),
+        "x-hub-signature-256": invalidSignature,
       }),
       { env: testEnv(), instagramStore: stubStore() },
     );
     expect(response.status).toBe(401);
+    const logged = errorSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).toContain("signature_invalid");
+    expect(logged).not.toContain(invalidSignature);
+    expect(logged).not.toContain(APP_SECRET);
+    expect(logged).not.toContain(VERIFY_TOKEN);
+    errorSpy.mockRestore();
   });
 
   it("accepts a valid signature and stores an Instagram DM", async () => {
