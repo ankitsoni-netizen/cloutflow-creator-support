@@ -1,5 +1,6 @@
 import "server-only";
 
+import { getInstagramWebhookAppSecrets } from "@/lib/meta/config";
 import { META_WEBHOOK_EVENT_RECEIVED } from "@/lib/meta/constants";
 import { logMetaWebhookError } from "@/lib/meta/log";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
@@ -38,7 +39,11 @@ export async function handleInstagramWebhookPost(
   deps: InstagramWebhookDeps = {},
 ): Promise<NextResponse> {
   const env = deps.env ?? process.env;
-  const verified = await readVerifiedMetaWebhookPost(request, env);
+  const verified = await readVerifiedMetaWebhookPost(
+    request,
+    env,
+    getInstagramWebhookAppSecrets(env),
+  );
   if (!verified.ok) return verified.response;
 
   const payload = verified.payload;

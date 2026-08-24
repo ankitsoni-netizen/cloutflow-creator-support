@@ -7,6 +7,7 @@ import "server-only";
  * Required for webhook verification (this phase):
  * - META_WEBHOOK_VERIFY_TOKEN (falls back to META_VERIFY_TOKEN)
  * - META_APP_SECRET
+ * - META_IG_APP_SECRET (Instagram webhook HMAC; optional if META_APP_SECRET is set)
  *
  * Used later for outbound Graph API calls; unused in this phase:
  * - META_GRAPH_API_VERSION
@@ -22,6 +23,7 @@ export const META_ENV = {
   VERIFY_TOKEN: "META_VERIFY_TOKEN",
   WEBHOOK_VERIFY_TOKEN: "META_WEBHOOK_VERIFY_TOKEN",
   APP_SECRET: "META_APP_SECRET",
+  IG_APP_SECRET: "META_IG_APP_SECRET",
   GRAPH_API_VERSION: "META_GRAPH_API_VERSION",
   WHATSAPP_ACCESS_TOKEN: "META_WHATSAPP_ACCESS_TOKEN",
   WHATSAPP_PHONE_NUMBER_ID: "META_WHATSAPP_PHONE_NUMBER_ID",
@@ -56,6 +58,43 @@ export function getMetaAppSecret(
   env: Record<string, string | undefined> = process.env,
 ): string | null {
   return readMetaEnv(META_ENV.APP_SECRET, env);
+}
+
+export function getMetaIgAppSecret(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  return readMetaEnv(META_ENV.IG_APP_SECRET, env);
+}
+
+/**
+ * Deduplicates configured HMAC secrets by exact trimmed value.
+ * Does not log secret values.
+ */
+export function uniqueMetaAppSecrets(
+  secrets: Array<string | null | undefined>,
+): string[] {
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const secret of secrets) {
+    if (typeof secret !== "string") continue;
+    const trimmed = secret.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    unique.push(trimmed);
+  }
+  return unique;
+}
+
+/**
+ * Instagram webhook HMAC secrets: Instagram app secret and/or parent Meta app secret.
+ */
+export function getInstagramWebhookAppSecrets(
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  return uniqueMetaAppSecrets([
+    getMetaIgAppSecret(env),
+    getMetaAppSecret(env),
+  ]);
 }
 
 /**

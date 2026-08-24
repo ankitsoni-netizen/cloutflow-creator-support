@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   timingSafeEqualString,
   verifyMetaSignature,
+  verifyMetaSignatureAgainstSecrets,
 } from "@/lib/meta/signature";
+import { uniqueMetaAppSecrets } from "@/lib/meta/config";
 
 const SECRET = "meta-app-secret-test";
 
@@ -56,5 +58,50 @@ describe("timingSafeEqualString", () => {
     expect(timingSafeEqualString("abc", "abc")).toBe(true);
     expect(timingSafeEqualString("abc", "abcd")).toBe(false);
     expect(timingSafeEqualString("", "x")).toBe(false);
+  });
+});
+
+describe("verifyMetaSignatureAgainstSecrets", () => {
+  it("accepts a signature that matches either provided secret", () => {
+    const raw = Buffer.from('{"object":"instagram"}', "utf8");
+    const igSecret = "ig-app-secret";
+    const parentSecret = SECRET;
+    expect(
+      verifyMetaSignatureAgainstSecrets(
+        raw,
+        sign(raw.toString("utf8"), igSecret),
+        [igSecret, parentSecret],
+      ),
+    ).toBe(true);
+    expect(
+      verifyMetaSignatureAgainstSecrets(
+        raw,
+        sign(raw.toString("utf8"), parentSecret),
+        [igSecret, parentSecret],
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a signature that matches none of the secrets", () => {
+    const raw = Buffer.from("{}", "utf8");
+    expect(
+      verifyMetaSignatureAgainstSecrets(raw, sign("{}", "unknown"), [
+        "ig-secret",
+        SECRET,
+      ]),
+    ).toBe(false);
+  });
+
+  it("rejects when no secrets are provided", () => {
+    const raw = Buffer.from("{}", "utf8");
+    expect(verifyMetaSignatureAgainstSecrets(raw, sign("{}"), [])).toBe(false);
+  });
+});
+
+describe("uniqueMetaAppSecrets", () => {
+  it("deduplicates identical configured secrets", () => {
+    expect(
+      uniqueMetaAppSecrets(["same-secret", "same-secret", " other-secret "]),
+    ).toEqual(["same-secret", "other-secret"]);
   });
 });

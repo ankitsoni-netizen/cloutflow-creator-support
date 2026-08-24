@@ -6,14 +6,21 @@ import {
   META_WEBHOOK_HEALTH_BODY,
   META_WEBHOOK_MAX_BODY_BYTES,
 } from "@/lib/meta/constants";
-import { getMetaAppSecret, getMetaVerifyToken } from "@/lib/meta/config";
+import {
+  getMetaAppSecret,
+  getMetaVerifyToken,
+  uniqueMetaAppSecrets,
+} from "@/lib/meta/config";
 import {
   logMetaWebhookError,
   logMetaWebhookMisconfiguration,
   logMetaWebhookSignatureFailure,
 } from "@/lib/meta/log";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
-import { timingSafeEqualString, verifyMetaSignature } from "@/lib/meta/signature";
+import {
+  timingSafeEqualString,
+  verifyMetaSignatureAgainstSecrets,
+} from "@/lib/meta/signature";
 import {
   createAdminMetaStore,
   persistNormalizedInboundMessage,
@@ -103,9 +110,13 @@ export type VerifiedMetaPostResult =
 export async function readVerifiedMetaWebhookPost(
   request: NextRequest,
   env: Record<string, string | undefined> = process.env,
+  appSecrets?: readonly (string | null | undefined)[],
 ): Promise<VerifiedMetaPostResult> {
-  const appSecret = getMetaAppSecret(env);
-  if (!appSecret) {
+  const secrets =
+    appSecrets === undefined
+      ? uniqueMetaAppSecrets([getMetaAppSecret(env)])
+      : uniqueMetaAppSecrets([...appSecrets]);
+  if (secrets.length === 0) {
     logMetaWebhookMisconfiguration("app_secret_missing");
     return { ok: false, response: textResponse("Service unavailable", 503) };
   }
@@ -133,7 +144,7 @@ export async function readVerifiedMetaWebhookPost(
   }
 
   const signatureHeader = request.headers.get(META_SIGNATURE_HEADER);
-  if (!verifyMetaSignature(rawBytes, signatureHeader, appSecret)) {
+  if (!verifyMetaSignatureAgainstSecrets(rawBytes, signatureHeader, secrets)) {
     const signaturePresent =
       typeof signatureHeader === "string" && signatureHeader.trim().length > 0;
     logMetaWebhookSignatureFailure(

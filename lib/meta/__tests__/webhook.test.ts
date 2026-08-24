@@ -20,6 +20,7 @@ import { NextRequest } from "next/server";
 
 const VERIFY_TOKEN = "meta-verify-token-test";
 const APP_SECRET = "meta-app-secret-test";
+const IG_APP_SECRET = "meta-ig-app-secret-test";
 
 function testEnv(): Record<string, string | undefined> {
   return {
@@ -179,6 +180,35 @@ describe("meta webhook POST", () => {
     expect(logged).not.toContain(VERIFY_TOKEN);
     expect(logged).not.toContain("Payment is delayed");
     expect(logged).not.toContain(invalidSignature);
+    expect(logged).not.toMatch(/sha256=/i);
+    errorSpy.mockRestore();
+  });
+
+  it("rejects a request signed only with META_IG_APP_SECRET", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { persist } = createMemoryPersist();
+    const payload = whatsappTextPayload();
+    const raw = JSON.stringify(payload);
+    const response = await handleMetaWebhookPost(
+      postRequest(payload, {
+        "x-hub-signature-256": sign(raw, IG_APP_SECRET),
+      }),
+      {
+        env: {
+          ...testEnv(),
+          META_IG_APP_SECRET: IG_APP_SECRET,
+        },
+        persistInboundMessage: persist,
+      },
+    );
+    expect(response.status).toBe(401);
+    expect(persist).not.toHaveBeenCalled();
+    const logged = errorSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).toContain("signature_invalid");
+    expect(logged).not.toContain(IG_APP_SECRET);
+    expect(logged).not.toContain(APP_SECRET);
+    expect(logged).not.toContain(VERIFY_TOKEN);
+    expect(logged).not.toContain("Payment is delayed");
     expect(logged).not.toMatch(/sha256=/i);
     errorSpy.mockRestore();
   });

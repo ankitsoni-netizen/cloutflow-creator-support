@@ -51,3 +51,23 @@ export function verifyMetaSignature(
   if (providedDigest.length !== expectedDigest.length) return false;
   return timingSafeEqual(providedDigest, expectedDigest);
 }
+
+/**
+ * Accepts the signature if it matches any of the provided secrets.
+ * Checks every unique secret so timing does not reveal which value matched.
+ * Never logs secrets, signatures, or bodies.
+ */
+export function verifyMetaSignatureAgainstSecrets(
+  rawBody: Buffer,
+  signatureHeader: string | null | undefined,
+  appSecrets: readonly string[],
+): boolean {
+  if (appSecrets.length === 0) return false;
+  let matched = false;
+  for (const secret of appSecrets) {
+    if (verifyMetaSignature(rawBody, signatureHeader, secret)) {
+      matched = true;
+    }
+  }
+  return matched;
+}
