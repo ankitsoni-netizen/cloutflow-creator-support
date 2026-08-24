@@ -7,6 +7,8 @@ import {
   handleInstagramWebhookPost,
 } from "@/lib/meta/instagram-webhook";
 import {
+  instagramLoginDashboardTestPayload,
+  instagramLoginMessagesPayload,
   instagramTextPayload,
   whatsappStatusPayload,
   whatsappTextPayload,
@@ -279,6 +281,61 @@ describe("instagram webhook POST", () => {
     expect(response.status).toBe(200);
     expect(ingestSpy).not.toHaveBeenCalled();
     ingestSpy.mockRestore();
+  });
+
+  it("logs privacy-safe diagnostics for Instagram Login messages that normalize to zero events", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const ingestSpy = vi.spyOn(
+      await import("@/lib/meta/instagram-ingest"),
+      "ingestInstagramInboundMessage",
+    );
+    const payload = instagramLoginDashboardTestPayload();
+    const response = await handleInstagramWebhookPost(signedPost(payload), {
+      env: testEnv(),
+      instagramStore: stubStore(),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(META_WEBHOOK_EVENT_RECEIVED);
+    expect(ingestSpy).not.toHaveBeenCalled();
+    const logged = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).toContain("meta webhook normalize diagnostic");
+    expect(logged).toContain("\"objectType\":\"instagram\"");
+    expect(logged).toContain("\"entryCount\":1");
+    expect(logged).toContain("\"messagingEventCount\":1");
+    expect(logged).toContain("\"hasMessage\":true");
+    expect(logged).toContain("\"hasSender\":true");
+    expect(logged).toContain("\"hasRecipient\":true");
+    expect(logged).toContain("\"hasMessageId\":true");
+    expect(logged).toContain("\"ignoredReason\":\"echo\"");
+    expect(logged).not.toContain("Dashboard test message");
+    expect(logged).not.toContain("12334");
+    expect(logged).not.toContain("17841400008460000");
+    expect(logged).not.toContain("MESSAGE-ID-LOGIN");
+    expect(logged).not.toContain(APP_SECRET);
+    expect(logged).not.toMatch(/sha256=/i);
+    ingestSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+
+  it("does not log normalize diagnostics when Instagram Login messaging is accepted", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const ingestSpy = vi
+      .spyOn(
+        await import("@/lib/meta/instagram-ingest"),
+        "ingestInstagramInboundMessage",
+      )
+      .mockImplementation(async () => ({ outcome: "stored" }));
+    const response = await handleInstagramWebhookPost(
+      signedPost(instagramLoginMessagesPayload()),
+      { env: testEnv(), instagramStore: stubStore() },
+    );
+    expect(response.status).toBe(200);
+    expect(ingestSpy).toHaveBeenCalled();
+    const logged = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).not.toContain("meta webhook normalize diagnostic");
+    expect(logged).not.toContain("Hello from Instagram Login");
+    ingestSpy.mockRestore();
+    infoSpy.mockRestore();
   });
 });
 

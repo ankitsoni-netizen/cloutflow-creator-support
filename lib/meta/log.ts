@@ -35,3 +35,33 @@ export function logMetaWebhookSignatureFailure(
 ): void {
   console.error("meta webhook signature verification failed", { reason });
 }
+
+export type MetaWebhookNormalizeLogFields = {
+  objectType: string | null;
+  entryCount: number;
+  messagingEventCount: number;
+  hasMessage: boolean;
+  hasSender: boolean;
+  hasRecipient: boolean;
+  hasMessageId: boolean;
+  ignoredReason: string | null;
+};
+
+/**
+ * Privacy-safe normalize diagnostics. Never include payloads, IDs, usernames,
+ * message text, tokens, or signatures.
+ */
+export function logMetaWebhookNormalizeDiagnostic(
+  diagnostic: MetaWebhookNormalizeLogFields,
+): void {
+  console.info("meta webhook normalize diagnostic", {
+    objectType: diagnostic.objectType,
+    entryCount: diagnostic.entryCount,
+    messagingEventCount: diagnostic.messagingEventCount,
+    hasMessage: diagnostic.hasMessage,
+    hasSender: diagnostic.hasSender,
+    hasRecipient: diagnostic.hasRecipient,
+    hasMessageId: diagnostic.hasMessageId,
+    ignoredReason: diagnostic.ignoredReason,
+  });
+}

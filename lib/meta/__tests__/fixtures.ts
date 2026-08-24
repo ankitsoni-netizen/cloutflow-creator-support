@@ -116,3 +116,107 @@ export function instagramTextPayload(overrides: {
     ],
   };
 }
+
+/**
+ * Meta Instagram Login `messages` webhook envelope (Nov 2025 docs).
+ * Uses `object: "instagram"` and `entry[].messaging[]`.
+ */
+export function instagramLoginMessagesPayload(overrides: {
+  senderId?: string;
+  recipientId?: string;
+  mid?: string;
+  text?: string;
+  isEcho?: boolean;
+  isSelf?: boolean;
+  timestamp?: number;
+} = {}) {
+  return {
+    object: "instagram",
+    entry: [
+      {
+        id: overrides.recipientId ?? "17841400008460000",
+        time: 1569262486134,
+        messaging: [
+          {
+            sender: { id: overrides.senderId ?? "12334" },
+            recipient: { id: overrides.recipientId ?? "17841400008460000" },
+            timestamp: overrides.timestamp ?? 1569262485349,
+            message: {
+              mid: overrides.mid ?? "MESSAGE-ID-LOGIN",
+              text: overrides.text ?? "Hello from Instagram Login",
+              ...(overrides.isEcho ? { is_echo: true } : {}),
+              ...(overrides.isSelf ? { is_self: true } : {}),
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** Dashboard test DM: Meta sets is_echo and is_self true. */
+export function instagramLoginDashboardTestPayload() {
+  return instagramLoginMessagesPayload({
+    text: "Dashboard test message",
+    isEcho: true,
+    isSelf: true,
+  });
+}
+
+/** Some Instagram Login field deliveries wrap the envelope in a top-level array. */
+export function instagramLoginMessagesWrappedArrayPayload() {
+  return [instagramLoginMessagesPayload()];
+}
+
+/**
+ * Alternate Instagram Login Graph-style envelope: `entry.field` + `entry.value`
+ * instead of `entry.messaging`.
+ */
+export function instagramLoginMessagesFieldValuePayload() {
+  return {
+    object: "instagram",
+    entry: [
+      {
+        id: "17841400008460000",
+        time: 1569262486134,
+        field: "messages",
+        value: {
+          sender: { id: "12334" },
+          recipient: { id: "17841400008460000" },
+          timestamp: 1569262485349,
+          message: {
+            mid: "MESSAGE-ID-FIELD-VALUE",
+            text: "Hello from field/value shape",
+          },
+        },
+      },
+    ],
+  };
+}
+
+/** Facebook Login / Graph `entry.changes` wrapper for Instagram messages. */
+export function instagramLoginMessagesChangesPayload() {
+  return {
+    object: "instagram",
+    entry: [
+      {
+        id: "17841400008460000",
+        time: 1569262486134,
+        changes: [
+          {
+            field: "messages",
+            value: {
+              sender: { id: "12334" },
+              recipient: { id: "17841400008460000" },
+              timestamp: 1569262485349,
+              message: {
+                mid: "MESSAGE-ID-CHANGES",
+                text: "Hello from changes shape",
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
+}

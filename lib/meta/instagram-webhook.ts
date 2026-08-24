@@ -2,7 +2,11 @@ import "server-only";
 
 import { getInstagramWebhookAppSecrets } from "@/lib/meta/config";
 import { META_WEBHOOK_EVENT_RECEIVED } from "@/lib/meta/constants";
-import { logMetaWebhookError } from "@/lib/meta/log";
+import { diagnoseMetaWebhookPayload } from "@/lib/meta/diagnose";
+import {
+  logMetaWebhookError,
+  logMetaWebhookNormalizeDiagnostic,
+} from "@/lib/meta/log";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
 import {
   createAdminInstagramStore,
@@ -51,6 +55,7 @@ export async function handleInstagramWebhookPost(
     (event) => event.channel === "instagram",
   );
   if (events.length === 0) {
+    logMetaWebhookNormalizeDiagnostic(diagnoseMetaWebhookPayload(payload));
     return textResponse(META_WEBHOOK_EVENT_RECEIVED, 200);
   }
 

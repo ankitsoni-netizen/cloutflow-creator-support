@@ -5,6 +5,7 @@ import {
 } from "@/lib/meta/constants";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
 import {
+  instagramLoginMessagesPayload,
   instagramTextPayload,
   whatsappStatusPayload,
   whatsappTextPayload,
@@ -81,6 +82,17 @@ describe("normalizeMetaWebhookPayload", () => {
     delete (missingFrom.entry[0].changes[0].value.messages[0] as { from?: string })
       .from;
     expect(normalizeMetaWebhookPayload(missingFrom)).toEqual([]);
+  });
+
+  it("normalizes Meta's current Instagram Login messages webhook", () => {
+    const events = normalizeMetaWebhookPayload(instagramLoginMessagesPayload());
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      channel: "instagram",
+      provider: META_INSTAGRAM_PROVIDER,
+      messageType: "text",
+      messageBody: "Hello from Instagram Login",
+    });
   });
 
   it("normalizes an Instagram Messaging inbound text message", () => {

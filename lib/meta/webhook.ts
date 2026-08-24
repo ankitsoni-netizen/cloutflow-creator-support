@@ -11,9 +11,11 @@ import {
   getMetaVerifyToken,
   uniqueMetaAppSecrets,
 } from "@/lib/meta/config";
+import { diagnoseMetaWebhookPayload } from "@/lib/meta/diagnose";
 import {
   logMetaWebhookError,
   logMetaWebhookMisconfiguration,
+  logMetaWebhookNormalizeDiagnostic,
   logMetaWebhookSignatureFailure,
 } from "@/lib/meta/log";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
@@ -173,6 +175,7 @@ export async function handleMetaWebhookPost(
   const payload = verified.payload;
   const events = normalizeMetaWebhookPayload(payload);
   if (events.length === 0) {
+    logMetaWebhookNormalizeDiagnostic(diagnoseMetaWebhookPayload(payload));
     return textResponse(META_WEBHOOK_EVENT_RECEIVED, 200);
   }
 
