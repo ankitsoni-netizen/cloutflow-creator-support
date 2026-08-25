@@ -1,6 +1,7 @@
 import "server-only";
 
 import { WEBHOOK_STATUS_FAILED } from "@/lib/meta/constants";
+import { detectRoutingCommand } from "@/lib/meta/commands";
 import {
   emptyConversationSnapshot,
   reduceInstagramConversation,
@@ -13,7 +14,14 @@ import {
   type InstagramIngestStore,
 } from "@/lib/meta/instagram-store";
 import { sha256Hex } from "@/lib/meta/signature";
-import { isIntakeComplete } from "@/lib/meta/intake-validate";
+import {
+  intakePromptForCurrentStep,
+  isIntakeComplete,
+} from "@/lib/meta/intake-validate";
+import {
+  chatbotOutboundIdempotencyKey,
+  intakeEffectType,
+} from "@/lib/meta/prompt-keys";
 import type { InstagramSendDeps } from "@/lib/meta/instagram-send";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import type { PersistContext, PersistResult } from "@/lib/meta/store";
@@ -91,6 +99,105 @@ async function ticketStatusFor(
     return { ticketId: found.id, status: found.status };
   }
   return { ticketId: conversationTicketId, status: found?.status ?? null };
+}
+
+function instagramEffectArgs(
+  event: NormalizedMetaInboundText,
+  store: InstagramIngestStore,
+  conversationId: string,
+  ingestDeps: InstagramIngestDeps,
+) {
+  return {
+    inboundMessageId: event.externalMessageId,
+    inboundText: event.messageBody,
+    event: {
+      externalContactId: event.externalContactId,
+      externalConversationId: event.externalConversationId,
+    },
+    deps: {
+      store,
+      recipientId: event.externalContactId,
+      conversationId,
+      sendDeps: ingestDeps.sendDeps,
+      loadTicket: ingestDeps.loadTicket,
+    },
+  };
+}
+
+async function recoverMissingIntakePrompt(input: {
+  event: NormalizedMetaInboundText;
+  store: InstagramIngestStore;
+  conversationId: string;
+  snapshot: ReturnType<typeof snapshotFromConversationRow>;
+  ingestDeps: InstagramIngestDeps;
+}): Promise<"ok" | "recovered" | { failed: string }> {
+  const field = input.snapshot.currentIntakeField;
+  if (input.snapshot.state !== "support_intake" || !field) return "ok";
+
+  const command = detectRoutingCommand(
+    input.event.messageBody,
+    input.event.quickReplyPayload ?? null,
+  );
+  if (command === "cancel" || command === "restart") return "ok";
+
+  const effectType = intakeEffectType(field);
+  const expectedKey = chatbotOutboundIdempotencyKey(
+    input.conversationId,
+    input.snapshot.intakeSessionVersion,
+    effectType,
+  );
+  const existing = await input.store.findOutboundByIdempotencyKey(expectedKey);
+  if (existing && "errorCode" in existing) {
+    return { failed: existing.errorCode };
+  }
+  if (
+    existing &&
+    existing.conversationId === input.conversationId &&
+    (existing.deliveryStatus === "sent" ||
+      existing.deliveryStatus === "delivered" ||
+      existing.deliveryStatus === "pending")
+  ) {
+    return "ok";
+  }
+
+  const applied = await applyInstagramEffects({
+    effects: [
+      {
+        type: "send_text",
+        text: intakePromptForCurrentStep(field, input.snapshot.collected),
+        promptKey: effectType,
+      },
+    ],
+    snapshotTicketId: input.snapshot.ticketId,
+    collected: input.snapshot.collected,
+    intakeSessionVersion: input.snapshot.intakeSessionVersion,
+    ...instagramEffectArgs(
+      input.event,
+      input.store,
+      input.conversationId,
+      input.ingestDeps,
+    ),
+  });
+  if (applied.retryableFailure) {
+    return { failed: "instagram_send_failed" };
+  }
+
+  const recoveredSnapshot = {
+    ...input.snapshot,
+    lastPromptKey: effectType,
+    lastActivityAt: input.event.timestamp,
+    lastProcessedExternalMessageId: input.event.externalMessageId,
+  };
+  const saved = await input.store.saveConversationSnapshot(
+    input.conversationId,
+    recoveredSnapshot,
+    input.event.timestamp,
+    input.event.displayName,
+  );
+  if (saved.outcome === "failed") {
+    return { failed: saved.errorCode };
+  }
+  return "recovered";
 }
 
 export async function ingestInstagramInboundMessage(
@@ -176,6 +283,26 @@ export async function ingestInstagramInboundMessage(
       snapshot.suggestedSocialHandle = event.displayName;
     }
 
+    const recovered = await recoverMissingIntakePrompt({
+      event,
+      store,
+      conversationId: conversation.row.id,
+      snapshot,
+      ingestDeps,
+    });
+    if (recovered !== "ok") {
+      if (recovered === "recovered") {
+        await store.markWebhookEvent(eventId, "completed");
+        return { outcome: inbound.outcome === "duplicate" ? "duplicate" : "stored" };
+      }
+      await store.markWebhookEvent(
+        eventId,
+        WEBHOOK_STATUS_FAILED,
+        recovered.failed,
+      );
+      return { outcome: "failed", errorCode: recovered.failed };
+    }
+
     const reduced = reduceInstagramConversation(snapshot, {
       text: event.messageBody,
       quickReplyPayload: event.quickReplyPayload ?? null,
@@ -208,19 +335,13 @@ export async function ingestInstagramInboundMessage(
           effects: [{ type: "create_ticket" }],
           snapshotTicketId: null,
           collected: reduced.snapshot.collected,
-          inboundMessageId: event.externalMessageId,
-          inboundText: event.messageBody,
-          event: {
-            externalContactId: event.externalContactId,
-            externalConversationId: event.externalConversationId,
-          },
-          deps: {
+          intakeSessionVersion: reduced.snapshot.intakeSessionVersion,
+          ...instagramEffectArgs(
+            event,
             store,
-            recipientId: event.externalContactId,
-            conversationId: conversation.row.id,
-            sendDeps: ingestDeps.sendDeps,
-            loadTicket: ingestDeps.loadTicket,
-          },
+            conversation.row.id,
+            ingestDeps,
+          ),
         });
         if (applied.ticketId) {
           reduced.snapshot.ticketId = applied.ticketId;
@@ -250,17 +371,6 @@ export async function ingestInstagramInboundMessage(
       reduced.snapshot.ticketId = reduced.attachTicketId;
     }
 
-    const saved = await store.saveConversationSnapshot(
-      conversation.row.id,
-      reduced.snapshot,
-      event.timestamp,
-      event.displayName,
-    );
-    if (saved.outcome === "failed") {
-      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
-      return { outcome: "failed", errorCode: saved.errorCode };
-    }
-
     if (reduced.inboundRoutingKind !== "unclassified") {
       await store.markMessagesRoutingKind({
         conversationId: conversation.row.id,
@@ -273,31 +383,9 @@ export async function ingestInstagramInboundMessage(
       effects: reduced.effects,
       snapshotTicketId: reduced.snapshot.ticketId,
       collected: reduced.snapshot.collected,
-      inboundMessageId: event.externalMessageId,
-      inboundText: event.messageBody,
-      event: {
-        externalContactId: event.externalContactId,
-        externalConversationId: event.externalConversationId,
-      },
-      deps: {
-        store,
-        recipientId: event.externalContactId,
-        conversationId: conversation.row.id,
-        sendDeps: ingestDeps.sendDeps,
-        loadTicket: ingestDeps.loadTicket,
-      },
+      intakeSessionVersion: reduced.snapshot.intakeSessionVersion,
+      ...instagramEffectArgs(event, store, conversation.row.id, ingestDeps),
     });
-
-    if (applied.ticketId && applied.ticketId !== reduced.snapshot.ticketId) {
-      reduced.snapshot.ticketId = applied.ticketId;
-      reduced.snapshot.state = "ticket_open";
-      await store.saveConversationSnapshot(
-        conversation.row.id,
-        reduced.snapshot,
-        event.timestamp,
-        event.displayName,
-      );
-    }
 
     if (applied.retryableFailure) {
       await store.markWebhookEvent(
@@ -306,6 +394,22 @@ export async function ingestInstagramInboundMessage(
         "instagram_send_failed",
       );
       return { outcome: "failed", errorCode: "instagram_send_failed" };
+    }
+
+    if (applied.ticketId) {
+      reduced.snapshot.ticketId = applied.ticketId;
+      reduced.snapshot.state = "ticket_open";
+    }
+
+    const saved = await store.saveConversationSnapshot(
+      conversation.row.id,
+      reduced.snapshot,
+      event.timestamp,
+      event.displayName,
+    );
+    if (saved.outcome === "failed") {
+      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
+      return { outcome: "failed", errorCode: saved.errorCode };
     }
 
     await store.markWebhookEvent(eventId, "completed");

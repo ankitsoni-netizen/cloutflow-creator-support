@@ -128,6 +128,8 @@ function memoryStore(): InstagramIngestStore & {
           id: duplicate.id as string,
           deliveryStatus: String(duplicate.deliveryStatus ?? "pending"),
           externalMessageId: (duplicate.externalMessageId as string | null) ?? null,
+          conversationId: (duplicate.conversationId as string | null) ?? null,
+          idempotencyKey: (duplicate.idempotencyKey as string | null) ?? null,
         };
       }
       const id = nextId();
@@ -187,6 +189,7 @@ describe("applyInstagramEffects ticket creation", () => {
       collected: collected(),
       inboundMessageId: "mid.campaign",
       inboundText: "Summer Drop, Acme, August 2026",
+      intakeSessionVersion: 1,
       event: {
         externalContactId: "12334",
         externalConversationId: "12334",
@@ -229,6 +232,7 @@ describe("applyInstagramEffects ticket creation", () => {
       collected: collected(),
       inboundMessageId: "mid.campaign",
       inboundText: "Summer Drop, Acme, August 2026",
+      intakeSessionVersion: 1,
       event: {
         externalContactId: "12334",
         externalConversationId: "12334",
@@ -270,6 +274,7 @@ describe("applyInstagramEffects ticket creation", () => {
       collected: collected(),
       inboundMessageId: "mid.campaign",
       inboundText: "Summer Drop, Acme, August 2026",
+      intakeSessionVersion: 1,
       event: {
         externalContactId: "12334",
         externalConversationId: "12334",

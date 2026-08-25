@@ -12,6 +12,7 @@ import {
   type IntakeField,
 } from "@/lib/meta/intake-validate";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
+import { intakeEffectType } from "@/lib/meta/prompt-keys";
 import {
   CAMPAIGN_DETAILS_PROMPT_TEXT,
   COLLABORATION_CONFIRMED_TEXT,
@@ -80,6 +81,7 @@ export type ConversationSnapshot = {
   ticketId: string | null;
   ticketStatus: string | null;
   suggestedSocialHandle: string | null;
+  intakeSessionVersion: number;
 };
 
 export type InboundSignal = {
@@ -142,8 +144,10 @@ function routingQuickReplies(): InstagramQuickReply[] {
   ];
 }
 
-function promptKey(kind: string, sessionId: string, extra = ""): string {
-  return extra ? `${kind}:${sessionId}:${extra}` : `${kind}:${sessionId}`;
+function isPrimaryIntakePrompt(field: IntakeField, text: string): boolean {
+  if (field === "creator_details") return text === CREATOR_DETAILS_PROMPT_TEXT;
+  if (field === "platform_details") return text === PLATFORM_DETAILS_PROMPT_TEXT;
+  return text === CAMPAIGN_DETAILS_PROMPT_TEXT;
 }
 
 function withActivity(
@@ -184,7 +188,7 @@ function startRouting(
     }),
     signal,
   );
-  const key = promptKey("route", sessionId);
+  const key = "route";
   return {
     snapshot: withActivity(snapshot, signal, {
       state: "awaiting_route",
@@ -213,15 +217,15 @@ function startIntake(
   signal: InboundSignal,
   reason: "route" | "reclassify" | "restart",
 ): MachineResult {
-  const sessionId =
-    snapshot.collected.routingSessionId ?? newSessionId(signal.messageId);
+  const sessionId = newSessionId(signal.messageId);
+  const intakeSessionVersion = snapshot.intakeSessionVersion + 1;
   const collected = emptyIntakeCollected({
     originalInboundText: snapshot.collected.originalInboundText ?? signal.text,
     originalInboundMessageId:
       snapshot.collected.originalInboundMessageId ?? signal.messageId,
     routingSessionId: sessionId,
   });
-  const key = promptKey("intake", sessionId, "creator_details");
+  const key = intakeEffectType("creator_details");
   const effects: MachineEffect[] = [
     { type: "mark_unclassified_as", routingKind: "support" },
   ];
@@ -229,7 +233,7 @@ function startIntake(
     effects.push({
       type: "send_text",
       text: INTAKE_RESTARTED_TEXT,
-      promptKey: promptKey("support_intro", sessionId, reason),
+      promptKey: "support_intro",
     });
   }
   effects.push({
@@ -245,6 +249,7 @@ function startIntake(
       currentIntakeField: "creator_details",
       collected,
       lastPromptKey: key,
+      intakeSessionVersion,
     }),
     effects,
     attachTicketId: null,
@@ -260,9 +265,9 @@ function sendStepPrompt(
   collected: IntakeCollectedData,
   text: string,
 ): MachineResult {
-  const sessionId =
-    collected.routingSessionId ?? newSessionId(signal.messageId);
-  const key = promptKey("intake", sessionId, field);
+  const key = isPrimaryIntakePrompt(field, text)
+    ? intakeEffectType(field)
+    : intakeEffectType(field, `followup:${signal.messageId}`);
   return {
     snapshot: withActivity(snapshot, signal, {
       state: "support_intake",
@@ -436,9 +441,7 @@ export function reduceInstagramConversation(
 
   if (state === "awaiting_route") {
     if (command === "collaboration") {
-      const sessionId =
-        snapshot.collected.routingSessionId ?? newSessionId(signal.messageId);
-      const key = promptKey("collab", sessionId);
+      const key = "collab";
       return {
         snapshot: withActivity(snapshot, signal, {
           state: "collaboration",
@@ -462,9 +465,7 @@ export function reduceInstagramConversation(
     if (command === "creator_support" || command === "support_reclassify") {
       return startIntake(snapshot, signal, "route");
     }
-    const sessionId =
-      snapshot.collected.routingSessionId ?? newSessionId(signal.messageId);
-    const key = promptKey("route_clarify", sessionId);
+    const key = "route_clarify";
     return {
       snapshot: withActivity(snapshot, signal, { lastPromptKey: key }),
       effects: [
@@ -502,9 +503,7 @@ export function reduceInstagramConversation(
 
   if (state === "support_intake" || state === "awaiting_confirmation") {
     if (command === "cancel") {
-      const sessionId =
-        snapshot.collected.routingSessionId ?? newSessionId(signal.messageId);
-      const key = promptKey("cancelled", sessionId);
+      const key = "cancelled";
       return {
         snapshot: withActivity(snapshot, signal, {
           state: "cancelled",
@@ -566,6 +565,7 @@ export function emptyConversationSnapshot(
     ticketId: null,
     ticketStatus: null,
     suggestedSocialHandle: null,
+    intakeSessionVersion: 0,
     ...overrides,
   };
 }

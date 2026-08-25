@@ -67,6 +67,7 @@ function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestSt
         lastProcessedExternalMessageId: "mid.1",
         collectedData: {},
         externalContactId: "12334",
+        intakeSessionVersion: 0,
       };
     },
     async claimOutboundMessage(input) {
@@ -150,6 +151,7 @@ describe("CRM Instagram replies", () => {
             lastProcessedExternalMessageId: "mid.1",
             collectedData: {},
             externalContactId: "99999",
+            intakeSessionVersion: 0,
           };
         },
       }),

@@ -265,8 +265,87 @@ describe("Instagram routing state machine", () => {
     );
     expect(restarted.snapshot.state).toBe("support_intake");
     expect(restarted.snapshot.currentIntakeField).toBe("creator_details");
+    expect(restarted.snapshot.intakeSessionVersion).toBeGreaterThan(
+      named.snapshot.intakeSessionVersion,
+    );
     expect(restarted.snapshot.collected.creatorName).toBeNull();
+    expect(restarted.snapshot.collected.email).toBeNull();
+    expect(restarted.snapshot.collected.phoneNormalized).toBeNull();
+    expect(restarted.snapshot.collected.platform).toBeNull();
+    expect(restarted.snapshot.collected.socialHandle).toBeNull();
+    expect(restarted.snapshot.collected.campaignName).toBeNull();
+    expect(restarted.snapshot.collected.brandName).toBeNull();
+    expect(restarted.snapshot.collected.campaignMonth).toBeNull();
+    expect(restarted.snapshot.collected.originalInboundText).toBe("Hi");
     expect(sendTexts(restarted)).toContain(CREATOR_DETAILS_PROMPT_TEXT);
+    expect(
+      named.effects.some(
+        (effect) => "promptKey" in effect && effect.promptKey === "intake:platform_details",
+      ),
+    ).toBe(true);
+    expect(
+      restarted.effects.some(
+        (effect) => "promptKey" in effect && effect.promptKey === "intake:creator_details",
+      ),
+    ).toBe(true);
+  });
+
+  it("increments intake session version on collaboration reclassify, not on ordinary answers", () => {
+    let last = reduceInstagramConversation(
+      emptyConversationSnapshot(),
+      signal("Hi", { messageId: "mid.1" }),
+    );
+    last = reduceInstagramConversation(
+      last.snapshot,
+      signal("collaboration", {
+        messageId: "mid.2",
+        payload: ROUTE_COLLABORATION_PAYLOAD,
+      }),
+    );
+    const afterCollab = last.snapshot.intakeSessionVersion;
+    last = reduceInstagramConversation(
+      last.snapshot,
+      signal("Creator Support", {
+        messageId: "mid.3",
+        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      }),
+    );
+    expect(last.snapshot.intakeSessionVersion).toBe(afterCollab + 1);
+    expect(last.snapshot.state).toBe("support_intake");
+    const afterStart = last.snapshot.intakeSessionVersion;
+    last = reduceInstagramConversation(
+      last.snapshot,
+      signal("Riya Sharma, riya@example.com, 9876543210", { messageId: "mid.4" }),
+    );
+    expect(last.snapshot.intakeSessionVersion).toBe(afterStart);
+    expect(last.snapshot.currentIntakeField).toBe("platform_details");
+  });
+
+  it("asks only for the handle when platform is already known", () => {
+    let last = reduceInstagramConversation(
+      emptyConversationSnapshot(),
+      signal("Need help", { messageId: "mid.0" }),
+    );
+    last = reduceInstagramConversation(
+      last.snapshot,
+      signal("Creator Support", {
+        messageId: "mid.route",
+        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      }),
+    );
+    last = reduceInstagramConversation(
+      last.snapshot,
+      signal("Riya Sharma, riya@example.com, 9876543210", {
+        messageId: "mid.creator",
+      }),
+    );
+    last = reduceInstagramConversation(
+      last.snapshot,
+      signal("Instagram", { messageId: "mid.platform-only" }),
+    );
+    expect(last.snapshot.collected.platform).toBe("instagram");
+    expect(last.snapshot.collected.socialHandle).toBeNull();
+    expect(sendTexts(last)).toEqual(["Please send your username or handle."]);
   });
 
   it("uses exactly three primary intake prompts and creates a ticket after the third complete answer", () => {

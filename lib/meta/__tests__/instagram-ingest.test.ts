@@ -4,7 +4,11 @@ import { ingestInstagramInboundMessage } from "@/lib/meta/instagram-ingest";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
-import { ROUTING_QUESTION_TEXT, ROUTE_CREATOR_SUPPORT_PAYLOAD, ticketCreatedWithoutEmailText } from "@/lib/meta/routing-copy";
+import { PLATFORM_DETAILS_PROMPT_TEXT, ROUTING_QUESTION_TEXT, ROUTE_CREATOR_SUPPORT_PAYLOAD, ticketCreatedWithoutEmailText } from "@/lib/meta/routing-copy";
+import {
+  chatbotOutboundIdempotencyKey,
+  intakeEffectType,
+} from "@/lib/meta/prompt-keys";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
 
@@ -112,6 +116,7 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
           (row.lastProcessedExternalMessageId as string | null) ?? null,
         collectedData: (row.collectedData as Record<string, unknown>) ?? {},
         externalContactId: (row.externalContactId as string | null) ?? null,
+        intakeSessionVersion: Number(row.intakeSessionVersion ?? 0) || 0,
       };
     },
     async insertConversation(input: Record<string, unknown>) {
@@ -123,6 +128,7 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
         collectedData: {},
         ticketId: null,
         routingIntent: "unclassified",
+        intakeSessionVersion: 0,
       });
       return { outcome: "inserted" as const, id };
     },
@@ -146,6 +152,7 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
       row.lastProcessedExternalMessageId = snapshot.lastProcessedExternalMessageId;
       row.collectedData = snapshot.collected;
       row.ticketId = snapshot.ticketId;
+      row.intakeSessionVersion = snapshot.intakeSessionVersion ?? row.intakeSessionVersion ?? 0;
       if (displayName?.trim()) row.displayName = displayName;
       return { outcome: "updated" as const };
     },
@@ -212,6 +219,8 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
           id: duplicate.id as string,
           deliveryStatus: String(duplicate.deliveryStatus ?? "pending"),
           externalMessageId: (duplicate.externalMessageId as string | null) ?? null,
+          conversationId: (duplicate.conversationId as string | null) ?? null,
+          idempotencyKey: (duplicate.idempotencyKey as string | null) ?? null,
         };
       }
       const id = nextId();
@@ -243,6 +252,19 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
         deliveryStatus: String(row.deliveryStatus ?? ""),
         idempotencyKey: (row.idempotencyKey as string | null) ?? null,
         recipientExternalId: (row.recipientExternalId as string | null) ?? null,
+        conversationId: (row.conversationId as string | null) ?? null,
+      };
+    },
+    async findOutboundByIdempotencyKey(idempotencyKey: string) {
+      const row = messages.find((message) => message.idempotencyKey === idempotencyKey);
+      if (!row) return null;
+      return {
+        id: row.id as string,
+        externalMessageId: (row.externalMessageId as string | null) ?? null,
+        deliveryStatus: String(row.deliveryStatus ?? ""),
+        idempotencyKey: (row.idempotencyKey as string | null) ?? null,
+        recipientExternalId: (row.recipientExternalId as string | null) ?? null,
+        conversationId: (row.conversationId as string | null) ?? null,
       };
     },
     async insertEchoOutboundMessage(input: Record<string, unknown>) {
@@ -429,6 +451,7 @@ describe("ingestInstagramInboundMessage routing", () => {
       routingIntent: "creator_support",
       collectedData: {},
       lastProcessedExternalMessageId: "mid.previous",
+      intakeSessionVersion: 1,
     });
     const result = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
@@ -551,6 +574,249 @@ describe("ingestInstagramInboundMessage routing", () => {
     );
     expect(duplicate.outcome).toBe("duplicate");
     expect(store.tickets).toHaveLength(1);
+    textSend.mockRestore();
+  });
+
+  it("sends a new platform prompt after RESTART even when a legacy platform prompt exists", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({ messageBody: "Need help with a campaign" }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.route",
+        externalMessageId: "mid.route",
+        messageBody: "Creator Support",
+        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.creator.1",
+        externalMessageId: "mid.creator.1",
+        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+      }),
+      store,
+      context,
+    );
+
+    const conversationId = String(store.conversations[0]?.id);
+    const versionBeforeRestart = Number(store.conversations[0]?.intakeSessionVersion ?? 0);
+    const oldPlatformKey = chatbotOutboundIdempotencyKey(
+      conversationId,
+      versionBeforeRestart,
+      intakeEffectType("platform_details"),
+    );
+    expect(
+      store.messages.some((message) => message.idempotencyKey === oldPlatformKey),
+    ).toBe(true);
+
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.restart",
+        externalMessageId: "mid.restart",
+        messageBody: "RESTART",
+      }),
+      store,
+      context,
+    );
+    const collected = store.conversations[0]?.collectedData as Record<string, unknown>;
+    expect(collected.creatorName).toBeNull();
+    expect(collected.email).toBeNull();
+    expect(collected.phoneNormalized).toBeNull();
+    expect(collected.platform).toBeNull();
+    expect(collected.socialHandle).toBeNull();
+    expect(collected.campaignName).toBeNull();
+    expect(collected.brandName).toBeNull();
+    expect(collected.campaignMonth).toBeNull();
+    expect(collected.originalInboundText).toBe("Need help with a campaign");
+    expect(store.conversations[0]?.state).toBe("support_intake");
+    expect(store.conversations[0]?.currentIntakeField).toBe("creator_details");
+
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.creator.2",
+        externalMessageId: "mid.creator.2",
+        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+      }),
+      store,
+      context,
+    );
+
+    const versionAfterRestart = Number(store.conversations[0]?.intakeSessionVersion ?? 0);
+    expect(versionAfterRestart).toBeGreaterThan(versionBeforeRestart);
+    const newPlatformKey = chatbotOutboundIdempotencyKey(
+      conversationId,
+      versionAfterRestart,
+      intakeEffectType("platform_details"),
+    );
+    expect(newPlatformKey).not.toBe(oldPlatformKey);
+    const platformOutbounds = store.messages.filter(
+      (message) =>
+        message.direction === "outbound" &&
+        (message.idempotencyKey === oldPlatformKey ||
+          message.idempotencyKey === newPlatformKey),
+    );
+    expect(platformOutbounds.map((message) => message.idempotencyKey)).toEqual(
+      expect.arrayContaining([oldPlatformKey, newPlatformKey]),
+    );
+    expect(
+      store.messages.filter((message) => message.idempotencyKey === newPlatformKey),
+    ).toHaveLength(1);
+    expect(store.conversations[0]?.currentIntakeField).toBe("platform_details");
+    expect(
+      store.messages.some(
+        (message) =>
+          message.idempotencyKey === newPlatformKey &&
+          message.messageBody === PLATFORM_DETAILS_PROMPT_TEXT,
+      ),
+    ).toBe(true);
+
+    const duplicate = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.creator.2",
+        externalMessageId: "mid.creator.2",
+        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+      }),
+      store,
+      context,
+    );
+    expect(duplicate.outcome).toBe("duplicate");
+    expect(
+      store.messages.filter((message) => message.idempotencyKey === newPlatformKey),
+    ).toHaveLength(1);
+  });
+
+  it("does not advance to platform_details when the platform prompt cannot be reserved", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    const originalClaim = store.claimOutboundMessage.bind(store);
+    store.claimOutboundMessage = async (input) => {
+      if (String(input.idempotencyKey).includes("intake:platform_details")) {
+        return { outcome: "failed" as const, errorCode: "outbound_insert_failed" };
+      }
+      return originalClaim(input);
+    };
+
+    await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.route",
+        externalMessageId: "mid.route",
+        messageBody: "Creator Support",
+        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    const result = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.creator",
+        externalMessageId: "mid.creator",
+        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+      }),
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("failed");
+    expect(store.conversations[0]?.currentIntakeField).toBe("creator_details");
+    expect(store.conversations[0]?.state).toBe("support_intake");
+  });
+
+  it("recovers a missing platform prompt on the next inbound without manual edits", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const textSend = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    store.conversations.push({
+      id: "convo-stuck",
+      channel: "instagram",
+      externalConversationId: "12334",
+      externalContactId: "12334",
+      state: "support_intake",
+      routingIntent: "creator_support",
+      currentIntakeField: "platform_details",
+      lastPromptKey: "intake:rs_legacy:platform_details",
+      lastProcessedExternalMessageId: "mid.creator.old",
+      intakeSessionVersion: 1,
+      collectedData: {
+        creatorName: "Riya Sharma",
+        email: "riya@example.com",
+        phoneNormalized: "+919876543210",
+        platform: null,
+        socialHandle: null,
+        originalInboundText: "Need help with a campaign",
+      },
+    });
+    store.messages.push({
+      id: "legacy-platform",
+      conversationId: "convo-stuck",
+      direction: "outbound",
+      idempotencyKey: "ig:prompt:convo-stuck:intake:rs_legacy:platform_details",
+      deliveryStatus: "sent",
+      messageBody: PLATFORM_DETAILS_PROMPT_TEXT,
+    });
+
+    const result = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.recover",
+        externalMessageId: "mid.recover",
+        messageBody: "hello",
+      }),
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("stored");
+    expect(store.conversations[0]?.currentIntakeField).toBe("platform_details");
+    expect(store.conversations[0]?.state).toBe("support_intake");
+    const recoveredKey = chatbotOutboundIdempotencyKey(
+      "convo-stuck",
+      1,
+      intakeEffectType("platform_details"),
+    );
+    expect(
+      store.messages.some(
+        (message) =>
+          message.idempotencyKey === recoveredKey &&
+          message.messageBody === PLATFORM_DETAILS_PROMPT_TEXT,
+      ),
+    ).toBe(true);
+    expect(textSend).toHaveBeenCalledWith(
+      expect.objectContaining({ text: PLATFORM_DETAILS_PROMPT_TEXT }),
+    );
+    const logged = JSON.stringify(store.events);
+    expect(logged).not.toContain("riya@example.com");
+    expect(logged).not.toContain("Need help with a campaign");
     textSend.mockRestore();
   });
 });

@@ -43,9 +43,10 @@ function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestSt
         id: row.id as string,
         externalMessageId: id,
         deliveryStatus: String(row.deliveryStatus),
-        idempotencyKey: null,
-        recipientExternalId: "12334",
-      };
+          idempotencyKey: null,
+          recipientExternalId: "12334",
+          conversationId: "convo-1",
+        };
     },
     async markOutboundMessage(id, patch) {
       const row = messages.find((message) => message.id === id);
@@ -64,6 +65,7 @@ function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestSt
         lastProcessedExternalMessageId: null,
         collectedData: {},
         externalContactId: "12334",
+        intakeSessionVersion: 0,
       };
     },
     async insertEchoOutboundMessage(input) {
@@ -84,6 +86,7 @@ describe("ingestInstagramEcho", () => {
           deliveryStatus: "pending",
           idempotencyKey: "ig:crm:c1",
           recipientExternalId: "12334",
+          conversationId: "convo-1",
         };
       },
     });

@@ -17,6 +17,10 @@ import {
 } from "@/lib/meta/instagram-send";
 import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
+import {
+  chatbotOutboundIdempotencyKey,
+  isSameSessionPrompt,
+} from "@/lib/meta/prompt-keys";
 import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -29,31 +33,41 @@ export type InstagramEffectDeps = {
   loadTicket?: (id: string) => Promise<DbTicket | null>;
 };
 
-function outboundIdempotency(
-  conversationId: string,
-  promptKey: string,
-): string {
-  return `ig:prompt:${conversationId}:${promptKey}`;
-}
-
 async function dispatchSend(
   effect: MachineSendEffect,
   deps: InstagramEffectDeps,
   ticketId: string | null,
+  intakeSessionVersion: number,
 ): Promise<{ retryableFailure: boolean }> {
+  const idempotencyKey = chatbotOutboundIdempotencyKey(
+    deps.conversationId,
+    intakeSessionVersion,
+    effect.promptKey,
+  );
   const claimed = await deps.store.claimOutboundMessage({
     conversationId: deps.conversationId,
     ticketId,
     channel: "instagram",
     recipientExternalId: deps.recipientId,
     messageBody: effect.text,
-    idempotencyKey: outboundIdempotency(deps.conversationId, effect.promptKey),
+    idempotencyKey,
     purpose: effect.promptKey.split(":")[0] ?? "prompt",
   });
   if (claimed.outcome === "failed") {
     return { retryableFailure: true };
   }
   if (claimed.outcome === "duplicate") {
+    const sameSession =
+      claimed.conversationId === deps.conversationId &&
+      isSameSessionPrompt({
+        idempotencyKey: claimed.idempotencyKey ?? idempotencyKey,
+        conversationId: deps.conversationId,
+        intakeSessionVersion,
+        effectType: effect.promptKey,
+      });
+    if (!sameSession) {
+      return { retryableFailure: true };
+    }
     if (
       claimed.deliveryStatus === "sent" ||
       claimed.deliveryStatus === "delivered"
@@ -131,6 +145,7 @@ export async function applyInstagramEffects(options: {
   collected: Parameters<typeof mapIntakeToInstagramTicketInsert>[0]["collected"];
   inboundMessageId: string;
   inboundText: string;
+  intakeSessionVersion: number;
   event: {
     externalContactId: string;
     externalConversationId: string;
@@ -143,12 +158,18 @@ export async function applyInstagramEffects(options: {
 }> {
   let ticketId = options.snapshotTicketId;
   let ticketCode: string | null = null;
-  let retryableFailure = false;
 
   for (const effect of options.effects) {
     if (effect.type === "send_text" || effect.type === "send_quick_replies") {
-      const sent = await dispatchSend(effect, options.deps, ticketId);
-      if (sent.retryableFailure) retryableFailure = true;
+      const sent = await dispatchSend(
+        effect,
+        options.deps,
+        ticketId,
+        options.intakeSessionVersion,
+      );
+      if (sent.retryableFailure) {
+        return { ticketId, ticketCode, retryableFailure: true };
+      }
       continue;
     }
 
@@ -262,8 +283,11 @@ export async function applyInstagramEffects(options: {
           },
           options.deps,
           createdId,
+          options.intakeSessionVersion,
         );
-        if (confirmSend.retryableFailure) retryableFailure = true;
+        if (confirmSend.retryableFailure) {
+          return { ticketId, ticketCode, retryableFailure: true };
+        }
       }
       continue;
     }
@@ -295,7 +319,7 @@ export async function applyInstagramEffects(options: {
     }
   }
 
-  return { ticketId, ticketCode, retryableFailure };
+  return { ticketId, ticketCode, retryableFailure: false };
 }
 
 export async function retryFailedInstagramOutbounds(

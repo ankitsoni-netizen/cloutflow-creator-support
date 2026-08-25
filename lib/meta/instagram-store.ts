@@ -31,6 +31,7 @@ export type InstagramConversationRow = {
   lastProcessedExternalMessageId: string | null;
   collectedData: Record<string, unknown>;
   externalContactId: string | null;
+  intakeSessionVersion: number;
 };
 
 export type OutboundMessageRow = {
@@ -39,6 +40,7 @@ export type OutboundMessageRow = {
   deliveryStatus: string;
   idempotencyKey: string | null;
   recipientExternalId: string | null;
+  conversationId: string | null;
 };
 
 export type EmailDeliveryInsert = {
@@ -111,9 +113,16 @@ export type InstagramIngestStore = Omit<
     idempotencyKey: string;
     purpose: string;
     commentId?: string | null;
-  }): Promise<
+  }  ): Promise<
     | { outcome: "claimed"; id: string }
-    | { outcome: "duplicate"; id: string; deliveryStatus: string; externalMessageId: string | null }
+    | {
+        outcome: "duplicate";
+        id: string;
+        deliveryStatus: string;
+        externalMessageId: string | null;
+        conversationId: string | null;
+        idempotencyKey: string | null;
+      }
     | { outcome: "failed"; errorCode: string }
   >;
   markOutboundMessage(
@@ -126,6 +135,9 @@ export type InstagramIngestStore = Omit<
   ): Promise<void>;
   findOutboundByExternalMessageId(
     externalMessageId: string,
+  ): Promise<OutboundMessageRow | null | { errorCode: string }>;
+  findOutboundByIdempotencyKey(
+    idempotencyKey: string,
   ): Promise<OutboundMessageRow | null | { errorCode: string }>;
   insertEchoOutboundMessage(input: {
     conversationId: string;
@@ -193,6 +205,7 @@ export function snapshotFromConversationRow(
     ticketId: row.ticketId,
     ticketStatus,
     suggestedSocialHandle,
+    intakeSessionVersion: row.intakeSessionVersion,
   };
 }
 
@@ -206,7 +219,7 @@ export function createSupabaseInstagramStore(
       const { data, error } = await supabase
         .from("channel_conversations")
         .select(
-          "id, display_name, ticket_id, state, routing_intent, current_intake_field, last_prompt_key, last_activity_at, last_processed_external_message_id, collected_data, external_contact_id",
+          "id, display_name, ticket_id, state, routing_intent, current_intake_field, last_prompt_key, last_activity_at, last_processed_external_message_id, collected_data, external_contact_id, intake_session_version",
         )
         .eq("channel", channel)
         .eq("external_conversation_id", externalConversationId)
@@ -229,6 +242,10 @@ export function createSupabaseInstagramStore(
             ? (data.collected_data as Record<string, unknown>)
             : {},
         externalContactId: (data.external_contact_id as string | null) ?? null,
+        intakeSessionVersion:
+          typeof data.intake_session_version === "number"
+            ? data.intake_session_version
+            : Number(data.intake_session_version ?? 0) || 0,
       };
     },
     async insertConversation(input) {
@@ -265,6 +282,7 @@ export function createSupabaseInstagramStore(
           snapshot.lastProcessedExternalMessageId,
         collected_data: collectedToRecord(snapshot.collected),
         ticket_id: snapshot.ticketId,
+        intake_session_version: snapshot.intakeSessionVersion,
       };
       const nextName = displayName?.trim();
       if (nextName) update.display_name = nextName;
@@ -405,7 +423,7 @@ export function createSupabaseInstagramStore(
       }
       const { data: existing, error: lookupError } = await supabase
         .from("channel_messages")
-        .select("id, delivery_status, external_message_id")
+        .select("id, delivery_status, external_message_id, conversation_id, idempotency_key")
         .eq("idempotency_key", input.idempotencyKey)
         .maybeSingle();
       if (lookupError || !existing?.id) {
@@ -416,6 +434,8 @@ export function createSupabaseInstagramStore(
         id: existing.id as string,
         deliveryStatus: String(existing.delivery_status ?? "pending"),
         externalMessageId: (existing.external_message_id as string | null) ?? null,
+        conversationId: (existing.conversation_id as string | null) ?? null,
+        idempotencyKey: (existing.idempotency_key as string | null) ?? null,
       };
     },
     async markOutboundMessage(id, patch) {
@@ -431,7 +451,7 @@ export function createSupabaseInstagramStore(
     async findOutboundByExternalMessageId(externalMessageId) {
       const { data, error } = await supabase
         .from("channel_messages")
-        .select("id, external_message_id, delivery_status, idempotency_key, recipient_external_id")
+        .select("id, external_message_id, delivery_status, idempotency_key, recipient_external_id, conversation_id")
         .eq("channel", "instagram")
         .eq("external_message_id", externalMessageId)
         .maybeSingle();
@@ -443,6 +463,24 @@ export function createSupabaseInstagramStore(
         deliveryStatus: String(data.delivery_status ?? ""),
         idempotencyKey: (data.idempotency_key as string | null) ?? null,
         recipientExternalId: (data.recipient_external_id as string | null) ?? null,
+        conversationId: (data.conversation_id as string | null) ?? null,
+      };
+    },
+    async findOutboundByIdempotencyKey(idempotencyKey) {
+      const { data, error } = await supabase
+        .from("channel_messages")
+        .select("id, external_message_id, delivery_status, idempotency_key, recipient_external_id, conversation_id")
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      if (error) return { errorCode: "message_lookup_failed" };
+      if (!data?.id) return null;
+      return {
+        id: data.id as string,
+        externalMessageId: (data.external_message_id as string | null) ?? null,
+        deliveryStatus: String(data.delivery_status ?? ""),
+        idempotencyKey: (data.idempotency_key as string | null) ?? null,
+        recipientExternalId: (data.recipient_external_id as string | null) ?? null,
+        conversationId: (data.conversation_id as string | null) ?? null,
       };
     },
     async insertEchoOutboundMessage(input) {

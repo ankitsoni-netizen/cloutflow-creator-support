@@ -600,3 +600,27 @@ export function originalInboundForTicket(
   const plain = toUntrustedPlainText(source);
   return plain.length > 0 ? plain : null;
 }
+
+export function intakePromptForCurrentStep(
+  field: IntakeField,
+  collected: IntakeCollectedData,
+): string {
+  if (field === "creator_details") {
+    return missingCreatorDetailsPrompt(collected) ?? CREATOR_DETAILS_PROMPT_TEXT;
+  }
+  if (field === "platform_details") {
+    return missingPlatformDetailsPrompt(collected) ?? PLATFORM_DETAILS_PROMPT_TEXT;
+  }
+  return missingCampaignDetailsPrompt(collected) ?? CAMPAIGN_DETAILS_PROMPT_TEXT;
+}
+
+export const INTAKE_COLLECTED_VALUE_FIELDS = [
+  "creatorName",
+  "email",
+  "phoneNormalized",
+  "platform",
+  "socialHandle",
+  "campaignName",
+  "brandName",
+  "campaignMonth",
+] as const;
