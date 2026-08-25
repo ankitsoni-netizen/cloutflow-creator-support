@@ -3,6 +3,7 @@ import { isUnauthenticatedProxyPath } from "@/lib/proxy-public-paths";
 
 describe("isUnauthenticatedProxyPath", () => {
   it("keeps the Meta webhook publicly reachable", () => {
+    expect(isUnauthenticatedProxyPath("/api/webhooks/meta")).toBe(true);
     expect(isUnauthenticatedProxyPath("/api/webhooks/meta/instagram")).toBe(
       true,
     );
@@ -20,7 +21,7 @@ describe("isUnauthenticatedProxyPath", () => {
     expect(isUnauthenticatedProxyPath("/login")).toBe(false);
     expect(isUnauthenticatedProxyPath("/team")).toBe(false);
     expect(isUnauthenticatedProxyPath("/api/whatsapp/tickets")).toBe(false);
-    expect(isUnauthenticatedProxyPath("/api/tickets/abc/instagram-reply")).toBe(
+    expect(isUnauthenticatedProxyPath("/api/tickets/abc/whatsapp-reply")).toBe(
       false,
     );
   });

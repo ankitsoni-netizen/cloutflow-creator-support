@@ -31,8 +31,10 @@ export default function ReplyComposer({
 
   const trimmedEmail = creatorEmail.trim();
   const isInstagram = sourceChannel.trim().toLowerCase() === "instagram";
+  const isWhatsApp = sourceChannel.trim().toLowerCase() === "whatsapp";
+  const isMessagingChannel = isInstagram || isWhatsApp;
   const canEmailCreator = Boolean(trimmedEmail);
-  const canSendPublicReply = isInstagram || canEmailCreator;
+  const canSendPublicReply = isMessagingChannel || canEmailCreator;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -67,9 +69,11 @@ export default function ReplyComposer({
     if (mode === "reply") {
       setText("");
       setSuccess(
-        isInstagram
-          ? "Reply queued for Instagram."
-          : "Email accepted by Brevo.",
+        isWhatsApp
+          ? "Reply queued for WhatsApp."
+          : isInstagram
+            ? "Reply queued for Instagram."
+            : "Email accepted by Brevo.",
       );
     } else {
       setText("");
@@ -88,7 +92,9 @@ export default function ReplyComposer({
   const charCount = text.length;
   const placeholder =
     mode === "reply"
-      ? isInstagram
+      ? isWhatsApp
+        ? "Write a creator-facing reply. This will be sent to WhatsApp and emailed when an address is on file."
+        : isInstagram
         ? "Write a creator-facing reply. This will be sent to Instagram and emailed when an address is on file."
         : "Write a creator-facing reply. This will be emailed to the creator."
       : "Write a private note visible only to Cloutflow staff.";
@@ -143,7 +149,11 @@ export default function ReplyComposer({
           }`}
         >
           {mode === "reply"
-            ? isInstagram
+            ? isWhatsApp
+              ? canEmailCreator
+                ? `Public reply mode · WhatsApp and email (${trimmedEmail})`
+                : "Public reply mode · Sent to WhatsApp. No creator email on file."
+              : isInstagram
               ? canEmailCreator
                 ? `Public reply mode · Instagram and email (${trimmedEmail})`
                 : "Public reply mode · Sent to Instagram. No creator email on file."
@@ -199,15 +209,15 @@ export default function ReplyComposer({
               ? mode === "reply"
                 ? "Sending..."
                 : "Saving..."
-                : mode === "reply"
-                ? isInstagram
+              : mode === "reply"
+                ? isMessagingChannel
                   ? "Send Reply"
                   : "Send Email"
                 : "Save Note"}
           </button>
         </div>
 
-        {messagingWindowWarning && mode === "reply" && isInstagram ? (
+        {messagingWindowWarning && mode === "reply" && isMessagingChannel ? (
           <p className="shrink-0 text-xs text-[var(--warning)]" role="status">
             {messagingWindowWarning}
           </p>

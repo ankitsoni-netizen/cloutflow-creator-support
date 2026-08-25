@@ -1,18 +1,24 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
-  sendStaffInstagramReply,
-  isInstagramTicket,
-} from "@/lib/tickets/instagram-reply";
+  sendStaffWhatsAppReply,
+  isWhatsAppTicket,
+} from "@/lib/tickets/whatsapp-reply";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import type { DbTicket } from "@/lib/tickets/types";
-import * as instagramSend from "@/lib/meta/instagram-send";
+import * as whatsappSend from "@/lib/meta/whatsapp-send";
+import * as instagramTicketMail from "@/lib/email/instagram-ticket-mail";
+import { WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
+
+const WA_ID = "16315551181";
+const CONVO_EXTERNAL_ID = "123456123:16315551181";
 
 function ticket(overrides: Partial<DbTicket> = {}): DbTicket {
   return {
     id: "ticket-1",
     ticket_code: "CF-2026-00001",
     creator_name: "Riya Sharma",
-    creator_phone: "+919876543210",
+    creator_phone: "+16315551181",
     creator_email: "riya@example.com",
     social_handle: "riya",
     platform: "instagram",
@@ -27,7 +33,7 @@ function ticket(overrides: Partial<DbTicket> = {}): DbTicket {
     requester_type: null,
     topic_or_module: null,
     intake_details: null,
-    source_channel: "instagram",
+    source_channel: "whatsapp",
     status: "open",
     priority: "normal",
     assigned_team: "Creator Support",
@@ -42,8 +48,8 @@ function ticket(overrides: Partial<DbTicket> = {}): DbTicket {
     resolved_at: null,
     customer_last_notified_at: null,
     metadata: null,
-    external_contact_id: "12334",
-    external_conversation_id: "12334",
+    external_contact_id: WA_ID,
+    external_conversation_id: CONVO_EXTERNAL_ID,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,
@@ -64,9 +70,9 @@ function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestSt
         currentIntakeField: null,
         lastPromptKey: null,
         lastActivityAt: new Date().toISOString(),
-        lastProcessedExternalMessageId: "mid.1",
+        lastProcessedExternalMessageId: "wamid.1",
         collectedData: {},
-        externalContactId: "12334",
+        externalContactId: WA_ID,
         intakeSessionVersion: 0,
       };
     },
@@ -110,53 +116,34 @@ function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestSt
   } as InstagramIngestStore;
 }
 
-describe("CRM Instagram replies", () => {
-  it("sends a public reply to the ticket IGSID", async () => {
-    const send = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+describe("CRM WhatsApp replies", () => {
+  it("sends a public reply to the ticket wa_id", async () => {
+    const send = vi.spyOn(whatsappSend, "sendWhatsAppText").mockResolvedValue({
       ok: true,
-      metaMessageId: "mid.staff",
-      recipientId: "12334",
+      metaMessageId: "wamid.staff",
+      recipientId: WA_ID,
     });
-    const result = await sendStaffInstagramReply({
+    vi.spyOn(instagramTicketMail, "sendInstagramCreatorReplyEmail").mockResolvedValue({
+      outcome: "sent",
+      messageId: "brevo-1",
+    });
+    const result = await sendStaffWhatsAppReply({
       ticket: ticket(),
       commentId: "comment-1",
       commentText: "We are looking into this.",
       store: store(),
     });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.instagram).toBe("sent");
+    if (result.ok) expect(result.whatsapp).toBe("sent");
     expect(send).toHaveBeenCalledWith(
-      expect.objectContaining({ recipientId: "12334", text: "We are looking into this." }),
+      expect.objectContaining({ recipientId: WA_ID, text: "We are looking into this." }),
     );
     send.mockRestore();
   });
 
-  it("does not store the creator IGSID as the outbound sender", async () => {
-    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
-      ok: true,
-      metaMessageId: "mid.staff",
-      recipientId: "12334",
-    });
-    const claimed: Array<Record<string, unknown>> = [];
-    await sendStaffInstagramReply({
-      ticket: ticket(),
-      commentId: "comment-sender",
-      commentText: "We are looking into this.",
-      store: store({
-        async claimOutboundMessage(input) {
-          claimed.push(input as unknown as Record<string, unknown>);
-          return { outcome: "claimed" as const, id: "out-1" };
-        },
-      }),
-    });
-    expect(claimed[0]?.recipientExternalId).toBe("12334");
-    expect(claimed[0]?.senderAddress).not.toBe("12334");
-    vi.restoreAllMocks();
-  });
-
   it("does not send when the recipient would not match the conversation", async () => {
-    const send = vi.spyOn(instagramSend, "sendInstagramText");
-    const result = await sendStaffInstagramReply({
+    const send = vi.spyOn(whatsappSend, "sendWhatsAppText");
+    const result = await sendStaffWhatsAppReply({
       ticket: ticket(),
       commentId: "comment-1",
       commentText: "Hello",
@@ -171,9 +158,9 @@ describe("CRM Instagram replies", () => {
             currentIntakeField: null,
             lastPromptKey: null,
             lastActivityAt: new Date().toISOString(),
-            lastProcessedExternalMessageId: "mid.1",
+            lastProcessedExternalMessageId: "wamid.1",
             collectedData: {},
-            externalContactId: "99999",
+            externalContactId: "99999999999",
             intakeSessionVersion: 0,
           };
         },
@@ -185,20 +172,24 @@ describe("CRM Instagram replies", () => {
   });
 
   it("does not double-send when the same comment is retried", async () => {
-    const send = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+    const send = vi.spyOn(whatsappSend, "sendWhatsAppText").mockResolvedValue({
       ok: true,
-      metaMessageId: "mid.staff",
-      recipientId: "12334",
+      metaMessageId: "wamid.staff",
+      recipientId: WA_ID,
+    });
+    vi.spyOn(instagramTicketMail, "sendInstagramCreatorReplyEmail").mockResolvedValue({
+      outcome: "sent",
+      messageId: "brevo-1",
     });
     const memory = store();
-    await sendStaffInstagramReply({
+    await sendStaffWhatsAppReply({
       ticket: ticket(),
       commentId: "comment-1",
       commentText: "We are looking into this.",
       store: memory,
     });
     send.mockClear();
-    const retry = await sendStaffInstagramReply({
+    const retry = await sendStaffWhatsAppReply({
       ticket: ticket(),
       commentId: "comment-1",
       commentText: "We are looking into this.",
@@ -210,35 +201,106 @@ describe("CRM Instagram replies", () => {
     send.mockRestore();
   });
 
-  it("marks outbound failed without dropping the queued content", async () => {
-    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
-      ok: false,
-      errorCode: "http_5xx",
-      retryable: true,
-      messagingWindowExpired: false,
-      httpStatus: 500,
-    });
+  it("marks outside-window failures without sending a template", async () => {
+    const send = vi.spyOn(whatsappSend, "sendWhatsAppText");
     const marked: Array<Record<string, unknown>> = [];
-    const result = await sendStaffInstagramReply({
+    const result = await sendStaffWhatsAppReply({
       ticket: ticket(),
-      commentId: "comment-fail",
+      commentId: "comment-window",
       commentText: "Please retry this text.",
       store: store({
+        async getConversation() {
+          return {
+            id: "convo-1",
+            displayName: null,
+            ticketId: "ticket-1",
+            state: "ticket_open",
+            routingIntent: "creator_support",
+            currentIntakeField: null,
+            lastPromptKey: null,
+            lastActivityAt: "2020-01-01T00:00:00.000Z",
+            lastProcessedExternalMessageId: "wamid.1",
+            collectedData: {},
+            externalContactId: WA_ID,
+            intakeSessionVersion: 0,
+          };
+        },
         async markOutboundMessage(_id, patch) {
           marked.push(patch);
         },
       }),
     });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.instagram).toBe("failed");
+    if (result.ok) {
+      expect(result.whatsapp).toBe("failed");
+      expect(result.whatsappErrorCode).toBe("outside_customer_service_window");
+      expect(result.messagingWindowExpired).toBe(true);
+    }
     expect(marked[0]).toMatchObject({
       deliveryStatus: "failed",
-      deliveryErrorCode: "http_5xx",
+      deliveryErrorCode: "outside_customer_service_window",
     });
+    expect(send).not.toHaveBeenCalled();
+    expect(WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING).toMatch(/customer-service window/i);
+    send.mockRestore();
   });
 
-  it("identifies Instagram tickets only", () => {
-    expect(isInstagramTicket(ticket())).toBe(true);
-    expect(isInstagramTicket(ticket({ source_channel: "website" }))).toBe(false);
+  it("keeps WhatsApp success when the mirrored email fails", async () => {
+    const send = vi.spyOn(whatsappSend, "sendWhatsAppText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "wamid.staff",
+      recipientId: WA_ID,
+    });
+    vi.spyOn(instagramTicketMail, "sendInstagramCreatorReplyEmail").mockResolvedValue({
+      outcome: "failed",
+      errorCode: "brevo_failed",
+    });
+    const result = await sendStaffWhatsAppReply({
+      ticket: ticket(),
+      commentId: "comment-email",
+      commentText: "We are looking into this.",
+      store: store(),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.whatsapp).toBe("sent");
+      expect(result.email).toBe("failed");
+    }
+    expect(send).toHaveBeenCalledTimes(1);
+    send.mockRestore();
+  });
+
+  it("identifies WhatsApp tickets only", () => {
+    expect(isWhatsAppTicket(ticket())).toBe(true);
+    expect(isWhatsAppTicket(ticket({ source_channel: "instagram" }))).toBe(false);
+    expect(isWhatsAppTicket(ticket({ source_channel: "website" }))).toBe(false);
+  });
+
+  it("never sends WhatsApp from the internal-note action", () => {
+    const source = readFileSync(
+      new URL("../workflow-actions.ts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("export async function addInternalNoteAction");
+    const end = source.indexOf("export async function queueCreatorReplyAction");
+    const noteFn = source.slice(start, end);
+    expect(noteFn).toContain("send_to_creator: false");
+    expect(noteFn).not.toContain("sendStaffWhatsAppReply");
+    expect(noteFn).not.toContain("sendWhatsAppText");
+  });
+
+  it("routes CRM WhatsApp tickets through Cloud API from the composer", () => {
+    const composer = readFileSync(
+      new URL("../../../components/ticket/ReplyComposer.tsx", import.meta.url),
+      "utf8",
+    );
+    const workflow = readFileSync(
+      new URL("../workflow-actions.ts", import.meta.url),
+      "utf8",
+    );
+    expect(composer).toContain('sourceChannel.trim().toLowerCase() === "whatsapp"');
+    expect(composer).toContain("isWhatsApp");
+    expect(workflow).toContain("isWhatsAppTicket(ticket)");
+    expect(workflow).toContain("sendStaffWhatsAppReply");
   });
 });

@@ -8,7 +8,7 @@ import {
   originalInboundForTicket,
   type IntakeCollectedData,
 } from "@/lib/meta/intake-validate";
-import { toPlainTicketDescription } from "@/lib/meta/plain-text";
+import { toPlainTicketDescription, toUntrustedPlainText } from "@/lib/meta/plain-text";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import type { DbPlatform } from "@/lib/tickets/types";
 
@@ -33,7 +33,7 @@ export type InstagramTicketInsert = {
   cloutflow_poc_name: string | null;
   cloutflow_poc_contact_number: string | null;
   request_category: "creator_support";
-  source_channel: "instagram";
+  source_channel: "instagram" | "whatsapp";
   status: "open";
   priority: "normal";
   assigned_team: typeof INSTAGRAM_TICKET_ASSIGNED_TEAM;
@@ -59,49 +59,79 @@ export function buildInstagramCollectedData(
 }
 
 function ticketPlatform(collected: IntakeCollectedData): DbPlatform {
+  if (collected.igIssueCategory) return "instagram";
   return collected.platform === "youtube" ? "youtube" : "instagram";
+}
+
+function ticketDescription(collected: IntakeCollectedData): string | null {
+  if (collected.igIssueCategory && collected.issueDescription) {
+    const plain = toUntrustedPlainText(collected.issueDescription);
+    return plain.length > 0 ? plain : null;
+  }
+  return originalInboundForTicket(collected);
+}
+
+function ticketIssueType(collected: IntakeCollectedData): string | null {
+  if (collected.igIssueCategory === "payment") return "payment_delayed";
+  if (collected.igIssueCategory === "campaign") return "other";
+  return collected.issueType;
+}
+
+function selectedRoute(collected: IntakeCollectedData): string | null {
+  if (collected.igIssueCategory === "payment") return "creator_payment_issue";
+  if (collected.igIssueCategory === "campaign") return "creator_campaign_issue";
+  return null;
 }
 
 export function mapIntakeToInstagramTicketInsert(input: {
   collected: IntakeCollectedData;
   externalContactId: string;
   externalConversationId: string;
+  sourceChannel?: "instagram" | "whatsapp";
 }): InstagramTicketInsert {
   const collected = input.collected;
-  const description = originalInboundForTicket(collected);
+  const description = ticketDescription(collected);
   const platform = ticketPlatform(collected);
+  const sourceChannel = input.sourceChannel ?? "instagram";
+  const origin =
+    sourceChannel === "whatsapp" ? "whatsapp_cloud_intake" : "instagram_dm_intake";
+  const route = selectedRoute(collected);
+  const personaTicket = Boolean(collected.igIssueCategory);
   const channelCollected = emptyCollectedData({
     creatorName: collected.creatorName,
     phone: collected.phoneNormalized,
     email: collected.email,
-    socialHandle: collected.socialHandle,
+    socialHandle: collected.cachedUsername ?? collected.socialHandle,
     platform,
     campaignName: collected.campaignName,
     brand: collected.brandName,
     campaignMonth: collected.campaignMonth,
     issueDescription: description,
   });
-  const incompleteFields = incompleteCollectedFields(channelCollected).filter(
-    (field) =>
-      field !== "issueType" &&
-      field !== "cloutflowPocName" &&
-      field !== "cloutflowPocContactNumber",
-  );
+  const incompleteFields = personaTicket
+    ? []
+    : incompleteCollectedFields(channelCollected).filter(
+        (field) =>
+          field !== "issueType" &&
+          field !== "cloutflowPocName" &&
+          field !== "cloutflowPocContactNumber",
+      );
+  const issueType = ticketIssueType(collected);
 
   return {
     creator_name: collected.creatorName,
     creator_phone: collected.phoneNormalized,
     creator_email: collected.email,
-    social_handle: collected.socialHandle,
+    social_handle: collected.cachedUsername ?? collected.socialHandle,
     platform,
-    issue_type: null,
+    issue_type: issueType,
     campaign_name: collected.campaignName,
     brand_name: collected.brandName,
     campaign_month: collected.campaignMonth,
     cloutflow_poc_name: null,
     cloutflow_poc_contact_number: null,
     request_category: "creator_support",
-    source_channel: "instagram",
+    source_channel: sourceChannel,
     status: "open",
     priority: "normal",
     assigned_team: INSTAGRAM_TICKET_ASSIGNED_TEAM,
@@ -113,19 +143,26 @@ export function mapIntakeToInstagramTicketInsert(input: {
     external_contact_id: input.externalContactId,
     external_conversation_id: input.externalConversationId,
     intake_details: {
-      origin: "instagram_dm_intake",
+      origin,
       incomplete: incompleteFields.length > 0,
       incompleteFields,
       phoneDisplay: collected.phoneDisplay,
       socialHandleDisplay: collected.socialHandleDisplay,
       originalInboundMessageId: collected.originalInboundMessageId,
+      igPersona: collected.igPersona,
+      igCreatorReason: collected.igCreatorReason,
+      igIssueCategory: collected.igIssueCategory,
+      route,
     },
     metadata: {
-      origin: "instagram_dm_intake",
+      origin,
       intakeIncomplete: incompleteFields.length > 0,
       incompleteFields,
       externalContactId: input.externalContactId,
       externalConversationId: input.externalConversationId,
+      igPersona: collected.igPersona,
+      igIssueCategory: collected.igIssueCategory,
+      route,
     },
   };
 }

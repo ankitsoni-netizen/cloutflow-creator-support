@@ -15,6 +15,9 @@ export const USE_ORIGINAL_PAYLOAD = "USE_ORIGINAL";
 export const ROUTING_QUESTION_TEXT =
   "Hi! Before we proceed, please tell us what you’re reaching out about so we can route your message correctly.";
 
+export const WHATSAPP_ROUTING_QUESTION_TEXT =
+  "Hi! Welcome to Cloutflow. Before we continue, please tell us what you’re reaching out about.";
+
 export const ROUTING_COLLABORATION_TITLE = "Campaign / Collaboration";
 export const ROUTING_CREATOR_SUPPORT_TITLE = "Creator Support";
 
@@ -26,6 +29,12 @@ export const COLLABORATION_CONFIRMED_TEXT =
 
 export const CREATOR_DETAILS_PROMPT_TEXT =
   "Sure, I’ll help you raise a support ticket. First, please share your full name, email address and contact number.";
+
+export const WHATSAPP_CREATOR_DETAILS_PROMPT_TEXT =
+  "Sure, I’ll help you raise a support ticket. Please share your full name and email address. We’ll use this WhatsApp number as your contact number unless you share a different one.";
+
+export const WHATSAPP_MEDIA_INTAKE_TEXT =
+  "Please send the requested details as text so I can continue.";
 
 /** @deprecated Use CREATOR_DETAILS_PROMPT_TEXT. Kept as an alias for the first intake prompt. */
 export const CREATOR_SUPPORT_STARTED_TEXT = CREATOR_DETAILS_PROMPT_TEXT;
@@ -51,6 +60,13 @@ export const CONFIRMATION_PROMPT_TEXT =
 export const TICKET_CREATED_TEXT = (ticketCode: string): string =>
   `Thanks. Your Creator Support ticket ${ticketCode} has been created. Our team will follow up here.`;
 
+export function ticketRaisedConfirmationText(ticketCode: string): string {
+  return `Your support ticket ${ticketCode} has been raised. Our Creator Support team will update you shortly.`;
+}
+
+export const TICKET_EMAIL_SENT_FOLLOW_UP_TEXT =
+  "We've also sent the ticket details to your email.";
+
 export function firstNameFromFullName(fullName: string): string {
   return fullName.trim().split(/\s+/).find(Boolean) ?? "";
 }
@@ -74,6 +90,51 @@ export const ACTIVE_TICKET_FOLLOW_UP_TEXT =
 
 export const MESSAGING_WINDOW_STAFF_WARNING =
   "Instagram’s 24-hour messaging window may be closed. Replies can fail until the creator messages again.";
+
+export const WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING =
+  "WhatsApp’s customer-service window is closed. This reply was not sent. The creator must message again before we can reply. Approved templates are not sent automatically.";
+
+export type ChannelIntakeCopy = {
+  routingQuestion: string;
+  routingClarify: string;
+  collaborationConfirmed: string;
+  creatorDetailsPrompt: string;
+  platformDetailsPrompt: string;
+  campaignDetailsPrompt: string;
+  intakeCancelled: string;
+  intakeRestarted: string;
+  collaborationQuickReplyTitle: string;
+  creatorSupportQuickReplyTitle: string;
+  mediaIntakeText: string;
+};
+
+export const INSTAGRAM_INTAKE_COPY: ChannelIntakeCopy = {
+  routingQuestion: ROUTING_QUESTION_TEXT,
+  routingClarify: ROUTING_CLARIFY_TEXT,
+  collaborationConfirmed: COLLABORATION_CONFIRMED_TEXT,
+  creatorDetailsPrompt: CREATOR_DETAILS_PROMPT_TEXT,
+  platformDetailsPrompt: PLATFORM_DETAILS_PROMPT_TEXT,
+  campaignDetailsPrompt: CAMPAIGN_DETAILS_PROMPT_TEXT,
+  intakeCancelled: INTAKE_CANCELLED_TEXT,
+  intakeRestarted: INTAKE_RESTARTED_TEXT,
+  collaborationQuickReplyTitle: ROUTING_COLLABORATION_QUICK_REPLY_TITLE,
+  creatorSupportQuickReplyTitle: ROUTING_CREATOR_SUPPORT_TITLE,
+  mediaIntakeText: WHATSAPP_MEDIA_INTAKE_TEXT,
+};
+
+export const WHATSAPP_INTAKE_COPY: ChannelIntakeCopy = {
+  routingQuestion: WHATSAPP_ROUTING_QUESTION_TEXT,
+  routingClarify: ROUTING_CLARIFY_TEXT,
+  collaborationConfirmed: COLLABORATION_CONFIRMED_TEXT,
+  creatorDetailsPrompt: WHATSAPP_CREATOR_DETAILS_PROMPT_TEXT,
+  platformDetailsPrompt: PLATFORM_DETAILS_PROMPT_TEXT,
+  campaignDetailsPrompt: CAMPAIGN_DETAILS_PROMPT_TEXT,
+  intakeCancelled: INTAKE_CANCELLED_TEXT,
+  intakeRestarted: INTAKE_RESTARTED_TEXT,
+  collaborationQuickReplyTitle: ROUTING_COLLABORATION_QUICK_REPLY_TITLE,
+  creatorSupportQuickReplyTitle: ROUTING_CREATOR_SUPPORT_TITLE,
+  mediaIntakeText: WHATSAPP_MEDIA_INTAKE_TEXT,
+};
 
 export const UNKNOWN_OPTIONAL_HINT =
   'If you don’t know, reply "I don\'t know".';

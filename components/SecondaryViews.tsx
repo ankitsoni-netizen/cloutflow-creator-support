@@ -881,24 +881,24 @@ export function ChannelsView({
 
           <div>
             <IntegrationCard
-              name="WhatsApp via WATI"
-              description="Handle WhatsApp creator conversations with queued outbound replies."
+              name="WhatsApp via Meta Cloud API"
+              description="Handle WhatsApp creator conversations with Cloud API inbound, intake, and CRM replies."
               inbound="Not connected"
               outbound="Queued until connected"
-              setupNotes="Requires WATI workspace credentials stored server-side. Webhook verification is pending."
+              setupNotes="Requires Meta WhatsApp Cloud API credentials stored server-side. Do not paste access tokens here."
               status="not_connected"
             />
             <ChannelSetupBlock title="Setup detail">
-              <p>Webhook status: not registered.</p>
-              <p>Inbound mapping: WATI conversation → support ticket (pending).</p>
-              <p>Outbound: agent replies queued until WATI is connected.</p>
+              <p>Webhook status: configure Meta to POST /api/webhooks/meta.</p>
+              <p>Inbound mapping: WhatsApp Cloud API conversation → support ticket.</p>
+              <p>Outbound: staff CRM replies send through Meta Cloud API.</p>
               <DisabledField
-                label="WATI workspace ID"
+                label="WhatsApp phone number ID"
                 placeholder="Configure server-side only"
               />
               <DisabledField
                 label="Webhook URL"
-                placeholder="Will be issued after backend setup"
+                placeholder="/api/webhooks/meta"
               />
               <button
                 type="button"

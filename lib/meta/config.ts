@@ -13,7 +13,7 @@ import "server-only";
  * - META_GRAPH_API_VERSION
  * - META_IG_ACCESS_TOKEN (falls back to META_INSTAGRAM_ACCESS_TOKEN)
  * - META_IG_ACCOUNT_ID (falls back to META_INSTAGRAM_ACCOUNT_ID)
- * - META_WHATSAPP_ACCESS_TOKEN / META_WHATSAPP_PHONE_NUMBER_ID (WhatsApp send; unused in this phase)
+ * - META_WHATSAPP_ACCESS_TOKEN / META_WHATSAPP_PHONE_NUMBER_ID (WhatsApp Cloud API send)
  *
  * Readers are lazy: CRM pages can load before Meta is configured.
  */
@@ -106,13 +106,28 @@ export function getMetaGraphApiVersion(
   return readMetaEnv(META_ENV.GRAPH_API_VERSION, env);
 }
 
+export function getMetaWhatsAppPhoneNumberId(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  return readMetaEnv(META_ENV.WHATSAPP_PHONE_NUMBER_ID, env);
+}
+
 export function getMetaWhatsAppSendConfig(
   env: Record<string, string | undefined> = process.env,
 ): { accessToken: string; phoneNumberId: string } | null {
   const accessToken = readMetaEnv(META_ENV.WHATSAPP_ACCESS_TOKEN, env);
-  const phoneNumberId = readMetaEnv(META_ENV.WHATSAPP_PHONE_NUMBER_ID, env);
+  const phoneNumberId = getMetaWhatsAppPhoneNumberId(env);
   if (!accessToken || !phoneNumberId) return null;
   return { accessToken, phoneNumberId };
+}
+
+export function getMetaInstagramAccountId(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  return (
+    readMetaEnv(META_ENV.IG_ACCOUNT_ID, env) ??
+    readMetaEnv(META_ENV.INSTAGRAM_ACCOUNT_ID, env)
+  );
 }
 
 export function getMetaInstagramSendConfig(
@@ -121,9 +136,7 @@ export function getMetaInstagramSendConfig(
   const accessToken =
     readMetaEnv(META_ENV.IG_ACCESS_TOKEN, env) ??
     readMetaEnv(META_ENV.INSTAGRAM_ACCESS_TOKEN, env);
-  const accountId =
-    readMetaEnv(META_ENV.IG_ACCOUNT_ID, env) ??
-    readMetaEnv(META_ENV.INSTAGRAM_ACCOUNT_ID, env);
+  const accountId = getMetaInstagramAccountId(env);
   if (!accessToken || !accountId) return null;
   return { accessToken, accountId };
 }

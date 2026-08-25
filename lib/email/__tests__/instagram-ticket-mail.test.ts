@@ -1,6 +1,8 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   instagramTicketEmailSubject,
+  sendInstagramAgencyDetailsEmail,
+  sendInstagramGeneralInquiryEmail,
   sendInstagramTicketConfirmationEmail,
 } from "@/lib/email/instagram-ticket-mail";
 import { buildTicketAcknowledgementEmail } from "@/lib/email/templates/ticket-acknowledgement";
@@ -98,6 +100,121 @@ describe("Instagram ticket confirmation email", () => {
     expect(expected.html).toContain("We&#39;ve received your request");
     expect(JSON.stringify(send.mock.calls)).not.toContain("internal-db-id");
 
+    if (previousInbox === undefined) {
+      delete process.env.SUPPORT_INBOX_EMAIL;
+    } else {
+      process.env.SUPPORT_INBOX_EMAIL = previousInbox;
+    }
+  });
+
+  it("reuses the same acknowledgement template for WhatsApp tickets", async () => {
+    vi.spyOn(envCheck, "isBrevoConfigured").mockReturnValue(true);
+    const send = vi.spyOn(emailSend, "sendTransactionalEmail").mockResolvedValue({
+      messageId: "brevo-wa-1",
+      accepted: ["riya@example.com"],
+      rejected: [],
+      status: "accepted_by_brevo",
+    });
+    const previousInbox = process.env.SUPPORT_INBOX_EMAIL;
+    process.env.SUPPORT_INBOX_EMAIL = "help@cloutflow.com";
+
+    const dbTicket = ticket({ source_channel: "whatsapp" });
+    const expected = buildTicketAcknowledgementEmail(
+      buildInstagramTicketAcknowledgementContent(dbTicket),
+    );
+    const result = await sendInstagramTicketConfirmationEmail({
+      ticket: dbTicket,
+      transcriptText: "ignored",
+    });
+
+    expect(result.outcome).toBe("sent");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toEmail: "riya@example.com",
+        subject: expected.subject,
+        html: expected.html,
+        text: expected.text,
+        bccEmails: ["help@cloutflow.com"],
+        metadata: expect.objectContaining({
+          purpose: "whatsapp-ticket-confirmation",
+        }),
+      }),
+    );
+
+    if (previousInbox === undefined) {
+      delete process.env.SUPPORT_INBOX_EMAIL;
+    } else {
+      process.env.SUPPORT_INBOX_EMAIL = previousInbox;
+    }
+  });
+});
+
+describe("Instagram persona internal emails", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sends agency details to SUPPORT_INBOX_EMAIL without secrets or internal UUIDs", async () => {
+    vi.spyOn(envCheck, "isBrevoConfigured").mockReturnValue(true);
+    const send = vi.spyOn(emailSend, "sendTransactionalEmail").mockResolvedValue({
+      messageId: "brevo-1",
+      accepted: ["help@cloutflow.com"],
+      rejected: [],
+      status: "accepted_by_brevo",
+    });
+    const previousInbox = process.env.SUPPORT_INBOX_EMAIL;
+    process.env.SUPPORT_INBOX_EMAIL = "help@cloutflow.com";
+    const result = await sendInstagramAgencyDetailsEmail({
+      agencyName: "North Star",
+      contactName: "Priya",
+      contactEmail: "priya@agency.test",
+      rosterUrl: "https://northstar.test/roster",
+      instagramConversationRef: "12334",
+    });
+    expect(result.outcome).toBe("sent");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toEmail: "help@cloutflow.com",
+        subject: "New agency details received",
+      }),
+    );
+    const payload = JSON.stringify(send.mock.calls);
+    expect(payload).toContain("North Star");
+    expect(payload).toContain("12334");
+    expect(payload).not.toContain("access_token");
+    expect(payload).not.toContain("internal-db-id");
+    if (previousInbox === undefined) {
+      delete process.env.SUPPORT_INBOX_EMAIL;
+    } else {
+      process.env.SUPPORT_INBOX_EMAIL = previousInbox;
+    }
+  });
+
+  it("sends a general inquiry to SUPPORT_INBOX_EMAIL", async () => {
+    vi.spyOn(envCheck, "isBrevoConfigured").mockReturnValue(true);
+    const send = vi.spyOn(emailSend, "sendTransactionalEmail").mockResolvedValue({
+      messageId: "brevo-1",
+      accepted: ["help@cloutflow.com"],
+      rejected: [],
+      status: "accepted_by_brevo",
+    });
+    const previousInbox = process.env.SUPPORT_INBOX_EMAIL;
+    process.env.SUPPORT_INBOX_EMAIL = "help@cloutflow.com";
+    const result = await sendInstagramGeneralInquiryEmail({
+      contactName: "Asha",
+      contactEmail: "asha@example.com",
+      contactPhone: "+919876543210",
+      inquiryDetails: "I need help with a partnership idea",
+      instagramConversationRef: "12334",
+    });
+    expect(result.outcome).toBe("sent");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toEmail: "help@cloutflow.com",
+        subject: "New general inquiry received",
+      }),
+    );
+    expect(JSON.stringify(send.mock.calls)).toContain("partnership idea");
     if (previousInbox === undefined) {
       delete process.env.SUPPORT_INBOX_EMAIL;
     } else {

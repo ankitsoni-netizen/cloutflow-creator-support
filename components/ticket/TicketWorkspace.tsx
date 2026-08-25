@@ -17,6 +17,7 @@ import {
   retryCreatorEmailAction,
 } from "@/lib/tickets/email-actions";
 import { fetchInstagramTicketTimelineAction } from "@/lib/tickets/instagram-thread";
+import { fetchWhatsAppTicketTimelineAction } from "@/lib/tickets/whatsapp-thread";
 import {
   applyResolutionEmailLabels,
   buildTimeline,
@@ -126,6 +127,9 @@ function TicketWorkspaceActive({
   const [retryingCommentId, setRetryingCommentId] = useState<string | null>(
     null,
   );
+  const [messagingWindowWarning, setMessagingWindowWarning] = useState<
+    string | null
+  >(null);
 
   const [copilotCollapsed, setCopilotCollapsed] = useState(true);
   const [mobilePanel, setMobilePanel] = useState<SidePanel>(null);
@@ -171,6 +175,23 @@ function TicketWorkspaceActive({
         });
       }
     }
+    if (ticket.sourceChannel === "WhatsApp") {
+      items = items.map((item) =>
+        item.canRetryEmail ? { ...item, canRetryWhatsApp: true } : item,
+      );
+      const wa = await fetchWhatsAppTicketTimelineAction({
+        ticketId: ticket.id,
+        externalConversationId: ticket.externalConversationId ?? null,
+      });
+      if (!("error" in wa) && wa.items.length > 0) {
+        items = [...items, ...wa.items].sort((a, b) => {
+          const diff =
+            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+          if (diff !== 0) return diff;
+          return a.id.localeCompare(b.id);
+        });
+      }
+    }
     setTimeline(items);
     setTimelineLoading(false);
   }
@@ -200,6 +221,24 @@ function TicketWorkspaceActive({
           if (cancelled) return;
           if (!("error" in ig) && ig.items.length > 0) {
             items = [...items, ...ig.items].sort((a, b) => {
+              const diff =
+                new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+              if (diff !== 0) return diff;
+              return a.id.localeCompare(b.id);
+            });
+          }
+        }
+        if (ticket.sourceChannel === "WhatsApp") {
+          items = items.map((item) =>
+            item.canRetryEmail ? { ...item, canRetryWhatsApp: true } : item,
+          );
+          const wa = await fetchWhatsAppTicketTimelineAction({
+            ticketId: ticket.id,
+            externalConversationId: ticket.externalConversationId ?? null,
+          });
+          if (cancelled) return;
+          if (!("error" in wa) && wa.items.length > 0) {
+            items = [...items, ...wa.items].sort((a, b) => {
               const diff =
                 new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
               if (diff !== 0) return diff;
@@ -271,6 +310,11 @@ function TicketWorkspaceActive({
     onTicketUpdated(result.ticket);
     void loadTimeline();
     onConversationMutated?.();
+    if (result.messagingWindowWarning) {
+      setMessagingWindowWarning(result.messagingWindowWarning);
+    } else {
+      setMessagingWindowWarning(null);
+    }
     if (result.delivery === "failed") {
       return {
         ok: false as const,
@@ -278,7 +322,10 @@ function TicketWorkspaceActive({
           result.deliveryMessage ||
           (ticket.sourceChannel === "Instagram"
             ? "The creator reply was saved, but Instagram delivery failed."
-            : "The creator reply was saved, but the email could not be sent."),
+            : ticket.sourceChannel === "WhatsApp"
+              ? result.deliveryMessage ||
+                "The creator reply was saved, but WhatsApp delivery failed."
+              : "The creator reply was saved, but the email could not be sent."),
       };
     }
     return { ok: true as const };
@@ -547,6 +594,7 @@ function TicketWorkspaceActive({
             height={composerHeight}
             creatorEmail={ticket.email}
             sourceChannel={ticket.sourceChannel}
+            messagingWindowWarning={messagingWindowWarning}
             onQueueReply={handleQueueReply}
             onSaveNote={handleSaveNote}
             disabled={isResolved}

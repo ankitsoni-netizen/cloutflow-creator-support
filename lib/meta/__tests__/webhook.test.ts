@@ -16,6 +16,8 @@ import {
   whatsappStatusPayload,
   whatsappTextPayload,
 } from "@/lib/meta/__tests__/fixtures";
+import * as whatsappIngest from "@/lib/meta/whatsapp-ingest";
+import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { NextRequest } from "next/server";
 
 const VERIFY_TOKEN = "meta-verify-token-test";
@@ -336,6 +338,76 @@ describe("meta webhook POST", () => {
     expect(logged).not.toContain(APP_SECRET);
     expect(logged).not.toContain(VERIFY_TOKEN);
     errorSpy.mockRestore();
+  });
+
+  it("routes a signed WhatsApp Cloud API POST into chatbot ingest", async () => {
+    const ingest = vi
+      .spyOn(whatsappIngest, "ingestWhatsAppInboundMessage")
+      .mockResolvedValue({ outcome: "stored" });
+    const statuses = vi
+      .spyOn(whatsappIngest, "ingestWhatsAppStatus")
+      .mockResolvedValue({ outcome: "stored" });
+    const response = await handleMetaWebhookPost(
+      signedPost(whatsappTextPayload()),
+      {
+        env: testEnv(),
+        whatsappStore: {} as InstagramIngestStore,
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(META_WEBHOOK_EVENT_RECEIVED);
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(ingest.mock.calls[0]?.[0]).toMatchObject({
+      channel: "whatsapp",
+      provider: "meta_whatsapp",
+      messageBody: "Payment is delayed",
+      externalContactId: "16315551181",
+      phoneNumberId: "123456123",
+    });
+    expect(statuses).not.toHaveBeenCalled();
+    ingest.mockRestore();
+    statuses.mockRestore();
+  });
+
+  it("routes signed WhatsApp status callbacks without creating inbound ingest", async () => {
+    const ingest = vi.spyOn(whatsappIngest, "ingestWhatsAppInboundMessage");
+    const statuses = vi
+      .spyOn(whatsappIngest, "ingestWhatsAppStatus")
+      .mockResolvedValue({ outcome: "stored" });
+    const response = await handleMetaWebhookPost(
+      signedPost(whatsappStatusPayload({ status: "read" })),
+      {
+        env: testEnv(),
+        whatsappStore: {} as InstagramIngestStore,
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(ingest).not.toHaveBeenCalled();
+    expect(statuses).toHaveBeenCalledTimes(1);
+    expect(statuses.mock.calls[0]?.[0]).toMatchObject({
+      status: "read",
+      metaMessageId: "wamid.HBgNMTYzMTU1NTExODE",
+      provider: "meta_whatsapp",
+    });
+    ingest.mockRestore();
+    statuses.mockRestore();
+  });
+
+  it("does not ingest WhatsApp events for an unexpected phone_number_id", async () => {
+    const ingest = vi.spyOn(whatsappIngest, "ingestWhatsAppInboundMessage");
+    const response = await handleMetaWebhookPost(
+      signedPost(whatsappTextPayload()),
+      {
+        env: {
+          ...testEnv(),
+          META_WHATSAPP_PHONE_NUMBER_ID: "999999999",
+        },
+        whatsappStore: {} as InstagramIngestStore,
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(ingest).not.toHaveBeenCalled();
+    ingest.mockRestore();
   });
 });
 

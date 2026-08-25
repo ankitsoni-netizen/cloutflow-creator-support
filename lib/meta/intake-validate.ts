@@ -48,6 +48,21 @@ export type IntakeIssueType = (typeof INTAKE_ISSUE_TYPES)[number];
 
 export type IntakePlatform = "instagram" | "youtube";
 
+export const IG_PERSONAS = [
+  "creator",
+  "brand",
+  "agency",
+  "other",
+] as const;
+
+export type IgPersona = (typeof IG_PERSONAS)[number];
+
+export const IG_CREATOR_REASONS = ["new_work", "existing_campaign"] as const;
+export type IgCreatorReason = (typeof IG_CREATOR_REASONS)[number];
+
+export const IG_ISSUE_CATEGORIES = ["campaign", "payment"] as const;
+export type IgIssueCategory = (typeof IG_ISSUE_CATEGORIES)[number];
+
 const UNKNOWN_PATTERN =
   /^(i\s*don'?t\s*know|idk|don'?t\s*know|unknown|n\/?a|not\s*sure|no\s*idea|none|skip)$/i;
 
@@ -82,6 +97,15 @@ export type IntakeCollectedData = {
   originalInboundText: string | null;
   originalInboundMessageId: string | null;
   routingSessionId: string | null;
+  phonePrefill: boolean;
+  cachedUsername: string | null;
+  usernameLookupAttempted: boolean;
+  igPersona: IgPersona | null;
+  igCreatorReason: IgCreatorReason | null;
+  igIssueCategory: IgIssueCategory | null;
+  agencyName: string | null;
+  rosterUrl: string | null;
+  inquiryDetails: string | null;
 };
 
 export function emptyIntakeCollected(
@@ -105,8 +129,32 @@ export function emptyIntakeCollected(
     originalInboundText: null,
     originalInboundMessageId: null,
     routingSessionId: null,
+    phonePrefill: false,
+    cachedUsername: null,
+    usernameLookupAttempted: false,
+    igPersona: null,
+    igCreatorReason: null,
+    igIssueCategory: null,
+    agencyName: null,
+    rosterUrl: null,
+    inquiryDetails: null,
     ...overrides,
   };
+}
+
+export function clearInstagramJourneyCollected(
+  collected: IntakeCollectedData,
+  extras: Partial<IntakeCollectedData> = {},
+): IntakeCollectedData {
+  return emptyIntakeCollected({
+    cachedUsername: collected.cachedUsername,
+    usernameLookupAttempted: collected.usernameLookupAttempted,
+    originalInboundText: collected.originalInboundText,
+    originalInboundMessageId: collected.originalInboundMessageId,
+    socialHandle: collected.socialHandle,
+    socialHandleDisplay: collected.socialHandleDisplay,
+    ...extras,
+  });
 }
 
 export function isUnknownOptionalAnswer(value: string): boolean {
@@ -344,18 +392,20 @@ export function mergeCreatorDetails(
   raw: string,
 ): IntakeCollectedData {
   const parsed = parseCreatorDetailsBundle(raw);
+  const explicitPhone = Boolean(parsed.phone?.normalized);
+  const replacePhone =
+    explicitPhone && (collected.phonePrefill || !collected.phoneNormalized);
   return {
     ...collected,
     creatorName: keepExisting(collected.creatorName, parsed.creatorName),
     email: keepExisting(collected.email, parsed.email),
-    phoneDisplay: keepExisting(
-      collected.phoneDisplay,
-      parsed.phone?.display ?? null,
-    ),
-    phoneNormalized: keepExisting(
-      collected.phoneNormalized,
-      parsed.phone?.normalized ?? null,
-    ),
+    phoneDisplay: replacePhone
+      ? parsed.phone?.display ?? null
+      : collected.phoneDisplay,
+    phoneNormalized: replacePhone
+      ? parsed.phone?.normalized ?? null
+      : collected.phoneNormalized,
+    phonePrefill: replacePhone ? false : collected.phonePrefill,
   };
 }
 

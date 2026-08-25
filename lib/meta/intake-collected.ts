@@ -1,4 +1,7 @@
 import type {
+  IgCreatorReason,
+  IgIssueCategory,
+  IgPersona,
   IntakeCollectedData,
   IntakeField,
   IntakeIssueType,
@@ -6,6 +9,9 @@ import type {
 } from "@/lib/meta/intake-validate";
 import {
   emptyIntakeCollected,
+  IG_CREATOR_REASONS,
+  IG_ISSUE_CATEGORIES,
+  IG_PERSONAS,
   INTAKE_FIELDS,
   resolveIntakeStep,
 } from "@/lib/meta/intake-validate";
@@ -22,6 +28,9 @@ const ISSUE_TYPES = new Set<string>([
   "poc_conduct",
   "other",
 ]);
+const PERSONA_SET = new Set<string>(IG_PERSONAS);
+const CREATOR_REASON_SET = new Set<string>(IG_CREATOR_REASONS);
+const ISSUE_CATEGORY_SET = new Set<string>(IG_ISSUE_CATEGORIES);
 
 function asString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -75,6 +84,26 @@ export function collectedFromRecord(value: unknown): IntakeCollectedData {
     originalInboundText: asString(record.originalInboundText),
     originalInboundMessageId: asString(record.originalInboundMessageId),
     routingSessionId: asString(record.routingSessionId),
+    phonePrefill: record.phonePrefill === true,
+    cachedUsername: asString(record.cachedUsername),
+    usernameLookupAttempted: record.usernameLookupAttempted === true,
+    igPersona:
+      typeof record.igPersona === "string" && PERSONA_SET.has(record.igPersona)
+        ? (record.igPersona as IgPersona)
+        : null,
+    igCreatorReason:
+      typeof record.igCreatorReason === "string" &&
+      CREATOR_REASON_SET.has(record.igCreatorReason)
+        ? (record.igCreatorReason as IgCreatorReason)
+        : null,
+    igIssueCategory:
+      typeof record.igIssueCategory === "string" &&
+      ISSUE_CATEGORY_SET.has(record.igIssueCategory)
+        ? (record.igIssueCategory as IgIssueCategory)
+        : null,
+    agencyName: asString(record.agencyName),
+    rosterUrl: asString(record.rosterUrl),
+    inquiryDetails: asString(record.inquiryDetails),
   });
 }
 
@@ -99,5 +128,14 @@ export function collectedToRecord(
     originalInboundText: collected.originalInboundText,
     originalInboundMessageId: collected.originalInboundMessageId,
     routingSessionId: collected.routingSessionId,
+    phonePrefill: collected.phonePrefill,
+    cachedUsername: collected.cachedUsername,
+    usernameLookupAttempted: collected.usernameLookupAttempted,
+    igPersona: collected.igPersona,
+    igCreatorReason: collected.igCreatorReason,
+    igIssueCategory: collected.igIssueCategory,
+    agencyName: collected.agencyName,
+    rosterUrl: collected.rosterUrl,
+    inquiryDetails: collected.inquiryDetails,
   };
 }

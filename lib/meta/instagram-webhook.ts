@@ -17,6 +17,7 @@ import {
   ingestInstagramInboundMessage,
   type InstagramIngestStore,
 } from "@/lib/meta/instagram-ingest";
+import { createInstagramTimingSession } from "@/lib/meta/timing";
 import {
   handleMetaWebhookGet,
   readVerifiedMetaWebhookPost,
@@ -54,6 +55,9 @@ export async function handleInstagramWebhookPost(
   );
   if (!verified.ok) return verified.response;
 
+  const timing = createInstagramTimingSession();
+  timing.mark("signature_verified");
+
   const payload = verified.payload;
   const echoes = extractInstagramEchoes(payload);
   const events = normalizeMetaWebhookPayload(payload).filter(
@@ -75,6 +79,30 @@ export async function handleInstagramWebhookPost(
   }
 
   let hadRetryableFailure = false;
+
+  for (const event of events) {
+    let result;
+    try {
+      result = await ingestInstagramInboundMessage(
+        event,
+        store,
+        { webhookPayload: payload },
+        { timing },
+      );
+    } catch {
+      result = { outcome: "failed" as const, errorCode: "unexpected_failure" };
+    }
+
+    if (result.outcome === "failed") {
+      logMetaWebhookError(result.errorCode ?? "unexpected_failure", {
+        channel: event.channel,
+        externalEventId: event.externalEventId,
+        externalMessageId: event.externalMessageId,
+      });
+      hadRetryableFailure = true;
+    }
+  }
+
   for (const echo of echoes) {
     let result;
     try {
@@ -89,26 +117,6 @@ export async function handleInstagramWebhookPost(
         channel: "instagram",
         externalEventId: echo.externalEventId,
         externalMessageId: echo.externalMessageId,
-      });
-      hadRetryableFailure = true;
-    }
-  }
-
-  for (const event of events) {
-    let result;
-    try {
-      result = await ingestInstagramInboundMessage(event, store, {
-        webhookPayload: payload,
-      });
-    } catch {
-      result = { outcome: "failed" as const, errorCode: "unexpected_failure" };
-    }
-
-    if (result.outcome === "failed") {
-      logMetaWebhookError(result.errorCode ?? "unexpected_failure", {
-        channel: event.channel,
-        externalEventId: event.externalEventId,
-        externalMessageId: event.externalMessageId,
       });
       hadRetryableFailure = true;
     }

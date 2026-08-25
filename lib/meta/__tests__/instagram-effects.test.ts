@@ -2,10 +2,11 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { applyInstagramEffects } from "@/lib/meta/instagram-effects";
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
+import { emptyConversationSnapshot } from "@/lib/meta/conversation-machine";
 import {
-  ticketCreatedWithEmailText,
-  ticketCreatedWithoutEmailText,
-} from "@/lib/meta/routing-copy";
+  creatorTicketRaisedText,
+  withPostCompletionQuestion,
+} from "@/lib/meta/instagram-persona-copy";
 import type { DbTicket } from "@/lib/tickets/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
 import * as instagramMail from "@/lib/email/instagram-ticket-mail";
@@ -115,8 +116,55 @@ function memoryStore(): InstagramIngestStore & {
     async linkSupportMessagesToTicket() {
       return;
     },
+    async markMessagesRoutingKind() {
+      return;
+    },
     async listSupportTranscript() {
       return [];
+    },
+    async listFailedOutbounds() {
+      return [];
+    },
+    async listRetryableOutbounds() {
+      return [];
+    },
+    async saveConversationSnapshot() {
+      return { outcome: "updated" as const };
+    },
+    async reserveOutboundAndSnapshot(input: {
+      conversationId: string;
+      snapshot: Record<string, unknown>;
+      lastMessageAt: string;
+      displayName: string | null;
+      expectedLastProcessedExternalMessageId?: string | null;
+      outbounds: Array<Record<string, unknown>>;
+    }) {
+      const reserved = [];
+      for (const outbound of input.outbounds) {
+        const claimed = await (this as unknown as InstagramIngestStore).claimOutboundMessage({
+          conversationId: input.conversationId,
+          ticketId: (outbound.ticketId as string | null) ?? null,
+          channel: "instagram",
+          recipientExternalId: String(outbound.recipientExternalId),
+          senderAddress: (outbound.senderAddress as string | null) ?? null,
+          messageBody: String(outbound.messageBody),
+          idempotencyKey: String(outbound.idempotencyKey),
+          purpose: String(outbound.purpose ?? "prompt"),
+        });
+        if (claimed.outcome === "failed") {
+          return { outcome: "failed" as const, errorCode: claimed.errorCode };
+        }
+        reserved.push({
+          id: claimed.id,
+          idempotencyKey: String(outbound.idempotencyKey),
+          deliveryStatus:
+            claimed.outcome === "duplicate"
+              ? claimed.deliveryStatus
+              : "pending",
+          claimed: claimed.outcome === "claimed",
+        });
+      }
+      return { outcome: "reserved" as const, outbounds: reserved };
     },
     async claimOutboundMessage(input: Record<string, unknown>) {
       const duplicate = messages.find(
@@ -171,16 +219,34 @@ describe("applyInstagramEffects ticket creation", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
-  it("sends email-success Instagram copy only after the ticket exists", async () => {
-    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
-      ok: true,
-      metaMessageId: "mid.out",
-      recipientId: "12334",
+
+  it("sends the short Instagram confirmation before waiting for email", async () => {
+    const order: string[] = [];
+    const qrSend = vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockImplementation(
+      async (options) => {
+        order.push(`ig:${options.text}`);
+        return {
+          ok: true,
+          metaMessageId: "mid.out",
+          recipientId: "12334",
+        };
+      },
+    );
+    vi.spyOn(instagramSend, "sendInstagramText").mockImplementation(async (options) => {
+      order.push(`ig-text:${options.text}`);
+      return {
+        ok: true,
+        metaMessageId: "mid.out",
+        recipientId: "12334",
+      };
     });
-    vi.spyOn(instagramMail, "sendInstagramTicketConfirmationEmail").mockResolvedValue({
-      outcome: "sent",
-      messageId: "brevo-1",
-    });
+    vi.spyOn(instagramMail, "sendInstagramTicketConfirmationEmail").mockImplementation(
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        order.push("email");
+        return { outcome: "sent", messageId: "brevo-1" };
+      },
+    );
     const store = memoryStore();
     const ticket = dbTicket();
     const result = await applyInstagramEffects({
@@ -190,6 +256,11 @@ describe("applyInstagramEffects ticket creation", () => {
       inboundMessageId: "mid.campaign",
       inboundText: "Summer Drop, Acme, August 2026",
       intakeSessionVersion: 1,
+      snapshotToPersist: emptyConversationSnapshot({
+        state: "ticket_open",
+        intakeSessionVersion: 1,
+      }),
+      lastMessageAt: "2026-08-25T10:00:00.000Z",
       event: {
         externalContactId: "12334",
         externalConversationId: "12334",
@@ -198,25 +269,29 @@ describe("applyInstagramEffects ticket creation", () => {
         store,
         recipientId: "12334",
         conversationId: "convo-1",
+        outboundSenderAddress: "17841400008460000",
         loadTicket: async () => ticket,
       },
     });
     expect(store.tickets).toHaveLength(1);
     expect(result.ticketId).toBe(store.tickets[0]?.id);
-    expect(instagramSend.sendInstagramText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        text: ticketCreatedWithEmailText("Riya", "CF-2026-00001"),
-      }),
+    expect(result.snapshotPersisted).toBe(true);
+    expect(order[0]).toBe(
+      `ig:${withPostCompletionQuestion(creatorTicketRaisedText("CF-2026-00001"))}`,
     );
+    expect(order).toContain("email");
+    expect(order.indexOf("email")).toBeGreaterThan(0);
+    expect(order.some((item) => item.includes("We've also sent"))).toBe(false);
+    expect(qrSend).toHaveBeenCalled();
     const outbound = store.messages.find((message) =>
-      String(message.idempotencyKey ?? "").includes("ticket_created"),
+      String(message.idempotencyKey ?? "").includes("awaiting_post_completion"),
     );
     expect(outbound?.externalMessageId).toBe("mid.out");
     expect(outbound?.deliveryStatus).toBe("sent");
   });
 
-  it("does not claim that email was sent when acknowledgement delivery fails", async () => {
-    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+  it("does not send an email-follow-up Instagram message when acknowledgement delivery fails", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.out",
       recipientId: "12334",
@@ -233,6 +308,11 @@ describe("applyInstagramEffects ticket creation", () => {
       inboundMessageId: "mid.campaign",
       inboundText: "Summer Drop, Acme, August 2026",
       intakeSessionVersion: 1,
+      snapshotToPersist: emptyConversationSnapshot({
+        state: "ticket_open",
+        intakeSessionVersion: 1,
+      }),
+      lastMessageAt: "2026-08-25T10:00:00.000Z",
       event: {
         externalContactId: "12334",
         externalConversationId: "12334",
@@ -241,18 +321,20 @@ describe("applyInstagramEffects ticket creation", () => {
         store,
         recipientId: "12334",
         conversationId: "convo-1",
+        outboundSenderAddress: "17841400008460000",
         loadTicket: async () => dbTicket(),
       },
     });
-    expect(instagramSend.sendInstagramText).toHaveBeenCalledWith(
+    expect(instagramSend.sendInstagramQuickReplies).toHaveBeenCalledTimes(1);
+    expect(instagramSend.sendInstagramQuickReplies).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: ticketCreatedWithoutEmailText("Riya", "CF-2026-00001"),
+        text: withPostCompletionQuestion(creatorTicketRaisedText("CF-2026-00001")),
       }),
     );
   });
 
   it("does not insert a second ticket when an active Instagram ticket already exists", async () => {
-    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.out",
       recipientId: "12334",
@@ -275,6 +357,11 @@ describe("applyInstagramEffects ticket creation", () => {
       inboundMessageId: "mid.campaign",
       inboundText: "Summer Drop, Acme, August 2026",
       intakeSessionVersion: 1,
+      snapshotToPersist: emptyConversationSnapshot({
+        state: "ticket_open",
+        intakeSessionVersion: 1,
+      }),
+      lastMessageAt: "2026-08-25T10:00:00.000Z",
       event: {
         externalContactId: "12334",
         externalConversationId: "12334",
@@ -283,6 +370,7 @@ describe("applyInstagramEffects ticket creation", () => {
         store,
         recipientId: "12334",
         conversationId: "convo-1",
+        outboundSenderAddress: "17841400008460000",
         loadTicket: async () => dbTicket({ id: "ticket-existing" }),
       },
     });

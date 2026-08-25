@@ -1,37 +1,37 @@
 import "server-only";
 
-import { getMetaInstagramAccountId } from "@/lib/meta/config";
 import { sendInstagramCreatorReplyEmail } from "@/lib/email/instagram-ticket-mail";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
   createAdminInstagramStore,
   type InstagramIngestStore,
 } from "@/lib/meta/instagram-store";
-import { sendInstagramText } from "@/lib/meta/instagram-send";
+import { sendWhatsAppText } from "@/lib/meta/whatsapp-send";
 import { COLLABORATION_IDLE_MS } from "@/lib/meta/conversation-machine";
-import { MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
+import { WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
+import { channelCrmReplyKey } from "@/lib/meta/prompt-keys";
 import { toPlainTicketDescription } from "@/lib/meta/plain-text";
 import type { DbTicket } from "@/lib/tickets/types";
 
-export type InstagramStaffReplyResult =
+export type WhatsAppStaffReplyResult =
   | {
       ok: true;
-      instagram: "sent" | "failed" | "skipped";
+      whatsapp: "sent" | "failed" | "skipped";
       email: "sent" | "failed" | "skipped";
-      instagramErrorCode?: string | null;
+      whatsappErrorCode?: string | null;
       messagingWindowExpired?: boolean;
       alreadySent?: boolean;
     }
   | { ok: false; error: string; errorCode: string };
 
 function recipientFromTicket(ticket: DbTicket): string | null {
-  const igsid = ticket.external_contact_id?.trim() ?? "";
-  if (/^\d+$/.test(igsid)) return igsid;
+  const waId = ticket.external_contact_id?.trim() ?? "";
+  if (/^\d{6,20}$/.test(waId)) return waId;
   return null;
 }
 
-export function isInstagramTicket(ticket: DbTicket): boolean {
-  return ticket.source_channel?.trim().toLowerCase() === "instagram";
+export function isWhatsAppTicket(ticket: DbTicket): boolean {
+  return ticket.source_channel?.trim().toLowerCase() === "whatsapp";
 }
 
 export function messagingWindowOpen(
@@ -44,19 +44,19 @@ export function messagingWindowOpen(
   return now - last < COLLABORATION_IDLE_MS;
 }
 
-export async function sendStaffInstagramReply(input: {
+export async function sendStaffWhatsAppReply(input: {
   ticket: DbTicket;
   commentId: string;
   commentText: string;
   store?: InstagramIngestStore;
-}): Promise<InstagramStaffReplyResult> {
-  if (!isInstagramTicket(input.ticket)) {
-    return { ok: false, error: "This ticket is not an Instagram ticket.", errorCode: "not_instagram" };
+}): Promise<WhatsAppStaffReplyResult> {
+  if (!isWhatsAppTicket(input.ticket)) {
+    return { ok: false, error: "This ticket is not a WhatsApp ticket.", errorCode: "not_whatsapp" };
   }
   if (!isActiveTicketStatus(input.ticket.status)) {
     return {
       ok: false,
-      error: "Replies can only be sent on an active Instagram ticket.",
+      error: "Replies can only be sent on an active WhatsApp ticket.",
       errorCode: "ticket_not_active",
     };
   }
@@ -65,7 +65,7 @@ export async function sendStaffInstagramReply(input: {
   if (!recipientId) {
     return {
       ok: false,
-      error: "This ticket is missing a valid Instagram recipient.",
+      error: "This ticket is missing a valid WhatsApp recipient.",
       errorCode: "invalid_recipient",
     };
   }
@@ -85,19 +85,19 @@ export async function sendStaffInstagramReply(input: {
   } catch {
     return {
       ok: false,
-      error: "Instagram sending is temporarily unavailable.",
+      error: "WhatsApp sending is temporarily unavailable.",
       errorCode: "admin_client_missing",
     };
   }
 
   const conversation =
     input.ticket.external_conversation_id
-      ? await store.getConversation("instagram", input.ticket.external_conversation_id)
+      ? await store.getConversation("whatsapp", input.ticket.external_conversation_id)
       : null;
   if (conversation && "errorCode" in conversation) {
     return {
       ok: false,
-      error: "Unable to load the Instagram conversation.",
+      error: "Unable to load the WhatsApp conversation.",
       errorCode: conversation.errorCode,
     };
   }
@@ -106,7 +106,7 @@ export async function sendStaffInstagramReply(input: {
   if (!conversationId) {
     return {
       ok: false,
-      error: "Unable to find the Instagram conversation for this ticket.",
+      error: "Unable to find the WhatsApp conversation for this ticket.",
       errorCode: "conversation_missing",
     };
   }
@@ -114,7 +114,7 @@ export async function sendStaffInstagramReply(input: {
   if (conversation.externalContactId && conversation.externalContactId !== recipientId) {
     return {
       ok: false,
-      error: "Instagram recipient does not match this conversation.",
+      error: "WhatsApp recipient does not match this conversation.",
       errorCode: "recipient_mismatch",
     };
   }
@@ -123,11 +123,10 @@ export async function sendStaffInstagramReply(input: {
   const claimed = await store.claimOutboundMessage({
     conversationId,
     ticketId: input.ticket.id,
-    channel: "instagram",
+    channel: "whatsapp",
     recipientExternalId: recipientId,
-    senderAddress: getMetaInstagramAccountId(),
     messageBody: text,
-    idempotencyKey: `ig:crm:${input.commentId}`,
+    idempotencyKey: channelCrmReplyKey("wa", input.commentId),
     purpose: "staff_reply",
     commentId: input.commentId,
   });
@@ -135,21 +134,23 @@ export async function sendStaffInstagramReply(input: {
   if (claimed.outcome === "failed") {
     return {
       ok: false,
-      error: "Unable to queue the Instagram reply.",
+      error: "Unable to queue the WhatsApp reply.",
       errorCode: claimed.errorCode,
     };
   }
 
   if (
     claimed.outcome === "duplicate" &&
-    (claimed.deliveryStatus === "sent" || claimed.deliveryStatus === "delivered")
+    (claimed.deliveryStatus === "sent" ||
+      claimed.deliveryStatus === "delivered" ||
+      claimed.deliveryStatus === "read")
   ) {
     const emailClaim = await store.claimEmailDelivery({
       ticketId: input.ticket.id,
       conversationId,
       commentId: input.commentId,
-      purpose: "instagram-staff-reply",
-      idempotencyKey: `email:ig-crm:${input.commentId}`,
+      purpose: "whatsapp-staff-reply",
+      idempotencyKey: `email:wa-crm:${input.commentId}`,
     });
     let email: "sent" | "failed" | "skipped" = "skipped";
     if (emailClaim.outcome === "claimed") {
@@ -178,14 +179,58 @@ export async function sendStaffInstagramReply(input: {
     }
     return {
       ok: true,
-      instagram: "sent",
+      whatsapp: "sent",
       email,
       alreadySent: true,
     };
   }
 
   const outboundId = claimed.id;
-  const sent = await sendInstagramText({ recipientId, text });
+  if (!windowOpen) {
+    await store.markOutboundMessage(outboundId, {
+      deliveryStatus: "failed",
+      deliveryErrorCode: "outside_customer_service_window",
+    });
+    const emailClaim = await store.claimEmailDelivery({
+      ticketId: input.ticket.id,
+      conversationId,
+      commentId: input.commentId,
+      purpose: "whatsapp-staff-reply",
+      idempotencyKey: `email:wa-crm:${input.commentId}`,
+    });
+    let email: "sent" | "failed" | "skipped" = "skipped";
+    if (emailClaim.outcome === "claimed") {
+      const mailed = await sendInstagramCreatorReplyEmail({
+        ticket: input.ticket,
+        commentText: text,
+      });
+      email =
+        mailed.outcome === "sent"
+          ? "sent"
+          : mailed.outcome === "skipped"
+            ? "skipped"
+            : "failed";
+      await store.markEmailDelivery(emailClaim.id, {
+        deliveryStatus:
+          mailed.outcome === "sent"
+            ? "sent"
+            : mailed.outcome === "skipped"
+              ? "skipped"
+              : "failed",
+        brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
+        errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
+      });
+    }
+    return {
+      ok: true,
+      whatsapp: "failed",
+      email,
+      whatsappErrorCode: "outside_customer_service_window",
+      messagingWindowExpired: true,
+    };
+  }
+
+  const sent = await sendWhatsAppText({ recipientId, text });
   if (sent.ok) {
     await store.markOutboundMessage(outboundId, {
       deliveryStatus: "sent",
@@ -203,8 +248,8 @@ export async function sendStaffInstagramReply(input: {
     ticketId: input.ticket.id,
     conversationId,
     commentId: input.commentId,
-    purpose: "instagram-staff-reply",
-    idempotencyKey: `email:ig-crm:${input.commentId}`,
+    purpose: "whatsapp-staff-reply",
+    idempotencyKey: `email:wa-crm:${input.commentId}`,
   });
   let email: "sent" | "failed" | "skipped" = "skipped";
   if (emailClaim.outcome === "claimed") {
@@ -235,21 +280,21 @@ export async function sendStaffInstagramReply(input: {
   if (!sent.ok) {
     return {
       ok: true,
-      instagram: "failed",
+      whatsapp: "failed",
       email,
-      instagramErrorCode: sent.errorCode,
+      whatsappErrorCode: sent.errorCode,
       messagingWindowExpired: sent.messagingWindowExpired || !windowOpen,
     };
   }
 
   return {
     ok: true,
-    instagram: "sent",
+    whatsapp: "sent",
     email,
     messagingWindowExpired: !windowOpen,
   };
 }
 
-export function staffInstagramWindowWarning(open: boolean): string | null {
-  return open ? null : MESSAGING_WINDOW_STAFF_WARNING;
+export function staffWhatsAppWindowWarning(open: boolean): string | null {
+  return open ? null : WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING;
 }

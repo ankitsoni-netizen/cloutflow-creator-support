@@ -1,14 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { META_INSTAGRAM_PROVIDER } from "@/lib/meta/constants";
 import { ingestInstagramInboundMessage } from "@/lib/meta/instagram-ingest";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
+import { applyReserveInstagramOutboundAndSnapshot } from "@/lib/meta/instagram-reserve";
 import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
-import { PLATFORM_DETAILS_PROMPT_TEXT, ROUTING_QUESTION_TEXT, ROUTE_CREATOR_SUPPORT_PAYLOAD, ticketCreatedWithoutEmailText } from "@/lib/meta/routing-copy";
 import {
-  chatbotOutboundIdempotencyKey,
-  intakeEffectType,
-} from "@/lib/meta/prompt-keys";
+  CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+  CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+  CREATOR_REASON_TEXT,
+  CREATOR_TICKET_CONFIRM_PAYLOAD,
+  PERSONA_CREATOR_PAYLOAD,
+  creatorTicketRaisedText,
+  personaWelcomeText,
+  withPostCompletionQuestion,
+} from "@/lib/meta/instagram-persona-copy";
+import { chatbotOutboundIdempotencyKey } from "@/lib/meta/prompt-keys";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
 
@@ -42,6 +49,8 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
   messages: Array<Record<string, unknown>>;
   tickets: Array<Record<string, unknown>>;
   emails: Array<Record<string, unknown>>;
+  getConversationCalls: number;
+  findActiveCalls: number;
 } {
   const events: Array<Record<string, unknown>> = [];
   const conversations: Array<Record<string, unknown>> = [];
@@ -96,7 +105,10 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
       row.errorCode = status === "failed" ? errorCode : null;
       row.errorMessage = status === "failed" ? errorCode : null;
     },
+    getConversationCalls: 0,
+    findActiveCalls: 0,
     async getConversation(channel: string, externalConversationId: string) {
+      store.getConversationCalls += 1;
       const row = conversations.find(
         (conversation) =>
           conversation.channel === channel &&
@@ -121,7 +133,7 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
     },
     async insertConversation(input: Record<string, unknown>) {
       const id = nextId();
-      conversations.push({
+      const row = {
         id,
         ...input,
         state: input.state ?? "unclassified",
@@ -129,8 +141,26 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
         ticketId: null,
         routingIntent: "unclassified",
         intakeSessionVersion: 0,
-      });
-      return { outcome: "inserted" as const, id };
+      };
+      conversations.push(row);
+      return {
+        outcome: "inserted" as const,
+        id,
+        row: {
+          id,
+          displayName: (input.displayName as string | null) ?? null,
+          ticketId: null,
+          state: String(input.state ?? "unclassified"),
+          routingIntent: "unclassified",
+          currentIntakeField: null,
+          lastPromptKey: null,
+          lastActivityAt: (input.lastMessageAt as string | null) ?? null,
+          lastProcessedExternalMessageId: null,
+          collectedData: {},
+          externalContactId: (input.externalContactId as string | null) ?? null,
+          intakeSessionVersion: 0,
+        },
+      };
     },
     async updateConversation() {
       return { outcome: "updated" as const };
@@ -186,6 +216,7 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
       externalConversationId: string;
       externalContactId: string;
     }) {
+      store.findActiveCalls += 1;
       const row = tickets.find(
         (ticket) =>
           ticket.sourceChannel === "instagram" &&
@@ -323,6 +354,113 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
           purpose: (message.purpose as string | null) ?? null,
         }));
     },
+    async listRetryableOutbounds(conversationId: string) {
+      return messages
+        .filter(
+          (message) =>
+            message.conversationId === conversationId &&
+            message.direction === "outbound" &&
+            (message.deliveryStatus === "failed" ||
+              message.deliveryStatus === "pending") &&
+            message.purpose !== "staff_reply",
+        )
+        .map((message) => ({
+          id: message.id as string,
+          messageBody: String(message.messageBody ?? ""),
+          purpose: (message.purpose as string | null) ?? null,
+        }));
+    },
+    async reserveOutboundAndSnapshot(input: {
+      conversationId: string;
+      snapshot: Record<string, unknown> & {
+        lastProcessedExternalMessageId?: string | null;
+        lastActivityAt?: string | null;
+        state?: string;
+        routingIntent?: string | null;
+        currentIntakeField?: string | null;
+        lastPromptKey?: string | null;
+        collected?: unknown;
+        ticketId?: string | null;
+        intakeSessionVersion?: number;
+      };
+      lastMessageAt: string;
+      displayName: string | null;
+      expectedLastProcessedExternalMessageId?: string | null;
+      outbounds: Array<Record<string, unknown>>;
+    }) {
+      const row = conversations.find(
+        (conversation) => conversation.id === input.conversationId,
+      );
+      const result = applyReserveInstagramOutboundAndSnapshot({
+        conversation: row
+          ? {
+              id: String(row.id),
+              lastProcessedExternalMessageId:
+                (row.lastProcessedExternalMessageId as string | null) ?? null,
+              displayName: (row.displayName as string | null) ?? null,
+            }
+          : null,
+        expectedLastProcessedExternalMessageId:
+          input.expectedLastProcessedExternalMessageId ?? null,
+        snapshot: input.snapshot as Parameters<
+          typeof applyReserveInstagramOutboundAndSnapshot
+        >[0]["snapshot"],
+        lastMessageAt: input.lastMessageAt,
+        displayName: input.displayName,
+        outbounds: input.outbounds.map((outbound) => ({
+          channel: String(outbound.channel ?? "instagram"),
+          recipientExternalId: String(outbound.recipientExternalId ?? ""),
+          senderAddress: (outbound.senderAddress as string | null) ?? null,
+          messageBody: String(outbound.messageBody ?? ""),
+          idempotencyKey: String(outbound.idempotencyKey ?? ""),
+          purpose: String(outbound.purpose ?? "prompt"),
+          ticketId: (outbound.ticketId as string | null) ?? null,
+          routingKind: (outbound.routingKind as string | null) ?? "support",
+        })),
+        existingMessages: messages
+          .filter((message) => message.idempotencyKey)
+          .map((message) => ({
+            id: String(message.id),
+            conversationId: String(message.conversationId ?? ""),
+            channel: String(message.channel ?? "instagram"),
+            direction: "outbound" as const,
+            senderName: "Cloutflow",
+            senderAddress: (message.senderAddress as string | null) ?? null,
+            recipientExternalId:
+              (message.recipientExternalId as string | null) ?? null,
+            messageBody: String(message.messageBody ?? ""),
+            purpose: (message.purpose as string | null) ?? null,
+            ticketId: (message.ticketId as string | null) ?? null,
+            idempotencyKey: String(message.idempotencyKey),
+            deliveryStatus: String(message.deliveryStatus ?? "pending"),
+            routingKind: (message.routingKind as string | null) ?? "support",
+          })),
+        nextId,
+      });
+      if (result.outcome === "failed") {
+        return { outcome: "failed" as const, errorCode: result.errorCode };
+      }
+      if (row) {
+        row.lastMessageAt = result.conversation.lastMessageAt;
+        row.lastActivityAt = result.conversation.lastActivityAt;
+        row.state = result.conversation.state;
+        row.routingIntent = result.conversation.routingIntent;
+        row.currentIntakeField = result.conversation.currentIntakeField;
+        row.lastPromptKey = result.conversation.lastPromptKey;
+        row.lastProcessedExternalMessageId =
+          result.conversation.lastProcessedExternalMessageId;
+        row.collectedData = result.conversation.collectedData;
+        row.ticketId = result.conversation.ticketId;
+        row.intakeSessionVersion = result.conversation.intakeSessionVersion;
+        if (result.conversation.displayName) {
+          row.displayName = result.conversation.displayName;
+        }
+      }
+      for (const message of result.insertedMessages) {
+        messages.push({ ...message });
+      }
+      return { outcome: "reserved" as const, outbounds: result.outbounds };
+    },
     async claimEmailDelivery(input: Record<string, unknown>) {
       const duplicate = emails.find((row) => row.idempotencyKey === input.idempotencyKey);
       if (duplicate) {
@@ -349,12 +487,18 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
     messages: typeof messages;
     tickets: typeof tickets;
     emails: typeof emails;
+    getConversationCalls: number;
+    findActiveCalls: number;
   };
 }
 
 const context = { webhookPayload: { object: "instagram" } };
 
 describe("ingestInstagramInboundMessage routing", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("asks the routing question on the first DM and creates no ticket", async () => {
     const send = vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
@@ -374,11 +518,11 @@ describe("ingestInstagramInboundMessage routing", () => {
     );
     expect(result.outcome).toBe("stored");
     expect(store.tickets).toHaveLength(0);
-    expect(store.conversations[0]?.state).toBe("awaiting_route");
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]?.[0]).toMatchObject({
       recipientId: "12334",
-      text: ROUTING_QUESTION_TEXT,
+      text: personaWelcomeText(null),
     });
     send.mockRestore();
   });
@@ -395,10 +539,37 @@ describe("ingestInstagramInboundMessage routing", () => {
     const second = await ingestInstagramInboundMessage(event, store, context);
     expect(second.outcome).toBe("duplicate");
     expect(send).toHaveBeenCalledTimes(1);
-    send.mockRestore();
   });
 
-  it("does not create a ticket for collaboration selection", async () => {
+  it("does not send twice when the same message id arrives on a different webhook event", async () => {
+    const send = vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "evt.first",
+        externalMessageId: "mid.same",
+      }),
+      store,
+      context,
+    );
+    const second = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "evt.retry",
+        externalMessageId: "mid.same",
+      }),
+      store,
+      context,
+    );
+    expect(second.outcome).toBe("duplicate");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
+  });
+
+  it("does not create a ticket for brand selection", async () => {
     vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.prompt",
@@ -415,15 +586,15 @@ describe("ingestInstagramInboundMessage routing", () => {
       sampleInstagramEvent({
         externalEventId: "mid.collab",
         externalMessageId: "mid.collab",
-        messageBody: "Campaign / Collaboration",
-        quickReplyPayload: "ROUTE_COLLABORATION",
+        messageBody: "I'm a brand",
+        quickReplyPayload: "PERSONA_BRAND",
       }),
       store,
       context,
     );
     expect(result.outcome).toBe("stored");
     expect(store.tickets).toHaveLength(0);
-    expect(store.conversations[0]?.state).toBe("collaboration");
+    expect(store.conversations[0]?.state).toBe("brand_action");
   });
 
   it("attaches a follow-up to an active Instagram ticket without routing", async () => {
@@ -495,89 +666,108 @@ describe("ingestInstagramInboundMessage routing", () => {
     errorSpy.mockRestore();
   });
 
-  it("creates exactly one ticket after the three intake answers using the original DM", async () => {
-    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+  it("creates exactly one campaign-issue ticket with issue details and no duplicate on webhook retry", async () => {
+    const qrSend = vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.prompt",
       recipientId: "12334",
     });
-    const textSend = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.text",
       recipientId: "12334",
     });
     const store = createMemoryInstagramStore();
-    const original = "Need help with a campaign";
-    await ingestInstagramInboundMessage(
-      sampleInstagramEvent({ messageBody: original }),
-      store,
-      context,
-    );
+    const issue = "The film deliverable was rejected without a reason";
+    await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.route",
-        externalMessageId: "mid.route",
-        messageBody: "Creator Support",
-        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
       }),
       store,
       context,
     );
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.creator",
-        externalMessageId: "mid.creator",
-        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+        externalEventId: "mid.existing",
+        externalMessageId: "mid.existing",
+        messageBody: "Existing campaign",
+        quickReplyPayload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
       }),
       store,
       context,
     );
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.platform",
-        externalMessageId: "mid.platform",
-        messageBody: "Instagram, @riya_creates",
+        externalEventId: "mid.issue-cat",
+        externalMessageId: "mid.issue-cat",
+        messageBody: "Campaign issue",
+        quickReplyPayload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.campaign",
+        externalMessageId: "mid.campaign",
+        messageBody: "Summer Drop, Acme, August 2026, riya@example.com",
+      }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.details",
+        externalMessageId: "mid.details",
+        messageBody: issue,
       }),
       store,
       context,
     );
     const created = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.campaign",
-        externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026",
+        externalEventId: "mid.confirm",
+        externalMessageId: "mid.confirm",
+        messageBody: "Yes, raise it",
+        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
       }),
       store,
       context,
     );
     expect(created.outcome).toBe("stored");
     expect(store.tickets).toHaveLength(1);
-    expect(store.tickets[0]?.issue_description).toBe(original);
+    expect(store.tickets[0]?.issue_description).toBe(issue);
+    expect(store.tickets[0]?.issue_type).toBe("other");
+    expect(store.tickets[0]?.creator_email).toBe("riya@example.com");
+    expect(store.tickets[0]?.campaign_name).toBe("Summer Drop");
     expect(store.tickets[0]?.platform).toBe("instagram");
-    expect(store.tickets[0]?.external_contact_id).toBe("12334");
-    expect(store.conversations[0]?.state).toBe("ticket_open");
-    const confirmation = textSend.mock.calls
+    expect(store.conversations[0]?.state).toBe("awaiting_post_completion");
+    const confirmation = qrSend.mock.calls
       .map((call) => call[0]?.text)
       .find((text) => typeof text === "string" && text.includes("CF-2026-00001"));
     expect(confirmation).toBe(
-      ticketCreatedWithoutEmailText("Riya", "CF-2026-00001"),
+      withPostCompletionQuestion(creatorTicketRaisedText("CF-2026-00001")),
     );
 
     const duplicate = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.campaign",
-        externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026",
+        externalEventId: "mid.confirm",
+        externalMessageId: "mid.confirm",
+        messageBody: "Yes, raise it",
+        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
       }),
       store,
       context,
     );
     expect(duplicate.outcome).toBe("duplicate");
     expect(store.tickets).toHaveLength(1);
-    textSend.mockRestore();
   });
 
-  it("sends a new platform prompt after RESTART even when a legacy platform prompt exists", async () => {
+  it("returns to the persona menu after RESTART and increments the session version", async () => {
     vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.prompt",
@@ -596,33 +786,23 @@ describe("ingestInstagramInboundMessage routing", () => {
     );
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.route",
-        externalMessageId: "mid.route",
-        messageBody: "Creator Support",
-        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
       }),
       store,
       context,
     );
-    await ingestInstagramInboundMessage(
-      sampleInstagramEvent({
-        externalEventId: "mid.creator.1",
-        externalMessageId: "mid.creator.1",
-        messageBody: "Riya Sharma, riya@example.com, 9876543210",
-      }),
-      store,
-      context,
-    );
-
     const conversationId = String(store.conversations[0]?.id);
     const versionBeforeRestart = Number(store.conversations[0]?.intakeSessionVersion ?? 0);
-    const oldPlatformKey = chatbotOutboundIdempotencyKey(
+    const oldReasonKey = chatbotOutboundIdempotencyKey(
       conversationId,
       versionBeforeRestart,
-      intakeEffectType("platform_details"),
+      "awaiting_creator_reason",
     );
     expect(
-      store.messages.some((message) => message.idempotencyKey === oldPlatformKey),
+      store.messages.some((message) => message.idempotencyKey === oldReasonKey),
     ).toBe(true);
 
     await ingestInstagramInboundMessage(
@@ -635,73 +815,37 @@ describe("ingestInstagramInboundMessage routing", () => {
       context,
     );
     const collected = store.conversations[0]?.collectedData as Record<string, unknown>;
-    expect(collected.creatorName).toBeNull();
-    expect(collected.email).toBeNull();
-    expect(collected.phoneNormalized).toBeNull();
-    expect(collected.platform).toBeNull();
-    expect(collected.socialHandle).toBeNull();
+    expect(collected.igPersona).toBeNull();
     expect(collected.campaignName).toBeNull();
-    expect(collected.brandName).toBeNull();
-    expect(collected.campaignMonth).toBeNull();
     expect(collected.originalInboundText).toBe("Need help with a campaign");
-    expect(store.conversations[0]?.state).toBe("support_intake");
-    expect(store.conversations[0]?.currentIntakeField).toBe("creator_details");
-
-    await ingestInstagramInboundMessage(
-      sampleInstagramEvent({
-        externalEventId: "mid.creator.2",
-        externalMessageId: "mid.creator.2",
-        messageBody: "Riya Sharma, riya@example.com, 9876543210",
-      }),
-      store,
-      context,
-    );
-
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
     const versionAfterRestart = Number(store.conversations[0]?.intakeSessionVersion ?? 0);
     expect(versionAfterRestart).toBeGreaterThan(versionBeforeRestart);
-    const newPlatformKey = chatbotOutboundIdempotencyKey(
+    const newMenuKey = chatbotOutboundIdempotencyKey(
       conversationId,
       versionAfterRestart,
-      intakeEffectType("platform_details"),
-    );
-    expect(newPlatformKey).not.toBe(oldPlatformKey);
-    const platformOutbounds = store.messages.filter(
-      (message) =>
-        message.direction === "outbound" &&
-        (message.idempotencyKey === oldPlatformKey ||
-          message.idempotencyKey === newPlatformKey),
-    );
-    expect(platformOutbounds.map((message) => message.idempotencyKey)).toEqual(
-      expect.arrayContaining([oldPlatformKey, newPlatformKey]),
+      "awaiting_persona",
     );
     expect(
-      store.messages.filter((message) => message.idempotencyKey === newPlatformKey),
+      store.messages.filter((message) => message.idempotencyKey === newMenuKey),
     ).toHaveLength(1);
-    expect(store.conversations[0]?.currentIntakeField).toBe("platform_details");
-    expect(
-      store.messages.some(
-        (message) =>
-          message.idempotencyKey === newPlatformKey &&
-          message.messageBody === PLATFORM_DETAILS_PROMPT_TEXT,
-      ),
-    ).toBe(true);
 
     const duplicate = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.creator.2",
-        externalMessageId: "mid.creator.2",
-        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+        externalEventId: "mid.restart",
+        externalMessageId: "mid.restart",
+        messageBody: "RESTART",
       }),
       store,
       context,
     );
     expect(duplicate.outcome).toBe("duplicate");
     expect(
-      store.messages.filter((message) => message.idempotencyKey === newPlatformKey),
+      store.messages.filter((message) => message.idempotencyKey === newMenuKey),
     ).toHaveLength(1);
   });
 
-  it("does not advance to platform_details when the platform prompt cannot be reserved", async () => {
+  it("does not create a second ticket when creator apply is selected", async () => {
     vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.prompt",
@@ -713,48 +857,66 @@ describe("ingestInstagramInboundMessage routing", () => {
       recipientId: "12334",
     });
     const store = createMemoryInstagramStore();
-    const originalClaim = store.claimOutboundMessage.bind(store);
-    store.claimOutboundMessage = async (input) => {
-      if (String(input.idempotencyKey).includes("intake:platform_details")) {
-        return { outcome: "failed" as const, errorCode: "outbound_insert_failed" };
-      }
-      return originalClaim(input);
-    };
-
     await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.route",
-        externalMessageId: "mid.route",
-        messageBody: "Creator Support",
-        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
       }),
       store,
       context,
     );
-    const result = await ingestInstagramInboundMessage(
+    await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.creator",
-        externalMessageId: "mid.creator",
-        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+        externalEventId: "mid.apply",
+        externalMessageId: "mid.apply",
+        messageBody: "Work with Cloutflow",
+        quickReplyPayload: "CREATOR_NEW_WORK",
       }),
       store,
       context,
     );
-    expect(result.outcome).toBe("failed");
-    expect(store.conversations[0]?.currentIntakeField).toBe("creator_details");
-    expect(store.conversations[0]?.state).toBe("support_intake");
+    expect(store.tickets).toHaveLength(0);
+    expect(store.conversations[0]?.state).toBe("awaiting_post_completion");
   });
 
-  it("recovers a missing platform prompt on the next inbound without manual edits", async () => {
+  it("falls back to Hi there when username lookup fails", async () => {
     vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.prompt",
       recipientId: "12334",
     });
-    const textSend = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+    const store = createMemoryInstagramStore();
+    const result = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({ displayName: null, senderName: null }),
+      store,
+      context,
+      {
+        sendDeps: {
+          env: {
+            META_GRAPH_API_VERSION: "v23.0",
+            META_IG_ACCESS_TOKEN: "token",
+            META_IG_ACCOUNT_ID: "17841400008460000",
+          },
+          fetchImpl: async () => {
+            throw new Error("lookup failed");
+          },
+        },
+      },
+    );
+    expect(result.outcome).toBe("stored");
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
+    expect(instagramSend.sendInstagramQuickReplies).toHaveBeenCalledWith(
+      expect.objectContaining({ text: personaWelcomeText(null) }),
+    );
+  });
+
+  it("recovers a missing creator-reason prompt on the next inbound", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
-      metaMessageId: "mid.text",
+      metaMessageId: "mid.prompt",
       recipientId: "12334",
     });
     const store = createMemoryInstagramStore();
@@ -763,30 +925,14 @@ describe("ingestInstagramInboundMessage routing", () => {
       channel: "instagram",
       externalConversationId: "12334",
       externalContactId: "12334",
-      state: "support_intake",
-      routingIntent: "creator_support",
-      currentIntakeField: "platform_details",
-      lastPromptKey: "intake:rs_legacy:platform_details",
-      lastProcessedExternalMessageId: "mid.creator.old",
+      state: "awaiting_creator_reason",
+      routingIntent: "unclassified",
+      currentIntakeField: null,
+      lastPromptKey: "awaiting_creator_reason",
+      lastProcessedExternalMessageId: "mid.persona.old",
       intakeSessionVersion: 1,
-      collectedData: {
-        creatorName: "Riya Sharma",
-        email: "riya@example.com",
-        phoneNormalized: "+919876543210",
-        platform: null,
-        socialHandle: null,
-        originalInboundText: "Need help with a campaign",
-      },
+      collectedData: { igPersona: "creator" },
     });
-    store.messages.push({
-      id: "legacy-platform",
-      conversationId: "convo-stuck",
-      direction: "outbound",
-      idempotencyKey: "ig:prompt:convo-stuck:intake:rs_legacy:platform_details",
-      deliveryStatus: "sent",
-      messageBody: PLATFORM_DETAILS_PROMPT_TEXT,
-    });
-
     const result = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
         externalEventId: "mid.recover",
@@ -797,27 +943,350 @@ describe("ingestInstagramInboundMessage routing", () => {
       context,
     );
     expect(result.outcome).toBe("stored");
-    expect(store.conversations[0]?.currentIntakeField).toBe("platform_details");
-    expect(store.conversations[0]?.state).toBe("support_intake");
+    expect(store.conversations[0]?.state).toBe("awaiting_creator_reason");
     const recoveredKey = chatbotOutboundIdempotencyKey(
       "convo-stuck",
       1,
-      intakeEffectType("platform_details"),
+      "awaiting_creator_reason",
     );
     expect(
       store.messages.some(
         (message) =>
           message.idempotencyKey === recoveredKey &&
-          message.messageBody === PLATFORM_DETAILS_PROMPT_TEXT,
+          message.messageBody === CREATOR_REASON_TEXT,
       ),
     ).toBe(true);
-    expect(textSend).toHaveBeenCalledWith(
-      expect.objectContaining({ text: PLATFORM_DETAILS_PROMPT_TEXT }),
-    );
     const logged = JSON.stringify(store.events);
     expect(logged).not.toContain("riya@example.com");
-    expect(logged).not.toContain("Need help with a campaign");
-    textSend.mockRestore();
+  });
+
+  it("restarts a legacy support_intake conversation at the persona menu", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    store.conversations.push({
+      id: "convo-legacy",
+      channel: "instagram",
+      externalConversationId: "12334",
+      externalContactId: "12334",
+      state: "support_intake",
+      routingIntent: "creator_support",
+      currentIntakeField: "platform_details",
+      lastProcessedExternalMessageId: "mid.creator.old",
+      intakeSessionVersion: 1,
+      collectedData: {
+        creatorName: "Riya Sharma",
+        email: "riya@example.com",
+      },
+    });
+    const result = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.legacy",
+        externalMessageId: "mid.legacy",
+        messageBody: "hello",
+      }),
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("stored");
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
+    expect(store.tickets).toHaveLength(0);
+    const collected = store.conversations[0]?.collectedData as Record<string, unknown>;
+    expect(collected.creatorName).toBeNull();
+    expect(JSON.stringify(store.events)).not.toContain("riya@example.com");
+  });
+
+  it("does not re-fetch a conversation after insert returning the row", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
+    expect(store.getConversationCalls).toBe(1);
+    expect(store.findActiveCalls).toBe(0);
+  });
+
+  it("persists the next persona state before calling Meta", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    const statesAtSend: string[] = [];
+    const qrSend = vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockImplementation(
+      async () => {
+        statesAtSend.push(String(store.conversations[0]?.state));
+        return {
+          ok: true,
+          metaMessageId: "mid.qr",
+          recipientId: "12334",
+        };
+      },
+    );
+    await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(store.conversations[0]?.state).toBe("awaiting_creator_reason");
+    expect(statesAtSend.at(-1)).toBe("awaiting_creator_reason");
+    expect(qrSend).toHaveBeenCalled();
+  });
+
+  it("keeps the new state when Meta send fails so the next answer and retry stay aligned", async () => {
+    const qrSend = vi.spyOn(instagramSend, "sendInstagramQuickReplies");
+    qrSend
+      .mockResolvedValueOnce({
+        ok: true,
+        metaMessageId: "mid.menu",
+        recipientId: "12334",
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        errorCode: "http_5xx",
+        retryable: true,
+        messagingWindowExpired: false,
+        httpStatus: 500,
+      })
+      .mockResolvedValue({
+        ok: true,
+        metaMessageId: "mid.retry",
+        recipientId: "12334",
+      });
+    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
+    const failed = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(failed.outcome).toBe("failed");
+    expect(store.conversations[0]?.state).toBe("awaiting_creator_reason");
+
+    const retried = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(retried.outcome).toBe("duplicate");
+    expect(
+      qrSend.mock.calls.some((call) => call[0]?.text === CREATOR_REASON_TEXT),
+    ).toBe(true);
+    const reasonOutbounds = store.messages.filter(
+      (message) =>
+        message.direction === "outbound" &&
+        String(message.idempotencyKey ?? "").includes("awaiting_creator_reason"),
+    );
+    expect(reasonOutbounds).toHaveLength(1);
+    expect(reasonOutbounds[0]?.deliveryStatus).toBe("sent");
+  });
+
+  it("does not advance persona state when the next prompt cannot be reserved", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    const originalReserve = store.reserveOutboundAndSnapshot.bind(store);
+    store.reserveOutboundAndSnapshot = async (input) => {
+      if (
+        input.outbounds.some((outbound) =>
+          String(outbound.idempotencyKey ?? "").includes("awaiting_creator_reason"),
+        )
+      ) {
+        return { outcome: "failed" as const, errorCode: "outbound_insert_failed" };
+      }
+      return originalReserve(input);
+    };
+
+    await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
+    const result = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("failed");
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
+    expect(
+      store.messages.some((message) =>
+        String(message.idempotencyKey ?? "").includes("awaiting_creator_reason"),
+      ),
+    ).toBe(false);
+  });
+
+  it("timing logs from ingest never include personal data or secrets", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    const { createInstagramTimingSession } = await import("@/lib/meta/timing");
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        messageBody: "secret creator email riya@example.com 9876543210",
+      }),
+      store,
+      context,
+      { timing: createInstagramTimingSession() },
+    );
+    const logged = info.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).toContain("instagram webhook timing");
+    expect(logged).not.toContain("riya@example.com");
+    expect(logged).not.toContain("9876543210");
+    expect(logged).not.toContain("Need help");
+    expect(logged).not.toContain("12334");
+    expect(logged).not.toMatch(/sha256=/i);
+    info.mockRestore();
+  });
+
+  it("maps outbound sender to Cloutflow's Instagram account and recipient to the creator", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    const event = sampleInstagramEvent();
+    await ingestInstagramInboundMessage(event, store, context);
+    const outbound = store.messages.find(
+      (message) => message.direction === "outbound",
+    );
+    expect(outbound?.senderAddress).toBe(event.recipientAccountId);
+    expect(outbound?.recipientExternalId).toBe(event.externalContactId);
+    expect(outbound?.senderAddress).not.toBe(outbound?.recipientExternalId);
+  });
+
+  it("retries the second rapid DM after a conversation state conflict", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    store.conversations.push({
+      id: "convo-1",
+      channel: "instagram",
+      externalConversationId: "12334",
+      externalContactId: "12334",
+      state: "unclassified",
+      routingIntent: "unclassified",
+      collectedData: {},
+      lastProcessedExternalMessageId: null,
+      intakeSessionVersion: 0,
+    });
+    const reserveCodes: string[] = [];
+    let helloAtReserve: (() => void) | null = null;
+    const helloReady = new Promise<void>((resolve) => {
+      helloAtReserve = resolve;
+    });
+    let bothAtReserve: (() => void) | null = null;
+    const bothReady = new Promise<void>((resolve) => {
+      bothAtReserve = resolve;
+    });
+    const original = store.reserveOutboundAndSnapshot.bind(store);
+    store.reserveOutboundAndSnapshot = async (input) => {
+      const nextId = input.snapshot.lastProcessedExternalMessageId;
+      if (nextId === "mid.hello") {
+        helloAtReserve?.();
+        await bothReady;
+        const result = await original(input);
+        reserveCodes.push(
+          result.outcome === "failed" ? result.errorCode : "reserved",
+        );
+        return result;
+      }
+      if (nextId === "mid.creator") {
+        await helloReady;
+        bothAtReserve?.();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const result = await original(input);
+        reserveCodes.push(
+          result.outcome === "failed" ? result.errorCode : "reserved",
+        );
+        return result;
+      }
+      const result = await original(input);
+      reserveCodes.push(
+        result.outcome === "failed" ? result.errorCode : "reserved",
+      );
+      return result;
+    };
+
+    const [hello, creator] = await Promise.all([
+      ingestInstagramInboundMessage(
+        sampleInstagramEvent({
+          externalEventId: "mid.hello",
+          externalMessageId: "mid.hello",
+          messageBody: "Hi",
+        }),
+        store,
+        context,
+      ),
+      ingestInstagramInboundMessage(
+        sampleInstagramEvent({
+          externalEventId: "mid.creator",
+          externalMessageId: "mid.creator",
+          messageBody: "I'm a creator",
+          quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+        }),
+        store,
+        context,
+      ),
+    ]);
+
+    expect(hello.outcome).toBe("stored");
+    expect(creator.outcome).toBe("stored");
+    expect(reserveCodes).toContain("conversation_state_conflict");
+    expect(reserveCodes.filter((code) => code === "reserved").length).toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(store.conversations[0]?.state).toBe("awaiting_creator_reason");
+    expect(store.conversations[0]?.lastProcessedExternalMessageId).toBe("mid.creator");
+    expect(store.conversations[0]?.routingIntent).toBe("unclassified");
+    const logged = [...errorSpy.mock.calls, ...infoSpy.mock.calls]
+      .map((call) => JSON.stringify(call))
+      .join(" ");
+    expect(logged).not.toContain("12334");
+    expect(logged).not.toContain("17841400008460000");
+    expect(logged).not.toContain("I'm a creator");
+    expect(logged).not.toMatch(/ig:prompt:/);
   });
 });
 
@@ -850,5 +1319,45 @@ describe("mapIntakeToInstagramTicketInsert", () => {
     expect(insert.issue_description).toBe("Need help with a campaign");
     expect(insert.creator_email).toBe("riya@example.com");
     expect(JSON.stringify(insert)).not.toMatch(/Not applicable|Unknown Creator|N\/A|placeholder/i);
+  });
+
+  it("maps creator campaign/payment issues onto compatible issue types without fake placeholders", () => {
+    const payment = mapIntakeToInstagramTicketInsert({
+      collected: emptyIntakeCollected({
+        email: "riya@example.com",
+        campaignName: "Summer Drop",
+        brandName: "Acme",
+        campaignMonth: "2026-08-01",
+        issueDescription: "Payment is still pending",
+        igPersona: "creator",
+        igIssueCategory: "payment",
+        issueType: "payment_delayed",
+        cachedUsername: "riya_creates",
+      }),
+      externalContactId: "12334",
+      externalConversationId: "12334",
+    });
+    expect(payment.issue_type).toBe("payment_delayed");
+    expect(payment.issue_description).toBe("Payment is still pending");
+    expect(payment.assigned_team).toBe("Creator Support");
+    expect(payment.metadata.route).toBe("creator_payment_issue");
+    expect(JSON.stringify(payment)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
+
+    const campaign = mapIntakeToInstagramTicketInsert({
+      collected: emptyIntakeCollected({
+        email: "riya@example.com",
+        campaignName: "Summer Drop",
+        brandName: "Acme",
+        campaignMonth: "2026-08-01",
+        issueDescription: "The brief changed",
+        igPersona: "creator",
+        igIssueCategory: "campaign",
+        issueType: "other",
+      }),
+      externalContactId: "12334",
+      externalConversationId: "12334",
+    });
+    expect(campaign.issue_type).toBe("other");
+    expect(campaign.metadata.route).toBe("creator_campaign_issue");
   });
 });

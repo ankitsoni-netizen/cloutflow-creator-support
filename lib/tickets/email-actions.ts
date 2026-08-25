@@ -12,6 +12,7 @@ import {
 } from "@/lib/tickets/email-delivery";
 import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors";
 import { isInstagramTicket, sendStaffInstagramReply } from "@/lib/tickets/instagram-reply";
+import { isWhatsAppTicket, sendStaffWhatsAppReply } from "@/lib/tickets/whatsapp-reply";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
 import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
@@ -159,6 +160,40 @@ export async function retryCreatorEmailAction(input: {
         delivery === "sent"
           ? "Instagram reply sent."
           : "Instagram delivery failed. You can retry.",
+    };
+  }
+
+  if (isWhatsAppTicket(ticket)) {
+    const wa = await sendStaffWhatsAppReply({
+      ticket,
+      commentId: comment.id,
+      commentText: comment.commentText,
+    });
+    if (!wa.ok) {
+      return {
+        data: comment,
+        ticket: mapDbTicketToTicket(ticket),
+        delivery: "failed",
+        whatsappDelivery: "failed",
+        deliveryMessage: wa.error,
+      };
+    }
+    const delivery = wa.whatsapp === "sent" ? "sent" : "failed";
+    if (delivery === "sent") {
+      await updateCommentDeliveryStatus(context.supabase, comment.id, "sent");
+      await markTicketCustomerNotified(context.supabase, ticket);
+    }
+    return {
+      data: comment,
+      ticket: mapDbTicketToTicket(ticket),
+      delivery,
+      whatsappDelivery: wa.whatsapp,
+      deliveryMessage:
+        delivery === "sent"
+          ? "WhatsApp reply sent."
+          : wa.whatsappErrorCode === "outside_customer_service_window"
+            ? "WhatsApp’s customer-service window is closed. This reply was not sent."
+            : "WhatsApp delivery failed. You can retry.",
     };
   }
 

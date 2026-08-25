@@ -20,13 +20,25 @@ export type NormalizedMetaInboundText = {
   displayName: string | null;
   senderName: string | null;
   senderAddress: string;
-  messageType: "text";
+  messageType: "text" | "interactive" | "unsupported";
   messageBody: string;
   timestamp: string;
   phoneNumberId: string | null;
   recipientAccountId: string | null;
   quickReplyPayload?: string | null;
+  unsupportedKind?: string | null;
   eventFragment: Record<string, unknown>;
+};
+
+export type NormalizedWhatsAppStatus = {
+  channel: "whatsapp";
+  provider: typeof META_WHATSAPP_PROVIDER;
+  externalEventId: string;
+  metaMessageId: string;
+  status: "sent" | "delivered" | "read" | "failed" | "deleted";
+  timestamp: string;
+  phoneNumberId: string | null;
+  errorCode: string | null;
 };
 
 export type NormalizedInstagramEcho = {
@@ -76,6 +88,20 @@ export const CONVERSATION_STATES = [
   "awaiting_confirmation",
   "ticket_open",
   "cancelled",
+  "awaiting_persona",
+  "awaiting_creator_reason",
+  "awaiting_creator_issue_category",
+  "creator_campaign_details",
+  "creator_issue_details",
+  "creator_confirmation",
+  "brand_action",
+  "agency_details",
+  "agency_confirmation",
+  "other_inquiry",
+  "other_contact",
+  "other_confirmation",
+  "awaiting_post_completion",
+  "completed",
 ] as const;
 
 export type ConversationState = (typeof CONVERSATION_STATES)[number];

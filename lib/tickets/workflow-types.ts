@@ -1,7 +1,7 @@
 import type { Ticket, TicketStatus } from "@/lib/types";
 
 export type CommentVisibility = "internal" | "creator";
-export type DeliveryStatus = "pending" | "sent" | "delivered" | "failed";
+export type DeliveryStatus = "pending" | "sent" | "delivered" | "read" | "failed";
 
 export interface TicketComment {
   id: string;
@@ -44,6 +44,8 @@ export type TimelineKind =
   | "acknowledgement_email"
   | "instagram_inbound"
   | "instagram_outbound"
+  | "whatsapp_inbound"
+  | "whatsapp_outbound"
   | "other_event";
 
 export interface TimelineItem {
@@ -56,10 +58,11 @@ export interface TimelineItem {
   fromStatus?: string | null;
   toStatus?: string | null;
   deliveryStatus?: DeliveryStatus | null;
-  visibilityLabel?: "Internal Note" | "Creator Reply" | "Resolution Email" | "Instagram";
+  visibilityLabel?: "Internal Note" | "Creator Reply" | "Resolution Email" | "Instagram" | "WhatsApp";
   commentId?: string;
   canRetryEmail?: boolean;
   canRetryInstagram?: boolean;
+  canRetryWhatsApp?: boolean;
   channelMessageId?: string;
 }
 
@@ -80,6 +83,7 @@ export type CreatorReplyActionResult =
       delivery: "sent" | "failed";
       deliveryMessage?: string;
       instagramDelivery?: "sent" | "failed" | "skipped";
+      whatsappDelivery?: "sent" | "failed" | "skipped";
       messagingWindowWarning?: string | null;
     }
   | { error: string };

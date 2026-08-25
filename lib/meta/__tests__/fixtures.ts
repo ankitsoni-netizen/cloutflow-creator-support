@@ -56,7 +56,12 @@ export function whatsappTextPayload(overrides: {
   };
 }
 
-export function whatsappStatusPayload() {
+export function whatsappStatusPayload(overrides: {
+  id?: string;
+  status?: string;
+  timestamp?: string;
+  phoneNumberId?: string;
+} = {}) {
   return {
     object: "whatsapp_business_account",
     entry: [
@@ -69,13 +74,13 @@ export function whatsappStatusPayload() {
               messaging_product: "whatsapp",
               metadata: {
                 display_phone_number: "16505551111",
-                phone_number_id: "123456123",
+                phone_number_id: overrides.phoneNumberId ?? "123456123",
               },
               statuses: [
                 {
-                  id: "wamid.HBgNMTYzMTU1NTExODE",
-                  status: "delivered",
-                  timestamp: "1603059207",
+                  id: overrides.id ?? "wamid.HBgNMTYzMTU1NTExODE",
+                  status: overrides.status ?? "delivered",
+                  timestamp: overrides.timestamp ?? "1603059207",
                   recipient_id: "16315551181",
                 },
               ],

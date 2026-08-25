@@ -3,7 +3,10 @@
 import { formatDateTime } from "@/lib/utils";
 import type { TimelineItem } from "@/lib/tickets/workflow-types";
 
-function deliveryLabel(status: TimelineItem["deliveryStatus"]): string | null {
+function deliveryLabel(
+  status: TimelineItem["deliveryStatus"],
+  kind: TimelineItem["kind"],
+): string | null {
   if (!status) return null;
   switch (status) {
     case "pending":
@@ -11,8 +14,9 @@ function deliveryLabel(status: TimelineItem["deliveryStatus"]): string | null {
     case "sent":
       return "Sent";
     case "delivered":
-      // SMTP acceptance only — never claim inbox delivery.
-      return "Sent";
+      return kind === "whatsapp_outbound" ? "Delivered" : "Sent";
+    case "read":
+      return "Read";
     case "failed":
       return "Failed";
     default:
@@ -35,16 +39,23 @@ function itemStyles(kind: TimelineItem["kind"]): {
       };
     case "creator_reply":
     case "instagram_outbound":
+    case "whatsapp_outbound":
       return {
         bubble: "border-border bg-surface",
         dot: "bg-[var(--brand-blue)]",
-        label: kind === "instagram_outbound" ? "Instagram reply" : "Creator reply",
+        label:
+          kind === "whatsapp_outbound"
+            ? "WhatsApp reply"
+            : kind === "instagram_outbound"
+              ? "Instagram reply"
+              : "Creator reply",
       };
     case "instagram_inbound":
+    case "whatsapp_inbound":
       return {
         bubble: "border-border bg-surface-muted",
         dot: "bg-accent",
-        label: "Instagram inbound",
+        label: kind === "whatsapp_inbound" ? "WhatsApp inbound" : "Instagram inbound",
       };
     case "acknowledgement_email":
       return {
@@ -151,7 +162,7 @@ export default function ConversationTimeline({
           <ol className="space-y-4">
             {items.map((item, index) => {
               const styles = itemStyles(item.kind);
-              const delivery = deliveryLabel(item.deliveryStatus);
+              const delivery = deliveryLabel(item.deliveryStatus, item.kind);
               const system = isSystem(item.kind);
 
               if (system) {
@@ -228,7 +239,7 @@ export default function ConversationTimeline({
                         >
                           {retryingCommentId === item.commentId
                             ? "Retrying..."
-                            : item.canRetryInstagram
+                            : item.canRetryInstagram || item.canRetryWhatsApp
                               ? "Retry"
                               : "Retry Email"}
                         </button>

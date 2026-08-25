@@ -1,4 +1,5 @@
 import { detectRoutingCommand } from "@/lib/meta/commands";
+import { reduceInstagramPersonaConversation } from "@/lib/meta/instagram-persona-machine";
 import {
   emptyIntakeCollected,
   isIntakeComplete,
@@ -14,19 +15,13 @@ import {
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import { intakeEffectType } from "@/lib/meta/prompt-keys";
 import {
-  CAMPAIGN_DETAILS_PROMPT_TEXT,
-  COLLABORATION_CONFIRMED_TEXT,
-  CREATOR_DETAILS_PROMPT_TEXT,
-  INTAKE_CANCELLED_TEXT,
-  INTAKE_RESTARTED_TEXT,
-  PLATFORM_DETAILS_PROMPT_TEXT,
+  INSTAGRAM_INTAKE_COPY,
   ROUTE_COLLABORATION_PAYLOAD,
   ROUTE_CREATOR_SUPPORT_PAYLOAD,
-  ROUTING_CLARIFY_TEXT,
-  ROUTING_COLLABORATION_QUICK_REPLY_TITLE,
-  ROUTING_CREATOR_SUPPORT_TITLE,
-  ROUTING_QUESTION_TEXT,
+  type ChannelIntakeCopy,
 } from "@/lib/meta/routing-copy";
+
+export type { ChannelIntakeCopy };
 
 export const ROUTING_CONVERSATION_STATES = [
   "unclassified",
@@ -36,6 +31,20 @@ export const ROUTING_CONVERSATION_STATES = [
   "awaiting_confirmation",
   "ticket_open",
   "cancelled",
+  "awaiting_persona",
+  "awaiting_creator_reason",
+  "awaiting_creator_issue_category",
+  "creator_campaign_details",
+  "creator_issue_details",
+  "creator_confirmation",
+  "brand_action",
+  "agency_details",
+  "agency_confirmation",
+  "other_inquiry",
+  "other_contact",
+  "other_confirmation",
+  "awaiting_post_completion",
+  "completed",
 ] as const;
 
 export type RoutingConversationState =
@@ -68,7 +77,8 @@ export type MachineEffect =
   | MachineSendEffect
   | { type: "create_ticket" }
   | { type: "notify_help_inbound" }
-  | { type: "mark_unclassified_as"; routingKind: "collaboration" | "support" };
+  | { type: "mark_unclassified_as"; routingKind: "collaboration" | "support" }
+  | { type: "queue_internal_email"; purpose: "agency" | "other" };
 
 export type ConversationSnapshot = {
   state: string;
@@ -81,6 +91,7 @@ export type ConversationSnapshot = {
   ticketId: string | null;
   ticketStatus: string | null;
   suggestedSocialHandle: string | null;
+  suggestedPhone: string | null;
   intakeSessionVersion: number;
 };
 
@@ -137,17 +148,21 @@ function qr(title: string, payload: string): InstagramQuickReply {
   };
 }
 
-function routingQuickReplies(): InstagramQuickReply[] {
+function routingQuickReplies(copy: ChannelIntakeCopy): InstagramQuickReply[] {
   return [
-    qr(ROUTING_COLLABORATION_QUICK_REPLY_TITLE, ROUTE_COLLABORATION_PAYLOAD),
-    qr(ROUTING_CREATOR_SUPPORT_TITLE, ROUTE_CREATOR_SUPPORT_PAYLOAD),
+    qr(copy.collaborationQuickReplyTitle, ROUTE_COLLABORATION_PAYLOAD),
+    qr(copy.creatorSupportQuickReplyTitle, ROUTE_CREATOR_SUPPORT_PAYLOAD),
   ];
 }
 
-function isPrimaryIntakePrompt(field: IntakeField, text: string): boolean {
-  if (field === "creator_details") return text === CREATOR_DETAILS_PROMPT_TEXT;
-  if (field === "platform_details") return text === PLATFORM_DETAILS_PROMPT_TEXT;
-  return text === CAMPAIGN_DETAILS_PROMPT_TEXT;
+function isPrimaryIntakePrompt(
+  field: IntakeField,
+  text: string,
+  copy: ChannelIntakeCopy,
+): boolean {
+  if (field === "creator_details") return text === copy.creatorDetailsPrompt;
+  if (field === "platform_details") return text === copy.platformDetailsPrompt;
+  return text === copy.campaignDetailsPrompt;
 }
 
 function withActivity(
@@ -178,6 +193,7 @@ function seedOriginal(
 function startRouting(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
+  copy: ChannelIntakeCopy,
 ): MachineResult {
   const sessionId = newSessionId(signal.messageId);
   const collected = seedOriginal(
@@ -201,9 +217,9 @@ function startRouting(
     effects: [
       {
         type: "send_quick_replies",
-        text: ROUTING_QUESTION_TEXT,
+        text: copy.routingQuestion,
         promptKey: key,
-        quickReplies: routingQuickReplies(),
+        quickReplies: routingQuickReplies(copy),
       },
     ],
     attachTicketId: null,
@@ -216,14 +232,19 @@ function startIntake(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
   reason: "route" | "reclassify" | "restart",
+  copy: ChannelIntakeCopy,
 ): MachineResult {
   const sessionId = newSessionId(signal.messageId);
   const intakeSessionVersion = snapshot.intakeSessionVersion + 1;
+  const suggestedPhone = snapshot.suggestedPhone;
   const collected = emptyIntakeCollected({
     originalInboundText: snapshot.collected.originalInboundText ?? signal.text,
     originalInboundMessageId:
       snapshot.collected.originalInboundMessageId ?? signal.messageId,
     routingSessionId: sessionId,
+    phoneNormalized: suggestedPhone,
+    phoneDisplay: suggestedPhone,
+    phonePrefill: Boolean(suggestedPhone),
   });
   const key = intakeEffectType("creator_details");
   const effects: MachineEffect[] = [
@@ -232,13 +253,13 @@ function startIntake(
   if (reason === "restart") {
     effects.push({
       type: "send_text",
-      text: INTAKE_RESTARTED_TEXT,
+      text: copy.intakeRestarted,
       promptKey: "support_intro",
     });
   }
   effects.push({
     type: "send_text",
-    text: CREATOR_DETAILS_PROMPT_TEXT,
+    text: copy.creatorDetailsPrompt,
     promptKey: key,
   });
 
@@ -264,8 +285,9 @@ function sendStepPrompt(
   field: IntakeField,
   collected: IntakeCollectedData,
   text: string,
+  copy: ChannelIntakeCopy,
 ): MachineResult {
-  const key = isPrimaryIntakePrompt(field, text)
+  const key = isPrimaryIntakePrompt(field, text, copy)
     ? intakeEffectType(field)
     : intakeEffectType(field, `followup:${signal.messageId}`);
   return {
@@ -319,6 +341,7 @@ function alreadyProcessed(snapshot: ConversationSnapshot): MachineResult {
 function continueIntake(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
+  copy: ChannelIntakeCopy,
 ): MachineResult {
   const step = snapshot.currentIntakeField ?? "creator_details";
 
@@ -332,6 +355,7 @@ function continueIntake(
         "creator_details",
         collected,
         missing,
+        copy,
       );
     }
     return sendStepPrompt(
@@ -339,7 +363,8 @@ function continueIntake(
       signal,
       "platform_details",
       collected,
-      PLATFORM_DETAILS_PROMPT_TEXT,
+      copy.platformDetailsPrompt,
+      copy,
     );
   }
 
@@ -353,6 +378,7 @@ function continueIntake(
         "platform_details",
         collected,
         missing,
+        copy,
       );
     }
     return sendStepPrompt(
@@ -360,7 +386,8 @@ function continueIntake(
       signal,
       "campaign_details",
       collected,
-      CAMPAIGN_DETAILS_PROMPT_TEXT,
+      copy.campaignDetailsPrompt,
+      copy,
     );
   }
 
@@ -373,18 +400,20 @@ function continueIntake(
       "campaign_details",
       collected,
       missing,
+      copy,
     );
   }
   return createTicketFromIntake(snapshot, signal, collected);
 }
 
 /**
- * Deterministic Instagram routing / intake reducer.
+ * Deterministic routing / intake reducer shared by Instagram and WhatsApp.
  * No I/O, no LLM. Same input always yields the same snapshot and effects.
  */
-export function reduceInstagramConversation(
+export function reduceChannelConversation(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
+  copy: ChannelIntakeCopy = INSTAGRAM_INTAKE_COPY,
 ): MachineResult {
   if (snapshot.lastProcessedExternalMessageId === signal.messageId) {
     return alreadyProcessed(snapshot);
@@ -414,6 +443,7 @@ export function reduceInstagramConversation(
         ticketStatus: snapshot.ticketStatus,
       },
       signal,
+      copy,
     );
   }
 
@@ -436,7 +466,7 @@ export function reduceInstagramConversation(
       snapshot.state === "ticket_created") &&
     !hasActiveTicket(snapshot)
   ) {
-    return startRouting(snapshot, signal);
+    return startRouting(snapshot, signal, copy);
   }
 
   if (state === "awaiting_route") {
@@ -453,7 +483,7 @@ export function reduceInstagramConversation(
           { type: "mark_unclassified_as", routingKind: "collaboration" },
           {
             type: "send_text",
-            text: COLLABORATION_CONFIRMED_TEXT,
+            text: copy.collaborationConfirmed,
             promptKey: key,
           },
         ],
@@ -463,7 +493,7 @@ export function reduceInstagramConversation(
       };
     }
     if (command === "creator_support" || command === "support_reclassify") {
-      return startIntake(snapshot, signal, "route");
+      return startIntake(snapshot, signal, "route", copy);
     }
     const key = "route_clarify";
     return {
@@ -471,9 +501,9 @@ export function reduceInstagramConversation(
       effects: [
         {
           type: "send_quick_replies",
-          text: ROUTING_CLARIFY_TEXT,
+          text: copy.routingClarify,
           promptKey: key,
-          quickReplies: routingQuickReplies(),
+          quickReplies: routingQuickReplies(copy),
         },
       ],
       attachTicketId: null,
@@ -484,10 +514,10 @@ export function reduceInstagramConversation(
 
   if (state === "collaboration") {
     if (command === "support_reclassify" || command === "creator_support") {
-      return startIntake(snapshot, signal, "reclassify");
+      return startIntake(snapshot, signal, "reclassify", copy);
     }
     if (idleExpired(snapshot.lastActivityAt, signal.timestamp)) {
-      return startRouting(snapshot, signal);
+      return startRouting(snapshot, signal, copy);
     }
     return {
       snapshot: withActivity(snapshot, signal, {
@@ -512,7 +542,7 @@ export function reduceInstagramConversation(
           lastPromptKey: key,
         }),
         effects: [
-          { type: "send_text", text: INTAKE_CANCELLED_TEXT, promptKey: key },
+          { type: "send_text", text: copy.intakeCancelled, promptKey: key },
         ],
         attachTicketId: null,
         inboundRoutingKind: "support",
@@ -520,7 +550,7 @@ export function reduceInstagramConversation(
       };
     }
     if (command === "restart" || (state === "awaiting_confirmation" && command === "edit")) {
-      return startIntake(snapshot, signal, "restart");
+      return startIntake(snapshot, signal, "restart", copy);
     }
   }
 
@@ -531,11 +561,11 @@ export function reduceInstagramConversation(
     ) {
       return createTicketFromIntake(snapshot, signal, snapshot.collected);
     }
-    return startIntake(snapshot, signal, "restart");
+    return startIntake(snapshot, signal, "restart", copy);
   }
 
   if (state === "support_intake") {
-    return continueIntake(snapshot, signal);
+    return continueIntake(snapshot, signal, copy);
   }
 
   if (state === "ticket_open") {
@@ -548,7 +578,14 @@ export function reduceInstagramConversation(
     };
   }
 
-  return startRouting(snapshot, signal);
+  return startRouting(snapshot, signal, copy);
+}
+
+export function reduceInstagramConversation(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+): MachineResult {
+  return reduceInstagramPersonaConversation(snapshot, signal);
 }
 
 export function emptyConversationSnapshot(
@@ -565,6 +602,7 @@ export function emptyConversationSnapshot(
     ticketId: null,
     ticketStatus: null,
     suggestedSocialHandle: null,
+    suggestedPhone: null,
     intakeSessionVersion: 0,
     ...overrides,
   };

@@ -83,7 +83,10 @@ export async function sendInstagramTicketConfirmationEmail(input: {
       text: content.text,
       bccEmails: helpBcc(),
       metadata: {
-        purpose: "instagram-ticket-confirmation",
+        purpose:
+          input.ticket.source_channel?.trim().toLowerCase() === "whatsapp"
+            ? "whatsapp-ticket-confirmation"
+            : "instagram-ticket-confirmation",
         "ticket-code": input.ticket.ticket_code,
       },
     });
@@ -182,7 +185,10 @@ export async function sendInstagramCreatorReplyEmail(input: {
       text: content.text,
       bccEmails: helpBcc(),
       metadata: {
-        purpose: "instagram-ticket-reply",
+        purpose:
+          input.ticket.source_channel?.trim().toLowerCase() === "whatsapp"
+            ? "whatsapp-ticket-reply"
+            : "instagram-ticket-reply",
         "ticket-code": input.ticket.ticket_code,
       },
     });
@@ -195,6 +201,7 @@ export async function sendInstagramCreatorReplyEmail(input: {
 export async function sendInstagramInboundHelpNotification(input: {
   ticket: DbTicket;
   messagePreview: string;
+  channelLabel?: "Instagram" | "WhatsApp";
 }): Promise<InstagramMailResult> {
   const inbox = getSupportInboxEmail();
   if (!inbox) return { outcome: "skipped", errorCode: "support_inbox_missing" };
@@ -204,15 +211,16 @@ export async function sendInstagramInboundHelpNotification(input: {
 
   const ticketCode = input.ticket.ticket_code;
   const preview = input.messagePreview.trim() || "—";
+  const channelLabel = input.channelLabel ?? "Instagram";
   const text = [
-    `A creator sent a new Instagram reply on ${ticketCode}.`,
+    `A creator sent a new ${channelLabel} reply on ${ticketCode}.`,
     "",
     preview,
   ].join("\n");
   const html = renderEmailLayout({
-    preheader: `Instagram reply ${ticketCode}`,
-    title: "New Instagram creator reply",
-    bodyHtml: `<p style="margin:0 0 12px;">A creator sent a new Instagram reply on ${escapeHtml(ticketCode)}.</p><pre style="white-space:pre-wrap;font-size:14px;line-height:1.5;margin:0;">${escapeHtml(preview)}</pre>`,
+    preheader: `${channelLabel} reply ${ticketCode}`,
+    title: `New ${channelLabel} creator reply`,
+    bodyHtml: `<p style="margin:0 0 12px;">A creator sent a new ${escapeHtml(channelLabel)} reply on ${escapeHtml(ticketCode)}.</p><pre style="white-space:pre-wrap;font-size:14px;line-height:1.5;margin:0;">${escapeHtml(preview)}</pre>`,
   });
 
   try {
@@ -223,12 +231,115 @@ export async function sendInstagramInboundHelpNotification(input: {
       html,
       text,
       metadata: {
-        purpose: "instagram-inbound-notify",
+        purpose:
+          channelLabel === "WhatsApp"
+            ? "whatsapp-inbound-notify"
+            : "instagram-inbound-notify",
         "ticket-code": ticketCode,
       },
     });
     return toMailResult(sent);
   } catch {
+    return { outcome: "failed", errorCode: "email_send_failed" };
+  }
+}
+
+export async function sendInstagramAgencyDetailsEmail(input: {
+  agencyName: string | null;
+  contactName: string | null;
+  contactEmail: string | null;
+  rosterUrl: string | null;
+  instagramConversationRef: string;
+}): Promise<InstagramMailResult> {
+  const inbox = getSupportInboxEmail();
+  if (!inbox) return { outcome: "skipped", errorCode: "support_inbox_missing" };
+  if (!isBrevoConfigured()) {
+    return { outcome: "failed", errorCode: "email_not_configured" };
+  }
+
+  const conversationRef = sanitizeEmailHeaderValue(
+    input.instagramConversationRef,
+  );
+  const rows = [
+    "New agency details received from Instagram.",
+    "",
+    `Agency: ${input.agencyName?.trim() || "—"}`,
+    `Name: ${input.contactName?.trim() || "—"}`,
+    `Email: ${input.contactEmail?.trim() || "—"}`,
+    `Roster: ${input.rosterUrl?.trim() || "—"}`,
+    `Instagram conversation: ${conversationRef || "—"}`,
+  ].join("\n");
+  const html = renderEmailLayout({
+    preheader: "New agency details received",
+    title: "New agency details received",
+    bodyHtml: `<pre style="white-space:pre-wrap;font-size:14px;line-height:1.5;margin:0;">${escapeHtml(rows)}</pre>`,
+  });
+
+  try {
+    const sent = await sendTransactionalEmail({
+      toEmail: inbox,
+      toName: "Cloutflow Support",
+      subject: "New agency details received",
+      html,
+      text: rows,
+      metadata: {
+        purpose: "instagram-agency-details",
+      },
+    });
+    return toMailResult(sent);
+  } catch (error) {
+    void safeEmailErrorMessage(error);
+    return { outcome: "failed", errorCode: "email_send_failed" };
+  }
+}
+
+export async function sendInstagramGeneralInquiryEmail(input: {
+  contactName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  inquiryDetails: string | null;
+  instagramConversationRef: string;
+}): Promise<InstagramMailResult> {
+  const inbox = getSupportInboxEmail();
+  if (!inbox) return { outcome: "skipped", errorCode: "support_inbox_missing" };
+  if (!isBrevoConfigured()) {
+    return { outcome: "failed", errorCode: "email_not_configured" };
+  }
+
+  const conversationRef = sanitizeEmailHeaderValue(
+    input.instagramConversationRef,
+  );
+  const rows = [
+    "New general inquiry received from Instagram.",
+    "",
+    `Name: ${input.contactName?.trim() || "—"}`,
+    `Email: ${input.contactEmail?.trim() || "—"}`,
+    `Phone: ${input.contactPhone?.trim() || "—"}`,
+    `Instagram conversation: ${conversationRef || "—"}`,
+    "",
+    "Inquiry:",
+    input.inquiryDetails?.trim() || "—",
+  ].join("\n");
+  const html = renderEmailLayout({
+    preheader: "New general inquiry received",
+    title: "New general inquiry received",
+    bodyHtml: `<pre style="white-space:pre-wrap;font-size:14px;line-height:1.5;margin:0;">${escapeHtml(rows)}</pre>`,
+  });
+
+  try {
+    const sent = await sendTransactionalEmail({
+      toEmail: inbox,
+      toName: "Cloutflow Support",
+      subject: "New general inquiry received",
+      html,
+      text: rows,
+      metadata: {
+        purpose: "instagram-general-inquiry",
+      },
+    });
+    return toMailResult(sent);
+  } catch (error) {
+    void safeEmailErrorMessage(error);
     return { outcome: "failed", errorCode: "email_send_failed" };
   }
 }

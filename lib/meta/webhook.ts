@@ -30,6 +30,8 @@ import {
   type PersistResult,
 } from "@/lib/meta/store";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
+import { processWhatsAppVerifiedPayload } from "@/lib/meta/whatsapp-webhook";
+import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { NextResponse, type NextRequest } from "next/server";
 
 export type MetaWebhookDeps = {
@@ -40,6 +42,7 @@ export type MetaWebhookDeps = {
     context: { webhookPayload: unknown },
   ) => Promise<PersistResult>;
   store?: MetaInboundStore;
+  whatsappStore?: InstagramIngestStore;
 };
 
 function textResponse(body: string, status: number): NextResponse {
@@ -173,6 +176,19 @@ export async function handleMetaWebhookPost(
   if (!verified.ok) return verified.response;
 
   const payload = verified.payload;
+  const isWhatsApp =
+    payload !== null &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    (payload as Record<string, unknown>).object === "whatsapp_business_account";
+
+  if (isWhatsApp && !deps.persistInboundMessage) {
+    return processWhatsAppVerifiedPayload(payload, {
+      env,
+      store: deps.whatsappStore,
+    });
+  }
+
   const events = normalizeMetaWebhookPayload(payload);
   if (events.length === 0) {
     logMetaWebhookNormalizeDiagnostic(diagnoseMetaWebhookPayload(payload));

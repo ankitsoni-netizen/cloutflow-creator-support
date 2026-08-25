@@ -1,8 +1,11 @@
 import { webhookProviderForChannel } from "@/lib/meta/types";
+import { META_WHATSAPP_PROVIDER } from "@/lib/meta/constants";
 import type {
   NormalizedInstagramEcho,
   NormalizedMetaInboundText,
+  NormalizedWhatsAppStatus,
 } from "@/lib/meta/types";
+import { whatsappExternalConversationId } from "@/lib/meta/whatsapp-ids";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -32,6 +35,64 @@ function parseUnixTimestamp(value: unknown, unit: "s" | "ms"): string {
   return date.toISOString();
 }
 
+const WHATSAPP_UNSUPPORTED_TYPES = new Set([
+  "image",
+  "document",
+  "audio",
+  "video",
+  "sticker",
+  "location",
+  "contacts",
+  "reaction",
+  "order",
+  "system",
+  "unknown",
+]);
+
+function whatsappInteractiveReply(message: Record<string, unknown>): {
+  payload: string | null;
+  title: string | null;
+} {
+  const interactive = isRecord(message.interactive) ? message.interactive : null;
+  if (interactive) {
+    const button = isRecord(interactive.button_reply)
+      ? interactive.button_reply
+      : null;
+    if (button) {
+      return {
+        payload: asNonEmptyString(button.id),
+        title: asNonEmptyString(button.title),
+      };
+    }
+    const list = isRecord(interactive.list_reply) ? interactive.list_reply : null;
+    if (list) {
+      return {
+        payload: asNonEmptyString(list.id),
+        title: asNonEmptyString(list.title),
+      };
+    }
+  }
+  const button = isRecord(message.button) ? message.button : null;
+  if (button) {
+    return {
+      payload: asNonEmptyString(button.payload),
+      title: asNonEmptyString(button.text),
+    };
+  }
+  return { payload: null, title: null };
+}
+
+function sanitizeWhatsAppFragment(
+  message: Record<string, unknown>,
+  messageType: string,
+): Record<string, unknown> {
+  return {
+    messaging_product: "whatsapp",
+    type: messageType,
+    hasId: Boolean(asNonEmptyString(message.id)),
+  };
+}
+
 function normalizeWhatsAppValue(
   value: unknown,
 ): NormalizedMetaInboundText[] {
@@ -59,37 +120,109 @@ function normalizeWhatsAppValue(
   const events: NormalizedMetaInboundText[] = [];
   for (const message of messages) {
     if (!isRecord(message)) continue;
-    if (message.type !== "text") continue;
 
     const externalMessageId = asNonEmptyString(message.id);
     const from = asNonEmptyString(message.from);
+    if (!externalMessageId || !from) continue;
+
+    const type = asNonEmptyString(message.type) ?? "text";
+    const interactive = whatsappInteractiveReply(message);
     const textRecord = isRecord(message.text) ? message.text : null;
-    const messageBody = textRecord
-      ? asNonEmptyString(textRecord.body)
-      : null;
-    if (!externalMessageId || !from || !messageBody) continue;
+    const textBody = textRecord ? asNonEmptyString(textRecord.body) : null;
+
+    let messageType: NormalizedMetaInboundText["messageType"] = "text";
+    let messageBody = textBody;
+    let quickReplyPayload: string | null = interactive.payload;
+    let unsupportedKind: string | null = null;
+
+    if (type === "interactive" || type === "button") {
+      messageType = "interactive";
+      messageBody = textBody ?? interactive.title ?? interactive.payload;
+    } else if (type !== "text") {
+      if (!WHATSAPP_UNSUPPORTED_TYPES.has(type) && type !== "text") {
+        unsupportedKind = type;
+      } else {
+        unsupportedKind = type;
+      }
+      messageType = "unsupported";
+      messageBody = `[${type}]`;
+      quickReplyPayload = null;
+    }
+
+    if (!messageBody && !quickReplyPayload) continue;
+    if (messageType === "text" && !messageBody) continue;
 
     const displayName = namesByWaId.get(from) ?? null;
+    const conversationId = phoneNumberId
+      ? whatsappExternalConversationId(phoneNumberId, from)
+      : from;
     events.push({
       channel: "whatsapp",
       provider: webhookProviderForChannel("whatsapp"),
       externalEventId: externalMessageId,
       externalMessageId,
-      externalConversationId: from,
+      externalConversationId: conversationId,
       externalContactId: from,
       displayName,
       senderName: displayName,
       senderAddress: from,
-      messageType: "text",
-      messageBody,
+      messageType,
+      messageBody: messageBody ?? quickReplyPayload ?? "",
       timestamp: parseUnixTimestamp(message.timestamp, "s"),
       phoneNumberId,
       recipientAccountId: null,
-      quickReplyPayload: null,
-      eventFragment: value,
+      quickReplyPayload,
+      unsupportedKind,
+      eventFragment: sanitizeWhatsAppFragment(message, type),
     });
   }
 
+  return events;
+}
+
+const WHATSAPP_STATUS_VALUES = new Set([
+  "sent",
+  "delivered",
+  "read",
+  "failed",
+  "deleted",
+]);
+
+function normalizeWhatsAppStatuses(value: unknown): NormalizedWhatsAppStatus[] {
+  if (!isRecord(value)) return [];
+  if (value.messaging_product !== "whatsapp") return [];
+  const statuses = Array.isArray(value.statuses) ? value.statuses : [];
+  if (statuses.length === 0) return [];
+
+  const metadata = isRecord(value.metadata) ? value.metadata : null;
+  const phoneNumberId = metadata
+    ? asNonEmptyString(metadata.phone_number_id)
+    : null;
+
+  const events: NormalizedWhatsAppStatus[] = [];
+  for (const row of statuses) {
+    if (!isRecord(row)) continue;
+    const metaMessageId = asNonEmptyString(row.id);
+    const statusRaw = asNonEmptyString(row.status)?.toLowerCase() ?? "";
+    if (!metaMessageId || !WHATSAPP_STATUS_VALUES.has(statusRaw)) continue;
+    const errors = Array.isArray(row.errors) ? row.errors : [];
+    const firstError = errors.find((item) => isRecord(item));
+    const errorCode =
+      firstError && isRecord(firstError)
+        ? asNonEmptyString(firstError.code) ??
+          (typeof firstError.code === "number" ? `graph_${firstError.code}` : null)
+        : null;
+    events.push({
+      channel: "whatsapp",
+      provider: META_WHATSAPP_PROVIDER,
+      externalEventId: `status:${metaMessageId}:${statusRaw}`,
+      metaMessageId,
+      status: statusRaw as NormalizedWhatsAppStatus["status"],
+      timestamp: parseUnixTimestamp(row.timestamp, "s"),
+      phoneNumberId,
+      errorCode,
+    });
+  }
   return events;
 }
 
@@ -199,6 +332,29 @@ export function extractInstagramEchoes(
 }
 
 /**
+ * WhatsApp delivery status callbacks. Never routed into chatbot intake.
+ */
+export function extractWhatsAppStatuses(
+  payload: unknown,
+): NormalizedWhatsAppStatus[] {
+  if (!isRecord(payload) || payload.object !== "whatsapp_business_account") {
+    return [];
+  }
+  const entries = Array.isArray(payload.entry) ? payload.entry : [];
+  const events: NormalizedWhatsAppStatus[] = [];
+  for (const entry of entries) {
+    if (!isRecord(entry)) continue;
+    const changes = Array.isArray(entry.changes) ? entry.changes : [];
+    for (const change of changes) {
+      if (!isRecord(change)) continue;
+      if (change.field && change.field !== "messages") continue;
+      events.push(...normalizeWhatsAppStatuses(change.value));
+    }
+  }
+  return events;
+}
+
+/**
  * Extracts supported inbound text messages from a Meta webhook JSON body.
  * Status callbacks, echoes, empty text, and unsupported types are omitted.
  */
@@ -216,6 +372,7 @@ export function normalizeMetaWebhookPayload(
       const changes = Array.isArray(entry.changes) ? entry.changes : [];
       for (const change of changes) {
         if (!isRecord(change)) continue;
+        if (change.field && change.field !== "messages") continue;
         events.push(...normalizeWhatsAppValue(change.value));
       }
     }

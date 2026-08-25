@@ -1,17 +1,47 @@
 import { describe, expect, it } from "vitest";
 import {
   emptyConversationSnapshot,
+  reduceChannelConversation,
   reduceInstagramConversation,
 } from "@/lib/meta/conversation-machine";
+import { INSTAGRAM_PERSONA_STATES } from "@/lib/meta/instagram-persona-machine";
 import {
-  CAMPAIGN_DETAILS_PROMPT_TEXT,
-  COLLABORATION_CONFIRMED_TEXT,
+  AGENCY_DETAILS_TEXT,
+  AGENCY_SEND_CONFIRMED_TEXT,
+  AGENCY_SEND_PAYLOAD,
+  BRAND_ACTION_TEXT,
+  BRAND_BOOK_CALL_PAYLOAD,
+  BRAND_BOOKING_TEXT,
+  CREATOR_APPLY_TEXT,
+  CREATOR_CAMPAIGN_DETAILS_TEXT,
+  CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+  CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+  CREATOR_ISSUE_DETAILS_TEXT,
+  CREATOR_NEW_WORK_PAYLOAD,
+  CREATOR_PAYMENT_ISSUE_PAYLOAD,
+  CREATOR_REASON_TEXT,
+  CREATOR_TICKET_CONFIRM_PAYLOAD,
+  CREATOR_TICKET_EDIT_PAYLOAD,
+  FLOW_CANCEL_PAYLOAD,
+  OTHER_INQUIRY_TEXT,
+  OTHER_SEND_CONFIRMED_TEXT,
+  OTHER_SEND_PAYLOAD,
+  PERSONA_AGENCY_PAYLOAD,
+  PERSONA_BRAND_PAYLOAD,
+  PERSONA_CREATOR_PAYLOAD,
+  PERSONA_OTHER_PAYLOAD,
+  POST_DONE_PAYLOAD,
+  POST_DONE_TEXT,
+  POST_MAIN_MENU_PAYLOAD,
+  personaWelcomeText,
+  withPostCompletionQuestion,
+} from "@/lib/meta/instagram-persona-copy";
+import {
   CREATOR_DETAILS_PROMPT_TEXT,
-  CREATOR_SUPPORT_STARTED_TEXT,
-  PLATFORM_DETAILS_PROMPT_TEXT,
-  ROUTE_COLLABORATION_PAYLOAD,
   ROUTE_CREATOR_SUPPORT_PAYLOAD,
-  ROUTING_QUESTION_TEXT,
+  WHATSAPP_CREATOR_DETAILS_PROMPT_TEXT,
+  WHATSAPP_INTAKE_COPY,
+  WHATSAPP_ROUTING_QUESTION_TEXT,
 } from "@/lib/meta/routing-copy";
 
 function signal(
@@ -22,7 +52,7 @@ function signal(
     text,
     quickReplyPayload: overrides.payload ?? null,
     timestamp: overrides.timestamp ?? "2026-08-25T10:00:00.000Z",
-    messageId: overrides.messageId ?? `mid.${text.slice(0, 8)}`,
+    messageId: overrides.messageId ?? `mid.${text.slice(0, 12)}`,
   };
 }
 
@@ -32,24 +62,58 @@ function sendTexts(result: ReturnType<typeof reduceInstagramConversation>): stri
     .map((effect) => ("text" in effect ? effect.text : ""));
 }
 
-describe("Instagram routing state machine", () => {
-  it("asks the routing question on the first DM and does not create a ticket", () => {
+function play(
+  steps: Array<{ text: string; payload?: string | null; messageId?: string }>,
+  start = emptyConversationSnapshot(),
+) {
+  let last: ReturnType<typeof reduceInstagramConversation> = {
+    snapshot: start,
+    effects: [],
+    attachTicketId: null,
+    inboundRoutingKind: "unclassified",
+    processed: true,
+  };
+  for (const [index, step] of steps.entries()) {
+    last = reduceInstagramConversation(
+      last.snapshot,
+      signal(step.text, {
+        payload: step.payload ?? null,
+        messageId: step.messageId ?? `mid.${index}`,
+      }),
+    );
+  }
+  return last;
+}
+
+function toPersona() {
+  return play([{ text: "Hello", messageId: "mid.first" }]);
+}
+
+describe("Instagram persona routing state machine", () => {
+  it("asks the persona menu on the first DM and does not create a ticket", () => {
     const result = reduceInstagramConversation(
       emptyConversationSnapshot(),
       signal("Need help with a campaign", { messageId: "mid.first" }),
     );
-    expect(result.snapshot.state).toBe("awaiting_route");
-    expect(result.effects.some((effect) => effect.type === "create_ticket")).toBe(
-      false,
-    );
-    const prompt = result.effects.find(
-      (effect) => effect.type === "send_quick_replies",
-    );
-    expect(prompt).toMatchObject({
+    expect(result.snapshot.state).toBe("awaiting_persona");
+    expect(result.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(result.effects.find((effect) => effect.type === "send_quick_replies")).toMatchObject({
       type: "send_quick_replies",
-      text: ROUTING_QUESTION_TEXT,
+      text: personaWelcomeText(null),
+      promptKey: "awaiting_persona",
     });
     expect(result.attachTicketId).toBeNull();
+  });
+
+  it("uses a cached username in the welcome when available", () => {
+    const result = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        suggestedSocialHandle: "riya_creates",
+        collected: emptyConversationSnapshot().collected,
+      }),
+      signal("Hi", { messageId: "mid.first" }),
+    );
+    expect(sendTexts(result)[0]).toBe(personaWelcomeText("riya_creates"));
   });
 
   it("does not re-process the same inbound message id", () => {
@@ -65,128 +129,341 @@ describe("Instagram routing state machine", () => {
     expect(second.effects).toEqual([]);
   });
 
-  it("records collaboration without creating a ticket", () => {
-    const routed = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
+  it("does not treat menu or restart inside a longer description as a command", () => {
+    const menued = toPersona();
+    const creator = reduceInstagramConversation(
+      menued.snapshot,
+      signal("I'm a creator", { messageId: "mid.p", payload: PERSONA_CREATOR_PAYLOAD }),
     );
-    const chosen = reduceInstagramConversation(
-      routed.snapshot,
-      signal("Campaign / Collaboration", {
-        messageId: "mid.2",
-        payload: ROUTE_COLLABORATION_PAYLOAD,
+    const existing = reduceInstagramConversation(
+      creator.snapshot,
+      signal("Existing campaign", {
+        messageId: "mid.e",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
       }),
     );
-    expect(chosen.snapshot.state).toBe("collaboration");
-    expect(chosen.snapshot.routingIntent).toBe("collaboration");
-    expect(chosen.effects.some((effect) => effect.type === "create_ticket")).toBe(
-      false,
+    const issue = reduceInstagramConversation(
+      existing.snapshot,
+      signal("Campaign issue", {
+        messageId: "mid.i",
+        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+      }),
     );
-    expect(chosen.effects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "send_text",
-          text: COLLABORATION_CONFIRMED_TEXT,
-        }),
-      ]),
+    const details = reduceInstagramConversation(
+      issue.snapshot,
+      signal("Summer Drop, Acme, August 2026, riya@example.com", { messageId: "mid.c" }),
+    );
+    const described = reduceInstagramConversation(
+      details.snapshot,
+      signal("Please restart my campaign and open the menu for the brand", {
+        messageId: "mid.issue",
+      }),
+    );
+    expect(described.snapshot.state).toBe("creator_confirmation");
+    expect(described.snapshot.collected.issueDescription).toContain("restart my campaign");
+  });
+
+  it.each([
+    ["I'm a creator", PERSONA_CREATOR_PAYLOAD, "awaiting_creator_reason", CREATOR_REASON_TEXT],
+    ["I'm a brand", PERSONA_BRAND_PAYLOAD, "brand_action", BRAND_ACTION_TEXT],
+    ["I'm an agency", PERSONA_AGENCY_PAYLOAD, "agency_details", AGENCY_DETAILS_TEXT],
+    ["Something else", PERSONA_OTHER_PAYLOAD, "other_inquiry", OTHER_INQUIRY_TEXT],
+  ] as const)("routes %s via payload", (title, payload, state, text) => {
+    const chosen = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: title, payload, messageId: "mid.1" },
+    ]);
+    expect(chosen.snapshot.state).toBe(state);
+    expect(sendTexts(chosen)).toContain(text);
+    expect(chosen.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(chosen.snapshot.routingIntent).toBe("unclassified");
+    if (title === "I'm a brand") expect(chosen.snapshot.collected.igPersona).toBe("brand");
+    if (title === "I'm an agency") expect(chosen.snapshot.collected.igPersona).toBe("agency");
+    if (title === "Something else") expect(chosen.snapshot.collected.igPersona).toBe("other");
+  });
+
+  it.each([
+    ["i'm a creator", "awaiting_creator_reason"],
+    ["creator", "awaiting_creator_reason"],
+    ["i am a brand", "brand_action"],
+    ["agency", "agency_details"],
+    ["something else", "other_inquiry"],
+  ])("accepts typed equivalent %s", (text, state) => {
+    const chosen = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text, messageId: "mid.1" },
+    ]);
+    expect(chosen.snapshot.state).toBe(state);
+  });
+
+  it("re-prompts invalid persona choices with a retry key including the inbound id", () => {
+    const invalid = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I want a discount", messageId: "mid.bad" },
+    ]);
+    expect(invalid.snapshot.state).toBe("awaiting_persona");
+    expect(invalid.effects[0]).toMatchObject({
+      type: "send_quick_replies",
+      text: personaWelcomeText(null),
+      promptKey: "awaiting_persona:retry:mid.bad",
+    });
+  });
+
+  it("completes creator apply without a ticket or email effect", () => {
+    const done = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a creator", payload: PERSONA_CREATOR_PAYLOAD, messageId: "mid.1" },
+      { text: "Work with Cloutflow", payload: CREATOR_NEW_WORK_PAYLOAD, messageId: "mid.2" },
+    ]);
+    expect(done.snapshot.state).toBe("awaiting_post_completion");
+    expect(done.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(done.effects.some((effect) => effect.type === "queue_internal_email")).toBe(false);
+    expect(sendTexts(done)[0]).toBe(withPostCompletionQuestion(CREATOR_APPLY_TEXT));
+  });
+
+  it("completes brand booking without a ticket or email", () => {
+    const done = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a brand", payload: PERSONA_BRAND_PAYLOAD, messageId: "mid.1" },
+      { text: "Book a call", payload: BRAND_BOOK_CALL_PAYLOAD, messageId: "mid.2" },
+    ]);
+    expect(done.snapshot.state).toBe("awaiting_post_completion");
+    expect(done.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(sendTexts(done)[0]).toBe(withPostCompletionQuestion(BRAND_BOOKING_TEXT));
+  });
+
+  it("creates a campaign-issue ticket after confirmation", () => {
+    const last = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a creator", payload: PERSONA_CREATOR_PAYLOAD, messageId: "mid.1" },
+      {
+        text: "Existing campaign",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+        messageId: "mid.2",
+      },
+      {
+        text: "Campaign issue",
+        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+        messageId: "mid.3",
+      },
+      {
+        text: "Summer Drop, Acme, August 2026, riya@example.com",
+        messageId: "mid.4",
+      },
+      { text: "Payment never arrived for the film", messageId: "mid.5" },
+      { text: "Yes, raise it", payload: CREATOR_TICKET_CONFIRM_PAYLOAD, messageId: "mid.6" },
+    ]);
+    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
+    expect(last.snapshot.collected.igIssueCategory).toBe("campaign");
+    expect(last.snapshot.collected.issueType).toBe("other");
+    expect(last.snapshot.collected.campaignMonth).toBe("2026-08-01");
+    expect(last.snapshot.collected.issueDescription).toBe("Payment never arrived for the film");
+    expect(last.snapshot.state).toBe("awaiting_post_completion");
+  });
+
+  it("creates a payment-issue ticket after confirmation", () => {
+    const last = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a creator", payload: PERSONA_CREATOR_PAYLOAD, messageId: "mid.1" },
+      {
+        text: "Existing campaign",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+        messageId: "mid.2",
+      },
+      { text: "Payment issue", payload: CREATOR_PAYMENT_ISSUE_PAYLOAD, messageId: "mid.3" },
+      { text: "Summer Drop, Acme, Aug 2026, riya@example.com", messageId: "mid.4" },
+      { text: "TDS was deducted twice", messageId: "mid.5" },
+      { text: "yes", messageId: "mid.6" },
+    ]);
+    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
+    expect(last.snapshot.collected.igIssueCategory).toBe("payment");
+    expect(last.snapshot.collected.issueType).toBe("payment_delayed");
+  });
+
+  it("re-asks only missing campaign fields", () => {
+    const partial = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a creator", payload: PERSONA_CREATOR_PAYLOAD, messageId: "mid.1" },
+      {
+        text: "Existing campaign",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+        messageId: "mid.2",
+      },
+      {
+        text: "Campaign issue",
+        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+        messageId: "mid.3",
+      },
+      { text: "Summer Drop, Acme", messageId: "mid.4" },
+    ]);
+    expect(partial.snapshot.state).toBe("creator_campaign_details");
+    expect(partial.snapshot.collected.campaignName).toBe("Summer Drop");
+    expect(partial.snapshot.collected.brandName).toBe("Acme");
+    expect(sendTexts(partial)[0]).toContain("campaign month");
+    expect(sendTexts(partial)[0]).toContain("email");
+    expect(partial.effects[0]).toMatchObject({
+      promptKey: "creator_campaign_details:retry:mid.4",
+    });
+
+    const filled = reduceInstagramConversation(
+      partial.snapshot,
+      signal("August 2026, riya@example.com", { messageId: "mid.5" }),
+    );
+    expect(filled.snapshot.collected.campaignMonth).toBe("2026-08-01");
+    expect(filled.snapshot.collected.email).toBe("riya@example.com");
+    expect(sendTexts(filled)).toEqual([CREATOR_ISSUE_DETAILS_TEXT]);
+  });
+
+  it("edit preserves issue details and returns to campaign question 1", () => {
+    const confirmed = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a creator", payload: PERSONA_CREATOR_PAYLOAD, messageId: "mid.1" },
+      {
+        text: "Existing campaign",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+        messageId: "mid.2",
+      },
+      {
+        text: "Campaign issue",
+        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+        messageId: "mid.3",
+      },
+      { text: "Old Campaign, Old Brand, 08/2026, old@example.com", messageId: "mid.4" },
+      { text: "The brief changed twice", messageId: "mid.5" },
+    ]);
+    const edited = reduceInstagramConversation(
+      confirmed.snapshot,
+      signal("Edit details", {
+        messageId: "mid.6",
+        payload: CREATOR_TICKET_EDIT_PAYLOAD,
+      }),
+    );
+    expect(edited.snapshot.state).toBe("creator_campaign_details");
+    expect(edited.snapshot.collected.issueDescription).toBe("The brief changed twice");
+    expect(edited.snapshot.collected.campaignName).toBeNull();
+    expect(sendTexts(edited)).toEqual([CREATOR_CAMPAIGN_DETAILS_TEXT]);
+
+    const updated = reduceInstagramConversation(
+      edited.snapshot,
+      signal("New Campaign, New Brand, 2026-08, new@example.com", { messageId: "mid.7" }),
+    );
+    expect(updated.snapshot.state).toBe("creator_confirmation");
+    expect(updated.snapshot.collected.campaignName).toBe("New Campaign");
+    expect(updated.snapshot.collected.issueDescription).toBe("The brief changed twice");
+    expect(updated.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+  });
+
+  it("cancel returns to the main menu without a ticket", () => {
+    const confirmed = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a creator", payload: PERSONA_CREATOR_PAYLOAD, messageId: "mid.1" },
+      {
+        text: "Existing campaign",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+        messageId: "mid.2",
+      },
+      {
+        text: "Campaign issue",
+        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+        messageId: "mid.3",
+      },
+      { text: "Summer Drop, Acme, August 2026, riya@example.com", messageId: "mid.4" },
+      { text: "The film was delayed", messageId: "mid.5" },
+    ]);
+    const cancelled = reduceInstagramConversation(
+      confirmed.snapshot,
+      signal("Cancel", { messageId: "mid.6", payload: FLOW_CANCEL_PAYLOAD }),
+    );
+    expect(cancelled.snapshot.state).toBe("awaiting_persona");
+    expect(cancelled.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(cancelled.snapshot.collected.campaignName).toBeNull();
+    expect(cancelled.snapshot.collected.issueDescription).toBeNull();
+    expect(cancelled.snapshot.intakeSessionVersion).toBeGreaterThan(
+      confirmed.snapshot.intakeSessionVersion,
     );
   });
 
-  it("reclassifies a collaboration conversation on SUPPORT", () => {
-    const routed = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
+  it("agency missing fields and invalid roster URL are re-asked", () => {
+    const partial = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm an agency", payload: PERSONA_AGENCY_PAYLOAD, messageId: "mid.1" },
+      { text: "North Star, Priya, priya@agency.test, not-a-url", messageId: "mid.2" },
+    ]);
+    expect(partial.snapshot.collected.agencyName).toBe("North Star");
+    expect(partial.snapshot.collected.creatorName).toBe("Priya");
+    expect(partial.snapshot.collected.email).toBe("priya@agency.test");
+    expect(partial.snapshot.collected.rosterUrl).toBeNull();
+    expect(sendTexts(partial)[0]).toContain("roster URL");
+
+    const complete = reduceInstagramConversation(
+      partial.snapshot,
+      signal("https://northstar.test/roster", { messageId: "mid.3" }),
     );
-    const collab = reduceInstagramConversation(
-      routed.snapshot,
-      signal("collab", {
-        messageId: "mid.2",
-        payload: ROUTE_COLLABORATION_PAYLOAD,
-      }),
-    );
-    const support = reduceInstagramConversation(
-      collab.snapshot,
-      signal("SUPPORT", { messageId: "mid.3" }),
-    );
-    expect(support.snapshot.state).toBe("support_intake");
-    expect(support.snapshot.routingIntent).toBe("creator_support");
-    expect(support.effects).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ text: CREATOR_SUPPORT_STARTED_TEXT }),
-      ]),
-    );
+    expect(complete.snapshot.state).toBe("agency_confirmation");
+    expect(complete.snapshot.collected.rosterUrl).toContain("https://northstar.test/roster");
   });
 
-  it("starts intake when Creator Support is selected", () => {
-    const routed = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
-    );
-    const support = reduceInstagramConversation(
-      routed.snapshot,
-      signal("Creator Support", {
+  it("agency send queues one internal email and no ticket", () => {
+    const sent = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm an agency", payload: PERSONA_AGENCY_PAYLOAD, messageId: "mid.1" },
+      {
+        text: "North Star, Priya, priya@agency.test, https://northstar.test/roster",
         messageId: "mid.2",
-        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
-      }),
-    );
-    expect(support.snapshot.state).toBe("support_intake");
-    expect(support.snapshot.currentIntakeField).toBe("creator_details");
-    expect(sendTexts(support)).toEqual([CREATOR_DETAILS_PROMPT_TEXT]);
+      },
+      { text: "Send to team", payload: AGENCY_SEND_PAYLOAD, messageId: "mid.3" },
+    ]);
+    expect(sent.effects.filter((effect) => effect.type === "queue_internal_email")).toEqual([
+      { type: "queue_internal_email", purpose: "agency" },
+    ]);
+    expect(sent.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(sendTexts(sent)[0]).toBe(withPostCompletionQuestion(AGENCY_SEND_CONFIRMED_TEXT));
   });
 
-  it("does not re-ask routing while a collaboration session is active", () => {
-    const routed = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
+  it("other enquiry queues one internal email and no ticket", () => {
+    const sent = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "Something else", payload: PERSONA_OTHER_PAYLOAD, messageId: "mid.1" },
+      { text: "I need help with a partnership idea", messageId: "mid.2" },
+      { text: "Asha, asha@example.com, +919876543210", messageId: "mid.3" },
+      { text: "Yes, send it", payload: OTHER_SEND_PAYLOAD, messageId: "mid.4" },
+    ]);
+    expect(sent.snapshot.collected.inquiryDetails).toBe(
+      "I need help with a partnership idea",
     );
-    const collab = reduceInstagramConversation(
-      routed.snapshot,
-      signal("collab", {
-        messageId: "mid.2",
-        payload: ROUTE_COLLABORATION_PAYLOAD,
-      }),
+    expect(sent.effects).toEqual(
+      expect.arrayContaining([{ type: "queue_internal_email", purpose: "other" }]),
     );
+    expect(sent.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(sendTexts(sent)[0]).toBe(withPostCompletionQuestion(OTHER_SEND_CONFIRMED_TEXT));
+  });
+
+  it("post-completion I'm done completes without resolving a ticket", () => {
+    const done = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a brand", payload: PERSONA_BRAND_PAYLOAD, messageId: "mid.1" },
+      { text: "Book a call", payload: BRAND_BOOK_CALL_PAYLOAD, messageId: "mid.2" },
+      { text: "I'm done", payload: POST_DONE_PAYLOAD, messageId: "mid.3" },
+    ]);
+    expect(done.snapshot.state).toBe("completed");
+    expect(sendTexts(done)).toEqual([POST_DONE_TEXT]);
+    expect(done.snapshot.ticketId).toBeNull();
+  });
+
+  it("post-completion Main menu starts a fresh session", () => {
+    const menu = play([
+      { text: "Hi", messageId: "mid.0" },
+      { text: "I'm a brand", payload: PERSONA_BRAND_PAYLOAD, messageId: "mid.1" },
+      { text: "Book a call", payload: BRAND_BOOK_CALL_PAYLOAD, messageId: "mid.2" },
+      { text: "Main menu", payload: POST_MAIN_MENU_PAYLOAD, messageId: "mid.3" },
+    ]);
+    expect(menu.snapshot.state).toBe("awaiting_persona");
+    expect(menu.snapshot.intakeSessionVersion).toBeGreaterThan(0);
+    expect(sendTexts(menu)[0]).toBe(personaWelcomeText(null));
+  });
+
+  it("attaches follow-ups to an active ticket unless menu/restart or post-completion is used", () => {
     const follow = reduceInstagramConversation(
-      collab.snapshot,
-      signal("Any update?", {
-        messageId: "mid.3",
-        timestamp: "2026-08-25T10:30:00.000Z",
-      }),
-    );
-    expect(follow.snapshot.state).toBe("collaboration");
-    expect(
-      follow.effects.some(
-        (effect) =>
-          "text" in effect && effect.text === ROUTING_QUESTION_TEXT,
-      ),
-    ).toBe(false);
-  });
-
-  it("asks routing again after 24 hours of collaboration inactivity", () => {
-    const routed = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
-    );
-    const collab = reduceInstagramConversation(
-      routed.snapshot,
-      signal("collab", {
-        messageId: "mid.2",
-        payload: ROUTE_COLLABORATION_PAYLOAD,
-        timestamp: "2026-08-24T09:00:00.000Z",
-      }),
-    );
-    const later = reduceInstagramConversation(
-      collab.snapshot,
-      signal("Hello again", {
-        messageId: "mid.3",
-        timestamp: "2026-08-25T10:00:00.000Z",
-      }),
-    );
-    expect(later.snapshot.state).toBe("awaiting_route");
-  });
-
-  it("attaches follow-ups to an active ticket without routing", () => {
-    const result = reduceInstagramConversation(
       emptyConversationSnapshot({
         state: "ticket_open",
         routingIntent: "creator_support",
@@ -195,17 +472,72 @@ describe("Instagram routing state machine", () => {
       }),
       signal("Following up", { messageId: "mid.follow" }),
     );
-    expect(result.snapshot.state).toBe("ticket_open");
-    expect(result.attachTicketId).toBe("ticket-1");
-    expect(
-      result.effects.some(
-        (effect) =>
-          "text" in effect && effect.text === ROUTING_QUESTION_TEXT,
-      ),
-    ).toBe(false);
+    expect(follow.snapshot.state).toBe("ticket_open");
+    expect(follow.attachTicketId).toBe("ticket-1");
+    expect(follow.effects).toEqual([{ type: "notify_help_inbound" }]);
+
+    const restarted = reduceInstagramConversation(
+      follow.snapshot,
+      signal("restart", { messageId: "mid.restart" }),
+    );
+    expect(restarted.snapshot.state).toBe("awaiting_persona");
+    expect(restarted.snapshot.ticketId).toBe("ticket-1");
+    expect(restarted.effects.some((effect) => effect.type === "notify_help_inbound")).toBe(
+      false,
+    );
   });
 
-  it("asks routing again after a resolved ticket receives a new message", () => {
+  it("evaluates post-completion before the active-ticket shortcut", () => {
+    const result = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        state: "awaiting_post_completion",
+        routingIntent: "creator_support",
+        ticketId: "ticket-1",
+        ticketStatus: "open",
+        intakeSessionVersion: 2,
+      }),
+      signal("Main menu", {
+        messageId: "mid.post",
+        payload: POST_MAIN_MENU_PAYLOAD,
+      }),
+    );
+    expect(result.snapshot.state).toBe("awaiting_persona");
+    expect(result.effects.some((effect) => effect.type === "notify_help_inbound")).toBe(
+      false,
+    );
+    expect(result.snapshot.ticketId).toBe("ticket-1");
+  });
+
+  it("restarts legacy non-ticket chatbot rows at the persona menu", () => {
+    const result = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        state: "support_intake",
+        routingIntent: "creator_support",
+        currentIntakeField: "platform_details",
+        intakeSessionVersion: 1,
+      }),
+      signal("hello", { messageId: "mid.legacy" }),
+    );
+    expect(result.snapshot.state).toBe("awaiting_persona");
+    expect(result.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(result.snapshot.intakeSessionVersion).toBe(2);
+  });
+
+  it("does not restart an open ticket conversation into the persona menu", () => {
+    const result = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        state: "ticket_open",
+        ticketId: "ticket-1",
+        ticketStatus: "open",
+        routingIntent: "creator_support",
+      }),
+      signal("hello", { messageId: "mid.keep" }),
+    );
+    expect(result.snapshot.state).toBe("ticket_open");
+    expect(result.attachTicketId).toBe("ticket-1");
+  });
+
+  it("asks the persona menu again after a resolved ticket", () => {
     const result = reduceInstagramConversation(
       emptyConversationSnapshot({
         state: "ticket_open",
@@ -215,247 +547,71 @@ describe("Instagram routing state machine", () => {
       }),
       signal("New issue", { messageId: "mid.new" }),
     );
-    expect(result.snapshot.state).toBe("awaiting_route");
-    expect(result.effects.some((effect) => effect.type === "create_ticket")).toBe(
+    expect(result.snapshot.state).toBe("awaiting_persona");
+    expect(result.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+  });
+
+  it.each([...INSTAGRAM_PERSONA_STATES])(
+    "honours exact menu and restart at %s",
+    (state) => {
+      const snapshot = emptyConversationSnapshot({
+        state,
+        intakeSessionVersion: 3,
+        collected: {
+          ...emptyConversationSnapshot().collected,
+          campaignName: "Keep-me-cleared",
+          igPersona: "creator",
+        },
+      });
+      for (const command of ["menu", "RESTART"] as const) {
+        const result = reduceInstagramConversation(
+          snapshot,
+          signal(command, { messageId: `mid.${state}.${command}` }),
+        );
+        expect(result.snapshot.state).toBe("awaiting_persona");
+        expect(result.snapshot.intakeSessionVersion).toBe(4);
+        expect(result.snapshot.collected.campaignName).toBeNull();
+        expect(result.snapshot.collected.igPersona).toBeNull();
+        expect(sendTexts(result)[0]).toBe(personaWelcomeText(null));
+      }
+    },
+  );
+});
+
+describe("WhatsApp routing copy adapter", () => {
+  it("asks the WhatsApp routing question and prefills phone on Creator Support", () => {
+    const first = reduceChannelConversation(
+      emptyConversationSnapshot({ suggestedPhone: "+16315551181" }),
+      signal("Need help with a campaign", { messageId: "wamid.first" }),
+      WHATSAPP_INTAKE_COPY,
+    );
+    expect(first.snapshot.state).toBe("awaiting_route");
+    expect(first.effects.some((effect) => effect.type === "create_ticket")).toBe(
       false,
     );
-  });
+    expect(first.effects.find((effect) => effect.type === "send_quick_replies")).toMatchObject({
+      text: WHATSAPP_ROUTING_QUESTION_TEXT,
+    });
 
-  it("cancels intake without creating a ticket", () => {
-    const routed = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
-    );
-    const support = reduceInstagramConversation(
-      routed.snapshot,
-      signal("support", {
-        messageId: "mid.2",
-        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
-      }),
-    );
-    const cancelled = reduceInstagramConversation(
-      support.snapshot,
-      signal("CANCEL", { messageId: "mid.3" }),
-    );
-    expect(cancelled.snapshot.state).toBe("cancelled");
-    expect(
-      cancelled.effects.some((effect) => effect.type === "create_ticket"),
-    ).toBe(false);
-  });
-
-  it("restarts intake from creator details", () => {
-    const routed = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
-    );
-    const support = reduceInstagramConversation(
-      routed.snapshot,
-      signal("support", {
-        messageId: "mid.2",
-        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
-      }),
-    );
-    const named = reduceInstagramConversation(
-      support.snapshot,
-      signal("Riya Sharma, riya@example.com, 9876543210", { messageId: "mid.3" }),
-    );
-    const restarted = reduceInstagramConversation(
-      named.snapshot,
-      signal("RESTART", { messageId: "mid.4" }),
-    );
-    expect(restarted.snapshot.state).toBe("support_intake");
-    expect(restarted.snapshot.currentIntakeField).toBe("creator_details");
-    expect(restarted.snapshot.intakeSessionVersion).toBeGreaterThan(
-      named.snapshot.intakeSessionVersion,
-    );
-    expect(restarted.snapshot.collected.creatorName).toBeNull();
-    expect(restarted.snapshot.collected.email).toBeNull();
-    expect(restarted.snapshot.collected.phoneNormalized).toBeNull();
-    expect(restarted.snapshot.collected.platform).toBeNull();
-    expect(restarted.snapshot.collected.socialHandle).toBeNull();
-    expect(restarted.snapshot.collected.campaignName).toBeNull();
-    expect(restarted.snapshot.collected.brandName).toBeNull();
-    expect(restarted.snapshot.collected.campaignMonth).toBeNull();
-    expect(restarted.snapshot.collected.originalInboundText).toBe("Hi");
-    expect(sendTexts(restarted)).toContain(CREATOR_DETAILS_PROMPT_TEXT);
-    expect(
-      named.effects.some(
-        (effect) => "promptKey" in effect && effect.promptKey === "intake:platform_details",
-      ),
-    ).toBe(true);
-    expect(
-      restarted.effects.some(
-        (effect) => "promptKey" in effect && effect.promptKey === "intake:creator_details",
-      ),
-    ).toBe(true);
-  });
-
-  it("increments intake session version on collaboration reclassify, not on ordinary answers", () => {
-    let last = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Hi", { messageId: "mid.1" }),
-    );
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("collaboration", {
-        messageId: "mid.2",
-        payload: ROUTE_COLLABORATION_PAYLOAD,
-      }),
-    );
-    const afterCollab = last.snapshot.intakeSessionVersion;
-    last = reduceInstagramConversation(
-      last.snapshot,
+    const support = reduceChannelConversation(
+      first.snapshot,
       signal("Creator Support", {
-        messageId: "mid.3",
+        messageId: "wamid.route",
         payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
       }),
+      WHATSAPP_INTAKE_COPY,
     );
-    expect(last.snapshot.intakeSessionVersion).toBe(afterCollab + 1);
-    expect(last.snapshot.state).toBe("support_intake");
-    const afterStart = last.snapshot.intakeSessionVersion;
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Riya Sharma, riya@example.com, 9876543210", { messageId: "mid.4" }),
+    expect(support.snapshot.state).toBe("support_intake");
+    expect(support.snapshot.collected.phoneNormalized).toBe("+16315551181");
+    expect(support.snapshot.collected.phonePrefill).toBe(true);
+    expect(support.snapshot.collected.creatorName).toBeNull();
+    expect(support.effects).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: WHATSAPP_CREATOR_DETAILS_PROMPT_TEXT }),
+      ]),
     );
-    expect(last.snapshot.intakeSessionVersion).toBe(afterStart);
-    expect(last.snapshot.currentIntakeField).toBe("platform_details");
-  });
-
-  it("asks only for the handle when platform is already known", () => {
-    let last = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Need help", { messageId: "mid.0" }),
-    );
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Creator Support", {
-        messageId: "mid.route",
-        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
-      }),
-    );
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Riya Sharma, riya@example.com, 9876543210", {
-        messageId: "mid.creator",
-      }),
-    );
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Instagram", { messageId: "mid.platform-only" }),
-    );
-    expect(last.snapshot.collected.platform).toBe("instagram");
-    expect(last.snapshot.collected.socialHandle).toBeNull();
-    expect(sendTexts(last)).toEqual(["Please send your username or handle."]);
-  });
-
-  it("uses exactly three primary intake prompts and creates a ticket after the third complete answer", () => {
-    const original = "Need help with a campaign";
-    let last = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal(original, { messageId: "mid.0" }),
-    );
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Creator Support", {
-        messageId: "mid.route",
-        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
-      }),
-    );
-    expect(sendTexts(last)).toEqual([CREATOR_DETAILS_PROMPT_TEXT]);
-
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Riya Sharma, riya@example.com, +919876543210", {
-        messageId: "mid.creator",
-      }),
-    );
-    expect(sendTexts(last)).toEqual([PLATFORM_DETAILS_PROMPT_TEXT]);
-    expect(last.snapshot.currentIntakeField).toBe("platform_details");
-
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Instagram, @riya_creates", { messageId: "mid.platform" }),
-    );
-    expect(sendTexts(last)).toEqual([CAMPAIGN_DETAILS_PROMPT_TEXT]);
-    expect(last.snapshot.currentIntakeField).toBe("campaign_details");
-
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Summer Drop, Acme, August 2026", { messageId: "mid.campaign" }),
-    );
-
-    const creates = last.effects.filter((effect) => effect.type === "create_ticket");
-    expect(creates).toHaveLength(1);
-    expect(last.snapshot.state).toBe("ticket_open");
-    expect(last.snapshot.collected.originalInboundText).toBe(original);
-    expect(last.snapshot.collected.platform).toBe("instagram");
-    expect(last.snapshot.collected.socialHandle).toBe("riya_creates");
-    expect(last.snapshot.collected.campaignMonth).toBe("2026-08-01");
-    expect(last.snapshot.collected.issueType).toBeNull();
-    expect(last.snapshot.collected.cloutflowPocName).toBeNull();
-
-    const allPrompts = [
+    expect(support.effects.map((effect) => ("text" in effect ? effect.text : ""))).not.toContain(
       CREATOR_DETAILS_PROMPT_TEXT,
-      PLATFORM_DETAILS_PROMPT_TEXT,
-      CAMPAIGN_DETAILS_PROMPT_TEXT,
-    ];
-    expect(allPrompts).toHaveLength(3);
-
-    const forbidden = /issue type|cloutflow poc|confirm to create|edit to restart|please describe the issue/i;
-    expect(sendTexts(last).some((text) => forbidden.test(text))).toBe(false);
-  });
-
-  it("re-prompts only for the missing field so the creator does not repeat valid data", () => {
-    let last = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Payment is delayed", { messageId: "mid.0" }),
     );
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Creator Support", {
-        messageId: "mid.route",
-        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
-      }),
-    );
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("Riya Sharma, riya@example.com", { messageId: "mid.partial" }),
-    );
-    expect(sendTexts(last)).toEqual(["Please send a valid contact number."]);
-    expect(last.snapshot.collected.creatorName).toBe("Riya Sharma");
-    expect(last.snapshot.collected.email).toBe("riya@example.com");
-
-    last = reduceInstagramConversation(
-      last.snapshot,
-      signal("9876543210", { messageId: "mid.phone" }),
-    );
-    expect(last.snapshot.collected.phoneNormalized).toBe("+919876543210");
-    expect(sendTexts(last)).toEqual([PLATFORM_DETAILS_PROMPT_TEXT]);
-  });
-
-  it("does not ask issue-type, POC, description, or confirmation questions", () => {
-    let last = reduceInstagramConversation(
-      emptyConversationSnapshot(),
-      signal("Need help with a campaign", { messageId: "mid.0" }),
-    );
-    const answers: Array<[string, string, string | null]> = [
-      ["Creator Support", "mid.route", ROUTE_CREATOR_SUPPORT_PAYLOAD],
-      ["Riya Sharma, riya@example.com, +919876543210", "mid.creator", null],
-      ["YT @riya.vlogs", "mid.platform", null],
-      ["Summer Drop, Acme, 2026-08", "mid.campaign", null],
-    ];
-    const seen: string[] = [];
-    for (const [text, messageId, payload] of answers) {
-      last = reduceInstagramConversation(
-        last.snapshot,
-        signal(text, { messageId, payload }),
-      );
-      seen.push(...sendTexts(last));
-    }
-    expect(seen.join("\n")).not.toMatch(/issue type|POC|describe the issue|Confirm to create/i);
-    expect(last.effects.some((effect) => effect.type === "create_ticket")).toBe(
-      true,
-    );
-    expect(last.snapshot.collected.platform).toBe("youtube");
   });
 });

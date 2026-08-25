@@ -17,9 +17,15 @@ import {
   sendStaffInstagramReply,
   staffInstagramWindowWarning,
 } from "@/lib/tickets/instagram-reply";
+import {
+  isWhatsAppTicket,
+  sendStaffWhatsAppReply,
+  staffWhatsAppWindowWarning,
+} from "@/lib/tickets/whatsapp-reply";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
 import { consumeStaffActionRateLimit } from "@/lib/tickets/staff-rate-limit";
 import { createAdminInstagramStore } from "@/lib/meta/instagram-store";
+import { WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
 import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import {
@@ -205,6 +211,101 @@ export async function queueCreatorReplyAction(input: {
       deliveryMessage: "The Instagram reply could not be sent.",
       messagingWindowWarning: staffInstagramWindowWarning(
         !ig.messagingWindowExpired,
+      ),
+    };
+  }
+
+  if (isWhatsAppTicket(ticket)) {
+    const wa = await sendStaffWhatsAppReply({
+      ticket,
+      commentId: comment.id,
+      commentText: comment.commentText,
+    });
+    if (!wa.ok) {
+      const failed = await updateCommentDeliveryStatus(
+        context.supabase,
+        comment.id,
+        "failed",
+      );
+      return {
+        data: "data" in failed ? failed.data : comment,
+        ticket: mapDbTicketToTicket(ticket),
+        delivery: "failed",
+        whatsappDelivery: "failed",
+        deliveryMessage: wa.error,
+      };
+    }
+
+    const commentStatus =
+      wa.whatsapp === "sent" || wa.email === "sent" ? "sent" : "failed";
+    const updatedComment = await updateCommentDeliveryStatus(
+      context.supabase,
+      comment.id,
+      commentStatus,
+    );
+    if ("error" in updatedComment) {
+      return {
+        data: comment,
+        ticket: mapDbTicketToTicket(ticket),
+        delivery: wa.whatsapp === "sent" ? "sent" : "failed",
+        whatsappDelivery: wa.whatsapp,
+        deliveryMessage:
+          wa.whatsapp === "sent"
+            ? "WhatsApp reply sent, but delivery status could not be saved."
+            : wa.whatsappErrorCode === "outside_customer_service_window"
+              ? WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING
+              : "The WhatsApp reply could not be sent.",
+        messagingWindowWarning: staffWhatsAppWindowWarning(
+          !wa.messagingWindowExpired,
+        ),
+      };
+    }
+
+    if (wa.whatsapp === "sent" || wa.email === "sent") {
+      const notified = await markTicketCustomerNotified(context.supabase, ticket);
+      if ("error" in notified) {
+        return {
+          data: updatedComment.data,
+          ticket: mapDbTicketToTicket(ticket),
+          delivery: wa.whatsapp === "failed" ? "failed" : "sent",
+          whatsappDelivery: wa.whatsapp,
+          deliveryMessage:
+            wa.whatsapp === "sent"
+              ? "WhatsApp reply sent, but ticket notification timestamps could not be updated."
+              : "The WhatsApp reply could not be sent.",
+          messagingWindowWarning: staffWhatsAppWindowWarning(
+            !wa.messagingWindowExpired,
+          ),
+        };
+      }
+      return {
+        data: updatedComment.data,
+        ticket: notified.data,
+        delivery: wa.whatsapp === "failed" ? "failed" : "sent",
+        whatsappDelivery: wa.whatsapp,
+        deliveryMessage:
+          wa.whatsapp === "failed"
+            ? wa.whatsappErrorCode === "outside_customer_service_window"
+              ? WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING
+              : "The reply was saved, but WhatsApp delivery failed. You can retry."
+            : "Reply sent to WhatsApp.",
+        messagingWindowWarning: staffWhatsAppWindowWarning(
+          !wa.messagingWindowExpired,
+        ),
+      };
+    }
+
+    return {
+      data: updatedComment.data,
+      ticket: mapDbTicketToTicket(ticket),
+      delivery: "failed",
+      whatsappDelivery: "failed",
+      deliveryMessage:
+        wa.whatsappErrorCode === "outside_customer_service_window"
+          ? WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING
+          : "The WhatsApp reply could not be sent.",
+      messagingWindowWarning: staffWhatsAppWindowWarning(
+        !wa.messagingWindowExpired,
       ),
     };
   }
@@ -415,6 +516,79 @@ export async function resolveTicketAction(
         commentStatus === "sent"
           ? "Ticket resolved and the creator was notified."
           : "Ticket resolved, but Instagram/email notification failed.",
+      comment: "data" in updatedComment ? updatedComment.data : comment,
+    };
+  }
+
+  if (isWhatsAppTicket(resolvedTicket)) {
+    const wa = await sendStaffWhatsAppReply({
+      ticket: { ...resolvedTicket, status: "open" },
+      commentId: comment.id,
+      commentText: resolutionSummary,
+    });
+    let store;
+    try {
+      store = createAdminInstagramStore();
+    } catch {
+      store = null;
+    }
+    if (store && resolvedTicket.external_conversation_id) {
+      const conversation = await store.getConversation(
+        "whatsapp",
+        resolvedTicket.external_conversation_id,
+      );
+      if (conversation && !("errorCode" in conversation)) {
+        const rows = await store.listSupportTranscript({
+          conversationId: conversation.id,
+          ticketId: resolvedTicket.id,
+        });
+        const transcriptText = rows
+          .map((row) => {
+            const who = row.direction === "inbound" ? "Creator" : "Cloutflow";
+            return `${who}: ${row.messageBody}`;
+          })
+          .join("\n\n");
+        const claim = await store.claimEmailDelivery({
+          ticketId: resolvedTicket.id,
+          conversationId: conversation.id,
+          commentId: comment.id,
+          purpose: "whatsapp-resolution-transcript",
+          idempotencyKey: `email:wa-resolve:${resolvedTicket.id}`,
+        });
+        if (claim.outcome === "claimed") {
+          const mailed = await sendInstagramResolutionTranscriptEmail({
+            ticket: resolvedTicket,
+            transcriptText,
+            resolutionSummary,
+          });
+          await store.markEmailDelivery(claim.id, {
+            deliveryStatus:
+              mailed.outcome === "sent"
+                ? "sent"
+                : mailed.outcome === "skipped"
+                  ? "skipped"
+                  : "failed",
+            brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
+            errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
+          });
+        }
+      }
+    }
+
+    const commentStatus = wa.ok && wa.whatsapp === "sent" ? "sent" : "failed";
+    const updatedComment = await updateCommentDeliveryStatus(
+      context.supabase,
+      comment.id,
+      commentStatus === "sent" ? "sent" : "failed",
+    );
+    await markTicketCustomerNotified(context.supabase, resolvedTicket);
+    return {
+      data: mapDbTicketToTicket(resolvedTicket),
+      resolutionEmail: commentStatus === "sent" ? "sent" : "failed",
+      resolutionEmailMessage:
+        commentStatus === "sent"
+          ? "Ticket resolved and the creator was notified."
+          : "Ticket resolved, but WhatsApp/email notification failed.",
       comment: "data" in updatedComment ? updatedComment.data : comment,
     };
   }

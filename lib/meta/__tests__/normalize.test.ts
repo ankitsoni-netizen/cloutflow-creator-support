@@ -5,6 +5,7 @@ import {
 } from "@/lib/meta/constants";
 import {
   extractInstagramEchoes,
+  extractWhatsAppStatuses,
   normalizeMetaWebhookPayload,
 } from "@/lib/meta/normalize";
 import {
@@ -23,7 +24,7 @@ describe("normalizeMetaWebhookPayload", () => {
       provider: META_WHATSAPP_PROVIDER,
       externalEventId: "wamid.HBgNMTYzMTU1NTExODE",
       externalMessageId: "wamid.HBgNMTYzMTU1NTExODE",
-      externalConversationId: "16315551181",
+      externalConversationId: "123456123:16315551181",
       externalContactId: "16315551181",
       displayName: "Riya Sharma",
       senderName: "Riya Sharma",
@@ -56,11 +57,90 @@ describe("normalizeMetaWebhookPayload", () => {
     ]);
   });
 
-  it("ignores WhatsApp delivery/status callbacks", () => {
+  it("ignores WhatsApp delivery/status callbacks in inbound normalize", () => {
     expect(normalizeMetaWebhookPayload(whatsappStatusPayload())).toEqual([]);
+    const statuses = extractWhatsAppStatuses(whatsappStatusPayload());
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]?.status).toBe("delivered");
+    expect(statuses[0]?.metaMessageId).toBe("wamid.HBgNMTYzMTU1NTExODE");
   });
 
-  it("ignores WhatsApp non-text message types", () => {
+  it("normalizes WhatsApp interactive button replies", () => {
+    const payload = whatsappTextPayload();
+    const message = payload.entry[0].changes[0].value.messages[0] as Record<
+      string,
+      unknown
+    >;
+    message.type = "interactive";
+    delete message.text;
+    message.interactive = {
+      type: "button_reply",
+      button_reply: { id: "ROUTE_CREATOR_SUPPORT", title: "Creator Support" },
+    };
+    const events = normalizeMetaWebhookPayload(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.quickReplyPayload).toBe("ROUTE_CREATOR_SUPPORT");
+    expect(events[0]?.messageBody).toBe("Creator Support");
+  });
+
+  it("normalizes WhatsApp interactive list replies", () => {
+    const payload = whatsappTextPayload();
+    const message = payload.entry[0].changes[0].value.messages[0] as Record<
+      string,
+      unknown
+    >;
+    message.type = "interactive";
+    delete message.text;
+    message.interactive = {
+      type: "list_reply",
+      list_reply: { id: "ROUTE_COLLABORATION", title: "Campaign / Collab" },
+    };
+    const events = normalizeMetaWebhookPayload(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.messageType).toBe("interactive");
+    expect(events[0]?.quickReplyPayload).toBe("ROUTE_COLLABORATION");
+    expect(events[0]?.messageBody).toBe("Campaign / Collab");
+  });
+
+  it("normalizes legacy WhatsApp button payload replies", () => {
+    const payload = whatsappTextPayload();
+    const message = payload.entry[0].changes[0].value.messages[0] as Record<
+      string,
+      unknown
+    >;
+    message.type = "button";
+    delete message.text;
+    message.button = {
+      payload: "ROUTE_CREATOR_SUPPORT",
+      text: "Creator Support",
+    };
+    const events = normalizeMetaWebhookPayload(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.messageType).toBe("interactive");
+    expect(events[0]?.quickReplyPayload).toBe("ROUTE_CREATOR_SUPPORT");
+    expect(events[0]?.messageBody).toBe("Creator Support");
+  });
+
+  it("ignores WhatsApp changes that are not the messages field", () => {
+    const payload = whatsappTextPayload();
+    payload.entry[0].changes[0].field = "message_template_status_update";
+    expect(normalizeMetaWebhookPayload(payload)).toEqual([]);
+    expect(extractWhatsAppStatuses(payload)).toEqual([]);
+  });
+
+  it("extracts sent, delivered, read, failed, and deleted statuses", () => {
+    for (const status of ["sent", "delivered", "read", "failed", "deleted"] as const) {
+      const statuses = extractWhatsAppStatuses(whatsappStatusPayload({ status }));
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]?.status).toBe(status);
+      expect(statuses[0]?.provider).toBe(META_WHATSAPP_PROVIDER);
+      expect(statuses[0]?.externalEventId).toBe(
+        `status:wamid.HBgNMTYzMTU1NTExODE:${status}`,
+      );
+    }
+  });
+
+  it("stores WhatsApp media metadata without crashing", () => {
     const payload = whatsappTextPayload();
     const message = payload.entry[0].changes[0].value.messages[0] as Record<
       string,
@@ -68,7 +148,11 @@ describe("normalizeMetaWebhookPayload", () => {
     >;
     message.type = "image";
     delete message.text;
-    expect(normalizeMetaWebhookPayload(payload)).toEqual([]);
+    const events = normalizeMetaWebhookPayload(payload);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.messageType).toBe("unsupported");
+    expect(events[0]?.unsupportedKind).toBe("image");
+    expect(events[0]?.messageBody).toBe("[image]");
   });
 
   it("ignores empty WhatsApp text bodies", () => {
