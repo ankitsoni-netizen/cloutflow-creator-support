@@ -269,18 +269,23 @@ describe("instagram webhook POST", () => {
     ingestSpy.mockRestore();
   });
 
-  it("returns 200 for echo Instagram messages without ingesting", async () => {
+  it("returns 200 for echo Instagram messages without chatbot ingest", async () => {
     const ingestSpy = vi.spyOn(
       await import("@/lib/meta/instagram-ingest"),
       "ingestInstagramInboundMessage",
     );
+    const echoSpy = vi
+      .spyOn(await import("@/lib/meta/instagram-echo"), "ingestInstagramEcho")
+      .mockImplementation(async () => ({ outcome: "stored" }));
     const response = await handleInstagramWebhookPost(
       signedPost(instagramTextPayload({ isEcho: true })),
       { env: testEnv(), instagramStore: stubStore() },
     );
     expect(response.status).toBe(200);
     expect(ingestSpy).not.toHaveBeenCalled();
+    expect(echoSpy).toHaveBeenCalled();
     ingestSpy.mockRestore();
+    echoSpy.mockRestore();
   });
 
   it("logs privacy-safe diagnostics for Instagram Login messages that normalize to zero events", async () => {
@@ -289,6 +294,9 @@ describe("instagram webhook POST", () => {
       await import("@/lib/meta/instagram-ingest"),
       "ingestInstagramInboundMessage",
     );
+    const echoSpy = vi
+      .spyOn(await import("@/lib/meta/instagram-echo"), "ingestInstagramEcho")
+      .mockImplementation(async () => ({ outcome: "stored" }));
     const payload = instagramLoginDashboardTestPayload();
     const response = await handleInstagramWebhookPost(signedPost(payload), {
       env: testEnv(),
@@ -297,6 +305,7 @@ describe("instagram webhook POST", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(META_WEBHOOK_EVENT_RECEIVED);
     expect(ingestSpy).not.toHaveBeenCalled();
+    expect(echoSpy).toHaveBeenCalled();
     const logged = infoSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
     expect(logged).toContain("meta webhook normalize diagnostic");
     expect(logged).toContain("\"objectType\":\"instagram\"");
@@ -314,6 +323,7 @@ describe("instagram webhook POST", () => {
     expect(logged).not.toContain(APP_SECRET);
     expect(logged).not.toMatch(/sha256=/i);
     ingestSpy.mockRestore();
+    echoSpy.mockRestore();
     infoSpy.mockRestore();
   });
 

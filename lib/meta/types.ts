@@ -25,6 +25,22 @@ export type NormalizedMetaInboundText = {
   timestamp: string;
   phoneNumberId: string | null;
   recipientAccountId: string | null;
+  quickReplyPayload?: string | null;
+  eventFragment: Record<string, unknown>;
+};
+
+export type NormalizedInstagramEcho = {
+  channel: "instagram";
+  provider: MetaWebhookProvider;
+  externalEventId: string;
+  externalMessageId: string;
+  externalConversationId: string;
+  recipientId: string;
+  senderId: string;
+  messageBody: string;
+  timestamp: string;
+  isEcho: boolean;
+  isSelf: boolean;
   eventFragment: Record<string, unknown>;
 };
 
@@ -53,6 +69,13 @@ export const CONVERSATION_STATES = [
   "ticket_created",
   "human_handoff",
   "closed",
+  "unclassified",
+  "awaiting_route",
+  "collaboration",
+  "support_intake",
+  "awaiting_confirmation",
+  "ticket_open",
+  "cancelled",
 ] as const;
 
 export type ConversationState = (typeof CONVERSATION_STATES)[number];

@@ -9,12 +9,11 @@ import "server-only";
  * - META_APP_SECRET
  * - META_IG_APP_SECRET (Instagram webhook HMAC; optional if META_APP_SECRET is set)
  *
- * Used later for outbound Graph API calls; unused in this phase:
+ * Used for outbound Graph API calls:
  * - META_GRAPH_API_VERSION
- * - META_WHATSAPP_ACCESS_TOKEN
- * - META_WHATSAPP_PHONE_NUMBER_ID
  * - META_IG_ACCESS_TOKEN (falls back to META_INSTAGRAM_ACCESS_TOKEN)
  * - META_IG_ACCOUNT_ID (falls back to META_INSTAGRAM_ACCOUNT_ID)
+ * - META_WHATSAPP_ACCESS_TOKEN / META_WHATSAPP_PHONE_NUMBER_ID (WhatsApp send; unused in this phase)
  *
  * Readers are lazy: CRM pages can load before Meta is configured.
  */

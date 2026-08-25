@@ -16,6 +16,7 @@ import {
   retryAcknowledgementEmailAction,
   retryCreatorEmailAction,
 } from "@/lib/tickets/email-actions";
+import { fetchInstagramTicketTimelineAction } from "@/lib/tickets/instagram-thread";
 import {
   applyResolutionEmailLabels,
   buildTimeline,
@@ -152,26 +153,61 @@ function TicketWorkspaceActive({
       setTimelineLoading(false);
       return;
     }
-    setTimeline(enrichTimeline(result.comments, result.events));
+    let items = enrichTimeline(result.comments, result.events);
+    if (ticket.sourceChannel === "Instagram") {
+      items = items.map((item) =>
+        item.canRetryEmail ? { ...item, canRetryInstagram: true } : item,
+      );
+      const ig = await fetchInstagramTicketTimelineAction({
+        ticketId: ticket.id,
+        externalConversationId: ticket.externalConversationId ?? null,
+      });
+      if (!("error" in ig) && ig.items.length > 0) {
+        items = [...items, ...ig.items].sort((a, b) => {
+          const diff =
+            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+          if (diff !== 0) return diff;
+          return a.id.localeCompare(b.id);
+        });
+      }
+    }
+    setTimeline(items);
     setTimelineLoading(false);
   }
 
   useEffect(() => {
     let cancelled = false;
-    void fetchTicketTimeline(ticket.id).then((result) => {
+    void fetchTicketTimeline(ticket.id).then(async (result) => {
       if (cancelled) return;
       if ("error" in result) {
         setTimeline([]);
         setTimelineError(result.error);
       } else {
-        setTimeline(
-          applyResolutionEmailLabels(
-            buildTimeline(result.events, result.comments, {
-              acknowledgementEmailSentAt: ticket.acknowledgementEmailSentAt,
-            }),
-            ticket.resolutionSummary,
-          ),
+        let items = applyResolutionEmailLabels(
+          buildTimeline(result.events, result.comments, {
+            acknowledgementEmailSentAt: ticket.acknowledgementEmailSentAt,
+          }),
+          ticket.resolutionSummary,
         );
+        if (ticket.sourceChannel === "Instagram") {
+          items = items.map((item) =>
+            item.canRetryEmail ? { ...item, canRetryInstagram: true } : item,
+          );
+          const ig = await fetchInstagramTicketTimelineAction({
+            ticketId: ticket.id,
+            externalConversationId: ticket.externalConversationId ?? null,
+          });
+          if (cancelled) return;
+          if (!("error" in ig) && ig.items.length > 0) {
+            items = [...items, ...ig.items].sort((a, b) => {
+              const diff =
+                new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+              if (diff !== 0) return diff;
+              return a.id.localeCompare(b.id);
+            });
+          }
+        }
+        setTimeline(items);
       }
       setTimelineLoading(false);
     });
@@ -182,6 +218,8 @@ function TicketWorkspaceActive({
     ticket.id,
     ticket.acknowledgementEmailSentAt,
     ticket.resolutionSummary,
+    ticket.sourceChannel,
+    ticket.externalConversationId,
   ]);
 
   async function handleStatusChange(
@@ -238,7 +276,9 @@ function TicketWorkspaceActive({
         ok: false as const,
         message:
           result.deliveryMessage ||
-          "The creator reply was saved, but the email could not be sent.",
+          (ticket.sourceChannel === "Instagram"
+            ? "The creator reply was saved, but Instagram delivery failed."
+            : "The creator reply was saved, but the email could not be sent."),
       };
     }
     return { ok: true as const };
@@ -506,8 +546,10 @@ function TicketWorkspaceActive({
           <ReplyComposer
             height={composerHeight}
             creatorEmail={ticket.email}
+            sourceChannel={ticket.sourceChannel}
             onQueueReply={handleQueueReply}
             onSaveNote={handleSaveNote}
+            disabled={isResolved}
           />
         </div>
 

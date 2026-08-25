@@ -11,6 +11,7 @@ import {
   updateCommentDeliveryStatus,
 } from "@/lib/tickets/email-delivery";
 import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors";
+import { isInstagramTicket, sendStaffInstagramReply } from "@/lib/tickets/instagram-reply";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
 import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
@@ -127,6 +128,38 @@ export async function retryCreatorEmailAction(input: {
   const comment = mapDbComment(commentRow);
   if (comment.visibility !== "creator" || !comment.sendToCreator) {
     return { error: "Only creator-facing messages can be emailed." };
+  }
+
+  if (isInstagramTicket(ticket)) {
+    const ig = await sendStaffInstagramReply({
+      ticket,
+      commentId: comment.id,
+      commentText: comment.commentText,
+    });
+    if (!ig.ok) {
+      return {
+        data: comment,
+        ticket: mapDbTicketToTicket(ticket),
+        delivery: "failed",
+        instagramDelivery: "failed",
+        deliveryMessage: ig.error,
+      };
+    }
+    const delivery = ig.instagram === "sent" ? "sent" : "failed";
+    if (delivery === "sent") {
+      await updateCommentDeliveryStatus(context.supabase, comment.id, "sent");
+      await markTicketCustomerNotified(context.supabase, ticket);
+    }
+    return {
+      data: comment,
+      ticket: mapDbTicketToTicket(ticket),
+      delivery,
+      instagramDelivery: ig.instagram,
+      deliveryMessage:
+        delivery === "sent"
+          ? "Instagram reply sent."
+          : "Instagram delivery failed. You can retry.",
+    };
   }
 
   if (comment.deliveryStatus === "sent" || comment.deliveryStatus === "delivered") {

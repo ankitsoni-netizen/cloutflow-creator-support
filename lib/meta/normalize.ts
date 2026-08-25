@@ -1,5 +1,8 @@
 import { webhookProviderForChannel } from "@/lib/meta/types";
-import type { NormalizedMetaInboundText } from "@/lib/meta/types";
+import type {
+  NormalizedInstagramEcho,
+  NormalizedMetaInboundText,
+} from "@/lib/meta/types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -82,6 +85,7 @@ function normalizeWhatsAppValue(
       timestamp: parseUnixTimestamp(message.timestamp, "s"),
       phoneNumberId,
       recipientAccountId: null,
+      quickReplyPayload: null,
       eventFragment: value,
     });
   }
@@ -97,11 +101,16 @@ function normalizeInstagramMessagingItem(
   const message = isRecord(item.message) ? item.message : null;
   if (!message) return null;
   if (message.is_echo === true) return null;
+  if (message.is_self === true) return null;
   if (message.is_deleted === true) return null;
   if (message.is_unsupported === true) return null;
 
+  const quickReply = isRecord(message.quick_reply) ? message.quick_reply : null;
+  const quickReplyPayload = quickReply
+    ? asNonEmptyString(quickReply.payload)
+    : null;
   const messageBody = asNonEmptyString(message.text);
-  if (!messageBody) return null;
+  if (!messageBody && !quickReplyPayload) return null;
 
   const sender = isRecord(item.sender) ? item.sender : null;
   const externalContactId = sender ? asNonEmptyString(sender.id) : null;
@@ -123,12 +132,70 @@ function normalizeInstagramMessagingItem(
     senderName,
     senderAddress: externalContactId,
     messageType: "text",
-    messageBody,
+    messageBody: messageBody ?? quickReplyPayload ?? "",
     timestamp: parseUnixTimestamp(item.timestamp, "ms"),
     phoneNumberId: null,
     recipientAccountId,
+    quickReplyPayload,
     eventFragment: item,
   };
+}
+
+function normalizeInstagramEchoItem(
+  item: unknown,
+): NormalizedInstagramEcho | null {
+  if (!isRecord(item)) return null;
+  const message = isRecord(item.message) ? item.message : null;
+  if (!message) return null;
+  const isEcho = message.is_echo === true;
+  const isSelf = message.is_self === true;
+  if (!isEcho && !isSelf) return null;
+  if (message.is_deleted === true) return null;
+
+  const externalMessageId = asNonEmptyString(message.mid);
+  const messageBody = asNonEmptyString(message.text);
+  if (!externalMessageId || !messageBody) return null;
+
+  const sender = isRecord(item.sender) ? item.sender : null;
+  const recipient = isRecord(item.recipient) ? item.recipient : null;
+  const senderId = sender ? asNonEmptyString(sender.id) : null;
+  const recipientId = recipient ? asNonEmptyString(recipient.id) : null;
+  if (!senderId || !recipientId) return null;
+
+  return {
+    channel: "instagram",
+    provider: webhookProviderForChannel("instagram"),
+    externalEventId: `echo:${externalMessageId}`,
+    externalMessageId,
+    externalConversationId: recipientId,
+    recipientId,
+    senderId,
+    messageBody,
+    timestamp: parseUnixTimestamp(item.timestamp, "ms"),
+    isEcho,
+    isSelf,
+    eventFragment: item,
+  };
+}
+
+/**
+ * Echo / is_self Instagram messages. Never passed into chatbot routing.
+ */
+export function extractInstagramEchoes(
+  payload: unknown,
+): NormalizedInstagramEcho[] {
+  if (!isRecord(payload) || payload.object !== "instagram") return [];
+  const entries = Array.isArray(payload.entry) ? payload.entry : [];
+  const echoes: NormalizedInstagramEcho[] = [];
+  for (const entry of entries) {
+    if (!isRecord(entry)) continue;
+    const messaging = Array.isArray(entry.messaging) ? entry.messaging : [];
+    for (const item of messaging) {
+      const echo = normalizeInstagramEchoItem(item);
+      if (echo) echoes.push(echo);
+    }
+  }
+  return echoes;
 }
 
 /**

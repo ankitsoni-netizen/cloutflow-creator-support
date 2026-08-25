@@ -94,6 +94,8 @@ export interface Ticket {
   updatedAt: string;
   activity: ActivityEvent[];
   sendAcknowledgementEmail?: boolean;
+  externalContactId?: string | null;
+  externalConversationId?: string | null;
 }
 
 export interface NewTicketFormData {

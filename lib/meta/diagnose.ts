@@ -79,7 +79,7 @@ function ignoredReasonForMessagingItem(
 ): MetaWebhookIgnoredReason | null {
   const message = isRecord(item.message) ? item.message : null;
   if (!message) return "missing_message";
-  if (message.is_echo === true) return "echo";
+  if (message.is_echo === true || message.is_self === true) return "echo";
   if (message.is_deleted === true) return "deleted";
   if (message.is_unsupported === true) return "unsupported";
   if (typeof message.text !== "string" || message.text.trim().length === 0) {

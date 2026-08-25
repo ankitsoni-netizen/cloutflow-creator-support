@@ -101,11 +101,15 @@ export async function sendTransactionalEmail(
   const toName = input.toName?.trim();
   const to = toName ? `"${toName.replace(/"/g, "")}" <${toEmail}>` : toEmail;
   const headers = buildSafeHeaders(input.headers, input.metadata);
+  const bcc = (input.bccEmails ?? [])
+    .map((value) => value.trim())
+    .filter((value) => EMAIL_PATTERN.test(value));
 
   try {
     const info = await getBrevoTransporter().sendMail({
       from: `"${config.fromName.replace(/"/g, "")}" <${config.fromEmail}>`,
       to,
+      bcc: bcc.length > 0 ? bcc : undefined,
       replyTo,
       subject,
       html,

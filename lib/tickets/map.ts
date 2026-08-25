@@ -251,6 +251,8 @@ export function mapDbTicketToTicket(row: DbTicket): Ticket {
     activity: [],
     sendAcknowledgementEmail:
       row.acknowledgement_email_requested ?? undefined,
+    externalContactId: row.external_contact_id ?? null,
+    externalConversationId: row.external_conversation_id ?? null,
   };
 }
 

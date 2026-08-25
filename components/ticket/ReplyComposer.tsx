@@ -6,6 +6,8 @@ type ComposerMode = "reply" | "note";
 
 interface ReplyComposerProps {
   creatorEmail?: string;
+  sourceChannel?: string;
+  messagingWindowWarning?: string | null;
   onQueueReply: (text: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   onSaveNote: (text: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   disabled?: boolean;
@@ -14,6 +16,8 @@ interface ReplyComposerProps {
 
 export default function ReplyComposer({
   creatorEmail = "",
+  sourceChannel = "",
+  messagingWindowWarning = null,
   onQueueReply,
   onSaveNote,
   disabled = false,
@@ -26,7 +30,9 @@ export default function ReplyComposer({
   const [success, setSuccess] = useState<string | null>(null);
 
   const trimmedEmail = creatorEmail.trim();
+  const isInstagram = sourceChannel.trim().toLowerCase() === "instagram";
   const canEmailCreator = Boolean(trimmedEmail);
+  const canSendPublicReply = isInstagram || canEmailCreator;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -41,7 +47,7 @@ export default function ReplyComposer({
       return;
     }
 
-    if (mode === "reply" && !canEmailCreator) {
+    if (mode === "reply" && !canSendPublicReply) {
       setError("This ticket has no creator email address.");
       return;
     }
@@ -60,7 +66,11 @@ export default function ReplyComposer({
 
     if (mode === "reply") {
       setText("");
-      setSuccess("Email accepted by Brevo.");
+      setSuccess(
+        isInstagram
+          ? "Reply queued for Instagram."
+          : "Email accepted by Brevo.",
+      );
     } else {
       setText("");
       setSuccess("Internal note saved.");
@@ -78,7 +88,9 @@ export default function ReplyComposer({
   const charCount = text.length;
   const placeholder =
     mode === "reply"
-      ? "Write a creator-facing reply. This will be emailed to the creator."
+      ? isInstagram
+        ? "Write a creator-facing reply. This will be sent to Instagram and emailed when an address is on file."
+        : "Write a creator-facing reply. This will be emailed to the creator."
       : "Write a private note visible only to Cloutflow staff.";
 
   return (
@@ -131,9 +143,13 @@ export default function ReplyComposer({
           }`}
         >
           {mode === "reply"
-            ? canEmailCreator
-              ? `Public reply mode · Email will be sent to ${trimmedEmail}`
-              : "Public reply mode · This ticket has no creator email address."
+            ? isInstagram
+              ? canEmailCreator
+                ? `Public reply mode · Instagram and email (${trimmedEmail})`
+                : "Public reply mode · Sent to Instagram. No creator email on file."
+              : canEmailCreator
+                ? `Public reply mode · Email will be sent to ${trimmedEmail}`
+                : "Public reply mode · This ticket has no creator email address."
             : "Private note mode · Visible to staff only. Never sent to the creator."}
         </div>
 
@@ -171,7 +187,7 @@ export default function ReplyComposer({
             disabled={
               submitting ||
               disabled ||
-              (mode === "reply" && !canEmailCreator)
+              (mode === "reply" && !canSendPublicReply)
             }
             className={`rounded-md px-3.5 py-2 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-70 ${
               mode === "reply"
@@ -183,12 +199,19 @@ export default function ReplyComposer({
               ? mode === "reply"
                 ? "Sending..."
                 : "Saving..."
-              : mode === "reply"
-                ? "Send Email"
+                : mode === "reply"
+                ? isInstagram
+                  ? "Send Reply"
+                  : "Send Email"
                 : "Save Note"}
           </button>
         </div>
 
+        {messagingWindowWarning && mode === "reply" && isInstagram ? (
+          <p className="shrink-0 text-xs text-[var(--warning)]" role="status">
+            {messagingWindowWarning}
+          </p>
+        ) : null}
         {error ? (
           <p className="shrink-0 text-xs text-[var(--danger)]" role="alert">
             {error}

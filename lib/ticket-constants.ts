@@ -3,6 +3,7 @@ export const ISSUE_TYPES = [
   "TDS Query",
   "POC / Conduct Concern",
   "GST Query",
+  "Campaign Execution",
   "Campaign Brief Clarification",
   "Content Approval Delay",
   "Contract / Agreement",
@@ -17,19 +18,22 @@ export const ISSUE_TYPE_TO_DB: Record<IssueTypeLabel, string> = {
   "TDS Query": "tds_query",
   "POC / Conduct Concern": "poc_conduct_concern",
   "GST Query": "gst_query",
+  "Campaign Execution": "campaign_execution",
   "Campaign Brief Clarification": "campaign_brief_clarification",
   "Content Approval Delay": "content_approval_delay",
   "Contract / Agreement": "contract_agreement",
   Other: "other",
 };
 
-export const ISSUE_TYPE_FROM_DB: Record<string, IssueTypeLabel> =
-  Object.fromEntries(
+export const ISSUE_TYPE_FROM_DB: Record<string, IssueTypeLabel> = {
+  ...(Object.fromEntries(
     Object.entries(ISSUE_TYPE_TO_DB).map(([label, dbValue]) => [
       dbValue,
       label as IssueTypeLabel,
     ]),
-  ) as Record<string, IssueTypeLabel>;
+  ) as Record<string, IssueTypeLabel>),
+  poc_conduct: "POC / Conduct Concern",
+};
 
 export const EXECUTIVES = [
   "Priya Sharma",

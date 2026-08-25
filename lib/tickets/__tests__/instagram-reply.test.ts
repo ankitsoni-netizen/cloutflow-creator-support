@@ -1,0 +1,219 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  sendStaffInstagramReply,
+  isInstagramTicket,
+} from "@/lib/tickets/instagram-reply";
+import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
+import type { DbTicket } from "@/lib/tickets/types";
+import * as instagramSend from "@/lib/meta/instagram-send";
+
+function ticket(overrides: Partial<DbTicket> = {}): DbTicket {
+  return {
+    id: "ticket-1",
+    ticket_code: "CF-2026-00001",
+    creator_name: "Riya Sharma",
+    creator_phone: "+919876543210",
+    creator_email: "riya@example.com",
+    social_handle: "riya",
+    platform: "instagram",
+    issue_type: "payment_delayed",
+    campaign_name: null,
+    brand_name: null,
+    campaign_month: "2026-08-01",
+    cloutflow_poc_name: null,
+    cloutflow_poc_contact_number: null,
+    request_category: "creator_support",
+    company_name: null,
+    requester_type: null,
+    topic_or_module: null,
+    intake_details: null,
+    source_channel: "instagram",
+    status: "open",
+    priority: "normal",
+    assigned_team: "Creator Support",
+    assigned_executive_id: null,
+    assigned_executive_name: null,
+    issue_description: "Payment delayed",
+    internal_notes: null,
+    acknowledgement_email_requested: true,
+    acknowledgement_email_sent_at: null,
+    resolution_summary: null,
+    first_response_at: null,
+    resolved_at: null,
+    customer_last_notified_at: null,
+    metadata: null,
+    external_contact_id: "12334",
+    external_conversation_id: "12334",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestStore {
+  const messages: Array<Record<string, unknown>> = [];
+  const emails: Array<Record<string, unknown>> = [];
+  return {
+    async getConversation() {
+      return {
+        id: "convo-1",
+        displayName: null,
+        ticketId: "ticket-1",
+        state: "ticket_open",
+        routingIntent: "creator_support",
+        currentIntakeField: null,
+        lastPromptKey: null,
+        lastActivityAt: new Date().toISOString(),
+        lastProcessedExternalMessageId: "mid.1",
+        collectedData: {},
+        externalContactId: "12334",
+      };
+    },
+    async claimOutboundMessage(input) {
+      const existing = messages.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        return {
+          outcome: "duplicate" as const,
+          id: existing.id as string,
+          deliveryStatus: String(existing.deliveryStatus),
+          externalMessageId: (existing.externalMessageId as string | null) ?? null,
+        };
+      }
+      messages.push({
+        id: "out-1",
+        idempotencyKey: input.idempotencyKey,
+        deliveryStatus: "pending",
+        recipientExternalId: input.recipientExternalId,
+        messageBody: input.messageBody,
+      });
+      return { outcome: "claimed" as const, id: "out-1" };
+    },
+    async markOutboundMessage(id, patch) {
+      const row = messages.find((message) => message.id === id);
+      if (row) Object.assign(row, patch);
+    },
+    async claimEmailDelivery(input) {
+      const existing = emails.find((row) => row.idempotencyKey === input.idempotencyKey);
+      if (existing) {
+        return {
+          outcome: "duplicate" as const,
+          id: existing.id as string,
+          deliveryStatus: String(existing.deliveryStatus),
+        };
+      }
+      emails.push({ id: "email-1", idempotencyKey: input.idempotencyKey, deliveryStatus: "pending" });
+      return { outcome: "claimed" as const, id: "email-1" };
+    },
+    async markEmailDelivery() {},
+    ...overrides,
+  } as InstagramIngestStore;
+}
+
+describe("CRM Instagram replies", () => {
+  it("sends a public reply to the ticket IGSID", async () => {
+    const send = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.staff",
+      recipientId: "12334",
+    });
+    const result = await sendStaffInstagramReply({
+      ticket: ticket(),
+      commentId: "comment-1",
+      commentText: "We are looking into this.",
+      store: store(),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.instagram).toBe("sent");
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientId: "12334", text: "We are looking into this." }),
+    );
+    send.mockRestore();
+  });
+
+  it("does not send when the recipient would not match the conversation", async () => {
+    const send = vi.spyOn(instagramSend, "sendInstagramText");
+    const result = await sendStaffInstagramReply({
+      ticket: ticket(),
+      commentId: "comment-1",
+      commentText: "Hello",
+      store: store({
+        async getConversation() {
+          return {
+            id: "convo-1",
+            displayName: null,
+            ticketId: "ticket-1",
+            state: "ticket_open",
+            routingIntent: "creator_support",
+            currentIntakeField: null,
+            lastPromptKey: null,
+            lastActivityAt: new Date().toISOString(),
+            lastProcessedExternalMessageId: "mid.1",
+            collectedData: {},
+            externalContactId: "99999",
+          };
+        },
+      }),
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: "recipient_mismatch" });
+    expect(send).not.toHaveBeenCalled();
+    send.mockRestore();
+  });
+
+  it("does not double-send when the same comment is retried", async () => {
+    const send = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.staff",
+      recipientId: "12334",
+    });
+    const memory = store();
+    await sendStaffInstagramReply({
+      ticket: ticket(),
+      commentId: "comment-1",
+      commentText: "We are looking into this.",
+      store: memory,
+    });
+    send.mockClear();
+    const retry = await sendStaffInstagramReply({
+      ticket: ticket(),
+      commentId: "comment-1",
+      commentText: "We are looking into this.",
+      store: memory,
+    });
+    expect(retry.ok).toBe(true);
+    if (retry.ok) expect(retry.alreadySent).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    send.mockRestore();
+  });
+
+  it("marks outbound failed without dropping the queued content", async () => {
+    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: false,
+      errorCode: "http_5xx",
+      retryable: true,
+      messagingWindowExpired: false,
+      httpStatus: 500,
+    });
+    const marked: Array<Record<string, unknown>> = [];
+    const result = await sendStaffInstagramReply({
+      ticket: ticket(),
+      commentId: "comment-fail",
+      commentText: "Please retry this text.",
+      store: store({
+        async markOutboundMessage(_id, patch) {
+          marked.push(patch);
+        },
+      }),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.instagram).toBe("failed");
+    expect(marked[0]).toMatchObject({
+      deliveryStatus: "failed",
+      deliveryErrorCode: "http_5xx",
+    });
+  });
+
+  it("identifies Instagram tickets only", () => {
+    expect(isInstagramTicket(ticket())).toBe(true);
+    expect(isInstagramTicket(ticket({ source_channel: "website" }))).toBe(false);
+  });
+});

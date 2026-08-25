@@ -42,6 +42,8 @@ export type TimelineKind =
   | "creator_reply"
   | "resolution"
   | "acknowledgement_email"
+  | "instagram_inbound"
+  | "instagram_outbound"
   | "other_event";
 
 export interface TimelineItem {
@@ -54,9 +56,11 @@ export interface TimelineItem {
   fromStatus?: string | null;
   toStatus?: string | null;
   deliveryStatus?: DeliveryStatus | null;
-  visibilityLabel?: "Internal Note" | "Creator Reply" | "Resolution Email";
+  visibilityLabel?: "Internal Note" | "Creator Reply" | "Resolution Email" | "Instagram";
   commentId?: string;
   canRetryEmail?: boolean;
+  canRetryInstagram?: boolean;
+  channelMessageId?: string;
 }
 
 export type AcknowledgementEmailOutcome = "sent" | "skipped" | "failed";
@@ -75,6 +79,8 @@ export type CreatorReplyActionResult =
       ticket: Ticket;
       delivery: "sent" | "failed";
       deliveryMessage?: string;
+      instagramDelivery?: "sent" | "failed" | "skipped";
+      messagingWindowWarning?: string | null;
     }
   | { error: string };
 

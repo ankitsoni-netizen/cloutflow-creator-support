@@ -34,10 +34,17 @@ function itemStyles(kind: TimelineItem["kind"]): {
         label: "Internal note",
       };
     case "creator_reply":
+    case "instagram_outbound":
       return {
         bubble: "border-border bg-surface",
         dot: "bg-[var(--brand-blue)]",
-        label: "Creator reply",
+        label: kind === "instagram_outbound" ? "Instagram reply" : "Creator reply",
+      };
+    case "instagram_inbound":
+      return {
+        bubble: "border-border bg-surface-muted",
+        dot: "bg-accent",
+        label: "Instagram inbound",
       };
     case "acknowledgement_email":
       return {
@@ -221,7 +228,9 @@ export default function ConversationTimeline({
                         >
                           {retryingCommentId === item.commentId
                             ? "Retrying..."
-                            : "Retry Email"}
+                            : item.canRetryInstagram
+                              ? "Retry"
+                              : "Retry Email"}
                         </button>
                       ) : null}
                     </div>

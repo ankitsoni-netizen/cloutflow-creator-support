@@ -1,76 +1,100 @@
 import "server-only";
 
 import { WEBHOOK_STATUS_FAILED } from "@/lib/meta/constants";
+import {
+  emptyConversationSnapshot,
+  reduceInstagramConversation,
+} from "@/lib/meta/conversation-machine";
+import { applyInstagramEffects, retryFailedInstagramOutbounds } from "@/lib/meta/instagram-effects";
+import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
+import {
+  snapshotFromConversationRow,
+  type InstagramConversationRow,
+  type InstagramIngestStore,
+} from "@/lib/meta/instagram-store";
 import { sha256Hex } from "@/lib/meta/signature";
-import {
-  createSupabaseMetaStore,
-  type MetaInboundStore,
-  type PersistContext,
-  type PersistResult,
-} from "@/lib/meta/store";
-import {
-  buildInstagramCollectedData,
-  isActiveTicketStatus,
-  mapInstagramEventToTicketInsert,
-  type InstagramTicketInsert,
-} from "@/lib/meta/instagram-ticket";
+import type { InstagramSendDeps } from "@/lib/meta/instagram-send";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
-import { createAdminClient } from "@/lib/supabase/admin";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { PersistContext, PersistResult } from "@/lib/meta/store";
 
-export type InstagramTicketRow = {
-  id: string;
-  status: string;
+export type { InstagramIngestStore, InstagramTicketRow } from "@/lib/meta/instagram-store";
+export { createAdminInstagramStore, createSupabaseInstagramStore } from "@/lib/meta/instagram-store";
+
+export type InstagramIngestDeps = {
+  sendDeps?: InstagramSendDeps;
 };
 
-export type InstagramIngestStore = MetaInboundStore & {
-  getTicket(id: string): Promise<InstagramTicketRow | null | { errorCode: string }>;
-  findActiveInstagramTicket(input: {
-    externalConversationId: string;
-    externalContactId: string;
-  }): Promise<InstagramTicketRow | null | { errorCode: string }>;
-  insertInstagramTicket(
-    row: InstagramTicketInsert,
-  ): Promise<
-    | { outcome: "inserted"; id: string }
-    | { outcome: "failed"; errorCode: string }
-  >;
-};
+async function upsertConversation(
+  store: InstagramIngestStore,
+  event: NormalizedMetaInboundText,
+): Promise<
+  | { outcome: "ok"; row: InstagramConversationRow }
+  | { outcome: "failed"; errorCode: string }
+> {
+  const existing = await store.getConversation(
+    event.channel,
+    event.externalConversationId,
+  );
+  if (existing && "errorCode" in existing) {
+    return { outcome: "failed", errorCode: existing.errorCode };
+  }
 
-async function resolveActiveTicket(
+  if (existing) {
+    return { outcome: "ok", row: existing };
+  }
+
+  const inserted = await store.insertConversation({
+    channel: event.channel,
+    externalConversationId: event.externalConversationId,
+    externalContactId: event.externalContactId,
+    displayName: event.displayName,
+    lastMessageAt: event.timestamp,
+    state: "unclassified",
+  });
+  if (inserted.outcome === "failed") {
+    return { outcome: "failed", errorCode: inserted.errorCode };
+  }
+
+  const lookedUp = await store.getConversation(
+    event.channel,
+    event.externalConversationId,
+  );
+  if (!lookedUp || "errorCode" in lookedUp) {
+    return { outcome: "failed", errorCode: "conversation_lookup_failed" };
+  }
+  return { outcome: "ok", row: lookedUp };
+}
+
+async function ticketStatusFor(
   store: InstagramIngestStore,
   event: NormalizedMetaInboundText,
   conversationTicketId: string | null,
 ): Promise<
-  | { outcome: "found"; id: string }
-  | { outcome: "missing" }
-  | { outcome: "failed"; errorCode: string }
+  | { ticketId: string | null; status: string | null }
+  | { errorCode: string }
 > {
   if (conversationTicketId) {
     const linked = await store.getTicket(conversationTicketId);
-    if (linked && "errorCode" in linked) {
-      return { outcome: "failed", errorCode: linked.errorCode };
-    }
-    if (linked && isActiveTicketStatus(linked.status)) {
-      return { outcome: "found", id: linked.id };
-    }
+    if (linked && "errorCode" in linked) return { errorCode: linked.errorCode };
+    if (linked) return { ticketId: linked.id, status: linked.status };
   }
 
   const found = await store.findActiveInstagramTicket({
     externalConversationId: event.externalConversationId,
     externalContactId: event.externalContactId,
   });
-  if (found && "errorCode" in found) {
-    return { outcome: "failed", errorCode: found.errorCode };
+  if (found && "errorCode" in found) return { errorCode: found.errorCode };
+  if (found && isActiveTicketStatus(found.status)) {
+    return { ticketId: found.id, status: found.status };
   }
-  if (found) return { outcome: "found", id: found.id };
-  return { outcome: "missing" };
+  return { ticketId: conversationTicketId, status: found?.status ?? null };
 }
 
 export async function ingestInstagramInboundMessage(
   event: NormalizedMetaInboundText,
   store: InstagramIngestStore,
   context: PersistContext,
+  ingestDeps: InstagramIngestDeps = {},
 ): Promise<PersistResult> {
   if (event.channel !== "instagram") {
     return { outcome: "failed", errorCode: "unsupported_channel" };
@@ -99,131 +123,146 @@ export async function ingestInstagramInboundMessage(
   const eventId = claim.id;
 
   try {
-    const existing = await store.getConversation(
-      event.channel,
-      event.externalConversationId,
-    );
-    if (existing && "errorCode" in existing) {
-      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, existing.errorCode);
-      return { outcome: "failed", errorCode: existing.errorCode };
+    const conversation = await upsertConversation(store, event);
+    if (conversation.outcome === "failed") {
+      await store.markWebhookEvent(
+        eventId,
+        WEBHOOK_STATUS_FAILED,
+        conversation.errorCode,
+      );
+      return { outcome: "failed", errorCode: conversation.errorCode };
     }
 
-    let conversationId: string;
-    let conversationTicketId: string | null = null;
-
-    if (existing) {
-      const updated = await store.updateConversation(existing.id, {
-        lastMessageAt: event.timestamp,
-        displayName: event.displayName,
-      });
-      if (updated.outcome === "failed") {
-        await store.markWebhookEvent(
-          eventId,
-          WEBHOOK_STATUS_FAILED,
-          updated.errorCode,
-        );
-        return { outcome: "failed", errorCode: updated.errorCode };
-      }
-      conversationId = existing.id;
-      conversationTicketId = existing.ticketId;
-    } else {
-      const inserted = await store.insertConversation({
-        channel: event.channel,
-        externalConversationId: event.externalConversationId,
-        externalContactId: event.externalContactId,
-        displayName: event.displayName,
-        lastMessageAt: event.timestamp,
-      });
-      if (inserted.outcome === "failed") {
-        await store.markWebhookEvent(
-          eventId,
-          WEBHOOK_STATUS_FAILED,
-          inserted.errorCode,
-        );
-        return { outcome: "failed", errorCode: inserted.errorCode };
-      }
-      if (inserted.outcome === "duplicate") {
-        const raced = await store.getConversation(
-          event.channel,
-          event.externalConversationId,
-        );
-        if (!raced || "errorCode" in raced) {
-          await store.markWebhookEvent(
-            eventId,
-            WEBHOOK_STATUS_FAILED,
-            "conversation_lookup_failed",
-          );
-          return { outcome: "failed", errorCode: "conversation_lookup_failed" };
-        }
-        conversationId = raced.id;
-        conversationTicketId = raced.ticketId;
-      } else {
-        conversationId = inserted.id;
-      }
-    }
-
-    const active = await resolveActiveTicket(
+    const ticketInfo = await ticketStatusFor(
       store,
       event,
-      conversationTicketId,
+      conversation.row.ticketId,
     );
-    if (active.outcome === "failed") {
-      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, active.errorCode);
-      return { outcome: "failed", errorCode: active.errorCode };
+    if ("errorCode" in ticketInfo) {
+      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, ticketInfo.errorCode);
+      return { outcome: "failed", errorCode: ticketInfo.errorCode };
     }
 
-    let ticketId: string;
-    if (active.outcome === "found") {
-      ticketId = active.id;
-    } else {
-      const created = await store.insertInstagramTicket(
-        mapInstagramEventToTicketInsert(event),
-      );
-      if (created.outcome === "failed") {
-        await store.markWebhookEvent(
-          eventId,
-          WEBHOOK_STATUS_FAILED,
-          created.errorCode,
-        );
-        return { outcome: "failed", errorCode: created.errorCode };
-      }
-      ticketId = created.id;
-    }
-
-    const createdNewTicket = active.outcome === "missing";
-    const linked = await store.updateConversation(conversationId, {
-      lastMessageAt: event.timestamp,
-      displayName: event.displayName,
-      ticketId,
-      state: createdNewTicket ? "ticket_created" : undefined,
-      collectedData: createdNewTicket
-        ? buildInstagramCollectedData(event)
-        : undefined,
-    });
-    if (linked.outcome === "failed") {
-      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, linked.errorCode);
-      return { outcome: "failed", errorCode: linked.errorCode };
-    }
-
-    const message = await store.insertInboundMessage({
-      conversationId,
+    const inbound = await store.insertInboundMessage({
+      conversationId: conversation.row.id,
       channel: event.channel,
       externalMessageId: event.externalMessageId,
       senderName: event.senderName,
       senderAddress: event.senderAddress,
       messageBody: event.messageBody,
       eventFragment: event.eventFragment,
-      ticketId,
+      ticketId: ticketInfo.ticketId && isActiveTicketStatus(ticketInfo.status)
+        ? ticketInfo.ticketId
+        : null,
+      routingKind: "unclassified",
+      purpose: "inbound",
+    });
+    if (inbound.outcome === "failed") {
+      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, inbound.errorCode);
+      return { outcome: "failed", errorCode: inbound.errorCode };
+    }
+
+    const snapshot = snapshotFromConversationRow(
+      conversation.row,
+      ticketInfo.status,
+      event.displayName,
+    );
+    snapshot.ticketId = ticketInfo.ticketId;
+    snapshot.ticketStatus = ticketInfo.status;
+    if (!snapshot.suggestedSocialHandle) {
+      snapshot.suggestedSocialHandle = event.displayName;
+    }
+
+    const reduced = reduceInstagramConversation(snapshot, {
+      text: event.messageBody,
+      quickReplyPayload: event.quickReplyPayload ?? null,
+      timestamp: event.timestamp,
+      messageId: event.externalMessageId,
     });
 
-    if (message.outcome === "failed") {
-      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, message.errorCode);
-      return { outcome: "failed", errorCode: message.errorCode };
+    if (inbound.outcome === "duplicate" && !reduced.processed) {
+      const retried = await retryFailedInstagramOutbounds({
+        store,
+        recipientId: event.externalContactId,
+        conversationId: conversation.row.id,
+        sendDeps: ingestDeps.sendDeps,
+      });
+      if (retried.retryableFailure) {
+        await store.markWebhookEvent(
+          eventId,
+          WEBHOOK_STATUS_FAILED,
+          "instagram_send_failed",
+        );
+        return { outcome: "failed", errorCode: "instagram_send_failed" };
+      }
+      await store.markWebhookEvent(eventId, "completed");
+      return { outcome: "duplicate" };
+    }
+
+    if (reduced.attachTicketId) {
+      reduced.snapshot.ticketId = reduced.attachTicketId;
+    }
+
+    const saved = await store.saveConversationSnapshot(
+      conversation.row.id,
+      reduced.snapshot,
+      event.timestamp,
+      event.displayName,
+    );
+    if (saved.outcome === "failed") {
+      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
+      return { outcome: "failed", errorCode: saved.errorCode };
+    }
+
+    if (reduced.inboundRoutingKind !== "unclassified") {
+      await store.markMessagesRoutingKind({
+        conversationId: conversation.row.id,
+        fromKind: "unclassified",
+        toKind: reduced.inboundRoutingKind,
+      });
+    }
+
+    const applied = await applyInstagramEffects({
+      effects: reduced.effects,
+      snapshotTicketId: reduced.snapshot.ticketId,
+      collected: reduced.snapshot.collected,
+      inboundMessageId: event.externalMessageId,
+      inboundText: event.messageBody,
+      event: {
+        externalContactId: event.externalContactId,
+        externalConversationId: event.externalConversationId,
+      },
+      deps: {
+        store,
+        recipientId: event.externalContactId,
+        conversationId: conversation.row.id,
+        sendDeps: ingestDeps.sendDeps,
+      },
+    });
+
+    if (applied.ticketId && applied.ticketId !== reduced.snapshot.ticketId) {
+      reduced.snapshot.ticketId = applied.ticketId;
+      reduced.snapshot.state = "ticket_open";
+      await store.saveConversationSnapshot(
+        conversation.row.id,
+        reduced.snapshot,
+        event.timestamp,
+        event.displayName,
+      );
+    }
+
+    if (applied.retryableFailure) {
+      await store.markWebhookEvent(
+        eventId,
+        WEBHOOK_STATUS_FAILED,
+        "instagram_send_failed",
+      );
+      return { outcome: "failed", errorCode: "instagram_send_failed" };
     }
 
     await store.markWebhookEvent(eventId, "completed");
     return {
-      outcome: message.outcome === "duplicate" ? "duplicate" : "stored",
+      outcome: inbound.outcome === "duplicate" ? "duplicate" : "stored",
     };
   } catch {
     try {
@@ -235,69 +274,6 @@ export async function ingestInstagramInboundMessage(
   }
 }
 
-export function createSupabaseInstagramStore(
-  supabase: SupabaseClient,
-): InstagramIngestStore {
-  const base = createSupabaseMetaStore(supabase);
-  return {
-    ...base,
-    async getTicket(id) {
-      const { data, error } = await supabase
-        .from("tickets")
-        .select("id, status")
-        .eq("id", id)
-        .maybeSingle();
-      if (error) return { errorCode: "ticket_lookup_failed" };
-      if (!data?.id) return null;
-      return { id: data.id as string, status: String(data.status ?? "") };
-    },
-    async findActiveInstagramTicket(input) {
-      const { data, error } = await supabase
-        .from("tickets")
-        .select("id, status")
-        .eq("source_channel", "instagram")
-        .eq("external_conversation_id", input.externalConversationId)
-        .in("status", ["open", "in_progress", "waiting"])
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (error) return { errorCode: "ticket_lookup_failed" };
-      if (data?.id) {
-        return { id: data.id as string, status: String(data.status ?? "") };
-      }
-
-      const byContact = await supabase
-        .from("tickets")
-        .select("id, status")
-        .eq("source_channel", "instagram")
-        .eq("external_contact_id", input.externalContactId)
-        .in("status", ["open", "in_progress", "waiting"])
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (byContact.error) return { errorCode: "ticket_lookup_failed" };
-      if (!byContact.data?.id) return null;
-      return {
-        id: byContact.data.id as string,
-        status: String(byContact.data.status ?? ""),
-      };
-    },
-    async insertInstagramTicket(row) {
-      const { data, error } = await supabase
-        .from("tickets")
-        .insert(row)
-        .select("id")
-        .single();
-      if (!error && data?.id) {
-        return { outcome: "inserted", id: data.id as string };
-      }
-      return { outcome: "failed", errorCode: "ticket_insert_failed" };
-    },
-  };
-}
-
-export function createAdminInstagramStore(): InstagramIngestStore {
-  return createSupabaseInstagramStore(createAdminClient());
+export function emptySnapshotForTests() {
+  return emptyConversationSnapshot();
 }

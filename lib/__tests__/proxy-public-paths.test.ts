@@ -20,5 +20,8 @@ describe("isUnauthenticatedProxyPath", () => {
     expect(isUnauthenticatedProxyPath("/login")).toBe(false);
     expect(isUnauthenticatedProxyPath("/team")).toBe(false);
     expect(isUnauthenticatedProxyPath("/api/whatsapp/tickets")).toBe(false);
+    expect(isUnauthenticatedProxyPath("/api/tickets/abc/instagram-reply")).toBe(
+      false,
+    );
   });
 });

@@ -32,6 +32,8 @@ export const TICKET_SELECT = `
   resolved_at,
   customer_last_notified_at,
   metadata,
+  external_contact_id,
+  external_conversation_id,
   created_at,
   updated_at
 `;

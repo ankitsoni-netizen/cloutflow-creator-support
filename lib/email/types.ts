@@ -14,6 +14,8 @@ export interface SendTransactionalEmailInput {
   html: string;
   text: string;
   replyTo?: string;
+  /** Optional BCC recipients. Never log these addresses. */
+  bccEmails?: string[];
   /** Safe custom headers only (for example X-Cloutflow-*). Never pass secrets. */
   headers?: Record<string, string>;
   /** Safe non-secret key/value pairs applied as X-Cloutflow-Meta-* headers. */

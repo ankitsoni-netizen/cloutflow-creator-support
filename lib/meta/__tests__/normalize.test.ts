@@ -3,7 +3,10 @@ import {
   META_INSTAGRAM_PROVIDER,
   META_WHATSAPP_PROVIDER,
 } from "@/lib/meta/constants";
-import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
+import {
+  extractInstagramEchoes,
+  normalizeMetaWebhookPayload,
+} from "@/lib/meta/normalize";
 import {
   instagramLoginMessagesPayload,
   instagramTextPayload,
@@ -116,10 +119,16 @@ describe("normalizeMetaWebhookPayload", () => {
     expect(events[0]?.timestamp).toBe("2020-10-18T22:13:26.000Z");
   });
 
-  it("ignores Instagram echo messages", () => {
-    expect(
-      normalizeMetaWebhookPayload(instagramTextPayload({ isEcho: true })),
-    ).toEqual([]);
+  it("ignores Instagram echo messages in chatbot normalize and extracts them separately", () => {
+    const payload = instagramTextPayload({ isEcho: true });
+    expect(normalizeMetaWebhookPayload(payload)).toEqual([]);
+    const echoes = extractInstagramEchoes(payload);
+    expect(echoes).toHaveLength(1);
+    expect(echoes[0]).toMatchObject({
+      isEcho: true,
+      externalMessageId: "mid.instagram.abc",
+      recipientId: "INSTAGRAM_ACCOUNT_ID",
+    });
   });
 
   it("does not invent Instagram IDs when mid or sender is missing", () => {
