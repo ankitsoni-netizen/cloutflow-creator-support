@@ -9,7 +9,7 @@ import { sendTransactionalEmail } from "@/lib/email/send";
 import { buildTicketAcknowledgementEmail } from "@/lib/email/templates/ticket-acknowledgement";
 import { buildTicketReplyEmail } from "@/lib/email/templates/ticket-reply";
 import {
-  buildAcknowledgementEmailContent,
+  buildInstagramTicketAcknowledgementContent,
   formatTicketEmailLabels,
   safeEmailErrorMessage,
 } from "@/lib/email/ticket-mail";
@@ -73,12 +73,12 @@ export async function sendInstagramTicketConfirmationEmail(input: {
 
   try {
     const content = buildTicketAcknowledgementEmail(
-      buildAcknowledgementEmailContent(input.ticket),
+      buildInstagramTicketAcknowledgementContent(input.ticket),
     );
     const sent = await sendTransactionalEmail({
       toEmail: recipient,
       toName: sanitizeEmailHeaderValue(input.ticket.creator_name ?? ""),
-      subject: instagramTicketEmailSubject(input.ticket.ticket_code),
+      subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,
       bccEmails: helpBcc(),

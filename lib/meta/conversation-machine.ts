@@ -1,34 +1,30 @@
 import { detectRoutingCommand } from "@/lib/meta/commands";
 import {
-  applyIntakeValue,
   emptyIntakeCollected,
-  formatIntakeSummary,
-  INTAKE_FIELDS,
-  INTAKE_ISSUE_TYPE_LABELS,
-  intakePromptForField,
-  nextIntakeField,
+  isIntakeComplete,
+  mergeCampaignDetails,
+  mergeCreatorDetails,
+  mergePlatformDetails,
+  missingCampaignDetailsPrompt,
+  missingCreatorDetailsPrompt,
+  missingPlatformDetailsPrompt,
   type IntakeCollectedData,
   type IntakeField,
-  type IntakeIssueType,
-  validateIntakeField,
 } from "@/lib/meta/intake-validate";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
-  CANCEL_PAYLOAD,
+  CAMPAIGN_DETAILS_PROMPT_TEXT,
   COLLABORATION_CONFIRMED_TEXT,
-  CONFIRM_PAYLOAD,
-  CONFIRMATION_PROMPT_TEXT,
-  CREATOR_SUPPORT_STARTED_TEXT,
-  EDIT_PAYLOAD,
+  CREATOR_DETAILS_PROMPT_TEXT,
   INTAKE_CANCELLED_TEXT,
   INTAKE_RESTARTED_TEXT,
+  PLATFORM_DETAILS_PROMPT_TEXT,
   ROUTE_COLLABORATION_PAYLOAD,
   ROUTE_CREATOR_SUPPORT_PAYLOAD,
   ROUTING_CLARIFY_TEXT,
   ROUTING_COLLABORATION_QUICK_REPLY_TITLE,
   ROUTING_CREATOR_SUPPORT_TITLE,
   ROUTING_QUESTION_TEXT,
-  YES_PAYLOAD,
 } from "@/lib/meta/routing-copy";
 
 export const ROUTING_CONVERSATION_STATES = [
@@ -146,24 +142,6 @@ function routingQuickReplies(): InstagramQuickReply[] {
   ];
 }
 
-function issueTypeQuickReplies(): InstagramQuickReply[] {
-  return (Object.keys(INTAKE_ISSUE_TYPE_LABELS) as IntakeIssueType[]).map(
-    (key) => qr(INTAKE_ISSUE_TYPE_LABELS[key], key.toUpperCase()),
-  );
-}
-
-function confirmationQuickReplies(): InstagramQuickReply[] {
-  return [
-    qr("Confirm", CONFIRM_PAYLOAD),
-    qr("Edit", EDIT_PAYLOAD),
-    qr("Cancel", CANCEL_PAYLOAD),
-  ];
-}
-
-function yesCancelQuickReplies(): InstagramQuickReply[] {
-  return [qr("Yes", YES_PAYLOAD), qr("Cancel", CANCEL_PAYLOAD)];
-}
-
 function promptKey(kind: string, sessionId: string, extra = ""): string {
   return extra ? `${kind}:${sessionId}:${extra}` : `${kind}:${sessionId}`;
 }
@@ -184,15 +162,11 @@ function withActivity(
 function seedOriginal(
   collected: IntakeCollectedData,
   signal: InboundSignal,
-  suggestedSocialHandle: string | null,
 ): IntakeCollectedData {
   const next = { ...collected };
   if (!next.originalInboundText) {
     next.originalInboundText = signal.text;
     next.originalInboundMessageId = signal.messageId;
-  }
-  if (!next.socialHandle && suggestedSocialHandle) {
-    next.socialHandle = suggestedSocialHandle.replace(/^@/, "");
   }
   return next;
 }
@@ -207,10 +181,8 @@ function startRouting(
       originalInboundText: signal.text,
       originalInboundMessageId: signal.messageId,
       routingSessionId: sessionId,
-      socialHandle: snapshot.suggestedSocialHandle,
     }),
     signal,
-    snapshot.suggestedSocialHandle,
   );
   const key = promptKey("route", sessionId);
   return {
@@ -248,58 +220,49 @@ function startIntake(
     originalInboundMessageId:
       snapshot.collected.originalInboundMessageId ?? signal.messageId,
     routingSessionId: sessionId,
-    socialHandle: snapshot.collected.socialHandle ?? snapshot.suggestedSocialHandle,
   });
-  const firstField = INTAKE_FIELDS[0];
-  const introKey = promptKey("support_intro", sessionId, reason);
-  const fieldKey = promptKey("intake", sessionId, firstField);
-  const introText =
-    reason === "restart" ? INTAKE_RESTARTED_TEXT : CREATOR_SUPPORT_STARTED_TEXT;
-  const prompt = intakePromptForField(firstField, collected);
+  const key = promptKey("intake", sessionId, "creator_details");
+  const effects: MachineEffect[] = [
+    { type: "mark_unclassified_as", routingKind: "support" },
+  ];
+  if (reason === "restart") {
+    effects.push({
+      type: "send_text",
+      text: INTAKE_RESTARTED_TEXT,
+      promptKey: promptKey("support_intro", sessionId, reason),
+    });
+  }
+  effects.push({
+    type: "send_text",
+    text: CREATOR_DETAILS_PROMPT_TEXT,
+    promptKey: key,
+  });
 
   return {
     snapshot: withActivity(snapshot, signal, {
       state: "support_intake",
       routingIntent: "creator_support",
-      currentIntakeField: firstField,
+      currentIntakeField: "creator_details",
       collected,
-      lastPromptKey: fieldKey,
+      lastPromptKey: key,
     }),
-    effects: [
-      { type: "mark_unclassified_as", routingKind: "support" },
-      { type: "send_text", text: introText, promptKey: introKey },
-      {
-        type: "send_text",
-        text: prompt,
-        promptKey: fieldKey,
-      },
-    ],
+    effects,
     attachTicketId: null,
     inboundRoutingKind: "support",
     processed: true,
   };
 }
 
-function sendFieldPrompt(
+function sendStepPrompt(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
   field: IntakeField,
   collected: IntakeCollectedData,
-  extraText?: string,
+  text: string,
 ): MachineResult {
   const sessionId =
     collected.routingSessionId ?? newSessionId(signal.messageId);
   const key = promptKey("intake", sessionId, field);
-  const prompt = intakePromptForField(field, collected);
-  const text = extraText ? `${extraText}\n\n${prompt}` : prompt;
-  const quickReplies =
-    field === "issue_type"
-      ? issueTypeQuickReplies()
-      : field === "social_handle" && collected.socialHandle
-        ? yesCancelQuickReplies()
-        : field === "issue_description" && collected.originalInboundText
-          ? yesCancelQuickReplies()
-          : undefined;
   return {
     snapshot: withActivity(snapshot, signal, {
       state: "support_intake",
@@ -308,47 +271,26 @@ function sendFieldPrompt(
       collected,
       lastPromptKey: key,
     }),
-    effects: [
-      quickReplies
-        ? {
-            type: "send_quick_replies",
-            text,
-            promptKey: key,
-            quickReplies,
-          }
-        : { type: "send_text", text, promptKey: key },
-    ],
+    effects: [{ type: "send_text", text, promptKey: key }],
     attachTicketId: null,
     inboundRoutingKind: "support",
     processed: true,
   };
 }
 
-function sendConfirmation(
+function createTicketFromIntake(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
   collected: IntakeCollectedData,
 ): MachineResult {
-  const sessionId =
-    collected.routingSessionId ?? newSessionId(signal.messageId);
-  const key = promptKey("confirm", sessionId);
-  const text = `${formatIntakeSummary(collected)}\n\n${CONFIRMATION_PROMPT_TEXT}`;
   return {
     snapshot: withActivity(snapshot, signal, {
-      state: "awaiting_confirmation",
+      state: "ticket_open",
       routingIntent: "creator_support",
       currentIntakeField: null,
       collected,
-      lastPromptKey: key,
     }),
-    effects: [
-      {
-        type: "send_quick_replies",
-        text,
-        promptKey: key,
-        quickReplies: confirmationQuickReplies(),
-      },
-    ],
+    effects: [{ type: "create_ticket" }],
     attachTicketId: null,
     inboundRoutingKind: "support",
     processed: true,
@@ -367,6 +309,68 @@ function alreadyProcessed(snapshot: ConversationSnapshot): MachineResult {
         : "unclassified",
     processed: false,
   };
+}
+
+function continueIntake(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+): MachineResult {
+  const step = snapshot.currentIntakeField ?? "creator_details";
+
+  if (step === "creator_details") {
+    const collected = mergeCreatorDetails(snapshot.collected, signal.text);
+    const missing = missingCreatorDetailsPrompt(collected);
+    if (missing) {
+      return sendStepPrompt(
+        snapshot,
+        signal,
+        "creator_details",
+        collected,
+        missing,
+      );
+    }
+    return sendStepPrompt(
+      snapshot,
+      signal,
+      "platform_details",
+      collected,
+      PLATFORM_DETAILS_PROMPT_TEXT,
+    );
+  }
+
+  if (step === "platform_details") {
+    const collected = mergePlatformDetails(snapshot.collected, signal.text);
+    const missing = missingPlatformDetailsPrompt(collected);
+    if (missing) {
+      return sendStepPrompt(
+        snapshot,
+        signal,
+        "platform_details",
+        collected,
+        missing,
+      );
+    }
+    return sendStepPrompt(
+      snapshot,
+      signal,
+      "campaign_details",
+      collected,
+      CAMPAIGN_DETAILS_PROMPT_TEXT,
+    );
+  }
+
+  const collected = mergeCampaignDetails(snapshot.collected, signal.text);
+  const missing = missingCampaignDetailsPrompt(collected);
+  if (missing) {
+    return sendStepPrompt(
+      snapshot,
+      signal,
+      "campaign_details",
+      collected,
+      missing,
+    );
+  }
+  return createTicketFromIntake(snapshot, signal, collected);
 }
 
 /**
@@ -522,83 +526,17 @@ export function reduceInstagramConversation(
   }
 
   if (state === "awaiting_confirmation") {
-    if (command === "confirm" || command === "yes") {
-      return {
-        snapshot: withActivity(snapshot, signal, {
-          state: "ticket_open",
-          routingIntent: "creator_support",
-          currentIntakeField: null,
-        }),
-        effects: [{ type: "create_ticket" }],
-        attachTicketId: null,
-        inboundRoutingKind: "support",
-        processed: true,
-      };
+    if (
+      (command === "confirm" || command === "yes") &&
+      isIntakeComplete(snapshot.collected)
+    ) {
+      return createTicketFromIntake(snapshot, signal, snapshot.collected);
     }
-    const sessionId =
-      snapshot.collected.routingSessionId ?? newSessionId(signal.messageId);
-    const key = promptKey("confirm_retry", sessionId);
-    return {
-      snapshot: withActivity(snapshot, signal, { lastPromptKey: key }),
-      effects: [
-        {
-          type: "send_quick_replies",
-          text: CONFIRMATION_PROMPT_TEXT,
-          promptKey: key,
-          quickReplies: confirmationQuickReplies(),
-        },
-      ],
-      attachTicketId: null,
-      inboundRoutingKind: "support",
-      processed: true,
-    };
+    return startIntake(snapshot, signal, "restart");
   }
 
   if (state === "support_intake") {
-    const field = snapshot.currentIntakeField ?? INTAKE_FIELDS[0];
-    const answerText =
-      command === "yes" && (field === "social_handle" || field === "issue_description")
-        ? signal.quickReplyPayload === YES_PAYLOAD || /^yes$/i.test(signal.text)
-          ? "yes"
-          : signal.text
-        : signal.quickReplyPayload && field === "issue_type"
-          ? signal.quickReplyPayload
-          : signal.text;
-    const validated = validateIntakeField(field, answerText, snapshot.collected);
-    if (!validated.ok) {
-      const sessionId =
-        snapshot.collected.routingSessionId ?? newSessionId(signal.messageId);
-      const key = promptKey("intake_retry", sessionId, field);
-      const quickReplies =
-        field === "issue_type" ? issueTypeQuickReplies() : undefined;
-      return {
-        snapshot: withActivity(snapshot, signal, { lastPromptKey: key }),
-        effects: [
-          quickReplies
-            ? {
-                type: "send_quick_replies",
-                text: validated.errorText,
-                promptKey: key,
-                quickReplies,
-              }
-            : {
-                type: "send_text",
-                text: validated.errorText,
-                promptKey: key,
-              },
-        ],
-        attachTicketId: null,
-        inboundRoutingKind: "support",
-        processed: true,
-      };
-    }
-
-    const collected = applyIntakeValue(snapshot.collected, field, validated);
-    const nextField = nextIntakeField(field);
-    if (!nextField) {
-      return sendConfirmation(snapshot, signal, collected);
-    }
-    return sendFieldPrompt(snapshot, signal, nextField, collected);
+    return continueIntake(snapshot, signal);
   }
 
   if (state === "ticket_open") {

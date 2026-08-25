@@ -24,8 +24,17 @@ export const ROUTING_COLLABORATION_QUICK_REPLY_TITLE = "Campaign / Collab";
 export const COLLABORATION_CONFIRMED_TEXT =
   "Got it. We’ll keep this conversation with Cloutflow’s collaborations team. No support ticket has been created. If you need assistance at any time, reply SUPPORT.";
 
-export const CREATOR_SUPPORT_STARTED_TEXT =
-  "Absolutely. I’ll collect a few details and create a Creator Support ticket for you. You can type CANCEL anytime to stop.";
+export const CREATOR_DETAILS_PROMPT_TEXT =
+  "Sure, I’ll help you raise a support ticket. First, please share your full name, email address and contact number.";
+
+/** @deprecated Use CREATOR_DETAILS_PROMPT_TEXT. Kept as an alias for the first intake prompt. */
+export const CREATOR_SUPPORT_STARTED_TEXT = CREATOR_DETAILS_PROMPT_TEXT;
+
+export const PLATFORM_DETAILS_PROMPT_TEXT =
+  "Thanks. Which platform is this regarding—Instagram or YouTube—and what’s your username or handle there?";
+
+export const CAMPAIGN_DETAILS_PROMPT_TEXT =
+  "Lastly, please share the campaign name, brand name and campaign month.";
 
 export const INTAKE_CANCELLED_TEXT =
   "No problem. I have cancelled this Creator Support intake and no ticket was created. Reply anytime if you need help.";
@@ -41,6 +50,24 @@ export const CONFIRMATION_PROMPT_TEXT =
 
 export const TICKET_CREATED_TEXT = (ticketCode: string): string =>
   `Thanks. Your Creator Support ticket ${ticketCode} has been created. Our team will follow up here.`;
+
+export function firstNameFromFullName(fullName: string): string {
+  return fullName.trim().split(/\s+/).find(Boolean) ?? "";
+}
+
+export function ticketCreatedWithEmailText(
+  firstName: string,
+  ticketCode: string,
+): string {
+  return `Thanks, ${firstName}. Your support ticket ${ticketCode} has been raised successfully. We’ve also sent the details to your email. Our team will review your inquiry and update you shortly.`;
+}
+
+export function ticketCreatedWithoutEmailText(
+  firstName: string,
+  ticketCode: string,
+): string {
+  return `Thanks, ${firstName}. Your support ticket ${ticketCode} has been raised successfully. Our team will review your inquiry and update you shortly.`;
+}
 
 export const ACTIVE_TICKET_FOLLOW_UP_TEXT =
   "Thanks — I’ve added this to your open Creator Support ticket.";

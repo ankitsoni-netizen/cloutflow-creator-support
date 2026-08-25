@@ -1,24 +1,39 @@
 import { isValidEmailAddress } from "@/lib/email/html";
-import { UNKNOWN_OPTIONAL_HINT } from "@/lib/meta/routing-copy";
-import { toPlainTicketDescription } from "@/lib/meta/plain-text";
+import {
+  CAMPAIGN_DETAILS_PROMPT_TEXT,
+  CREATOR_DETAILS_PROMPT_TEXT,
+  PLATFORM_DETAILS_PROMPT_TEXT,
+} from "@/lib/meta/routing-copy";
+import { toUntrustedPlainText } from "@/lib/meta/plain-text";
 import { normalizePhoneNumber } from "@/lib/phone";
 import { parseCampaignMonthForDb } from "@/lib/tickets/map";
 
 export const INTAKE_FIELDS = [
-  "creator_name",
-  "creator_email",
-  "creator_phone",
-  "social_handle",
-  "issue_type",
-  "campaign_name",
-  "brand_name",
-  "campaign_month",
-  "cloutflow_poc_name",
-  "cloutflow_poc_contact",
-  "issue_description",
+  "creator_details",
+  "platform_details",
+  "campaign_details",
 ] as const;
 
 export type IntakeField = (typeof INTAKE_FIELDS)[number];
+
+const LEGACY_FIELD_TO_STEP: Record<string, IntakeField> = {
+  creator_details: "creator_details",
+  creator_name: "creator_details",
+  creator_email: "creator_details",
+  creator_phone: "creator_details",
+  platform_details: "platform_details",
+  social_handle: "platform_details",
+  platform: "platform_details",
+  campaign_details: "campaign_details",
+  campaign_name: "campaign_details",
+  brand_name: "campaign_details",
+  campaign_month: "campaign_details",
+};
+
+export function resolveIntakeStep(value: string | null | undefined): IntakeField | null {
+  if (!value) return null;
+  return LEGACY_FIELD_TO_STEP[value] ?? null;
+}
 
 export const INTAKE_ISSUE_TYPES = [
   "payment_delayed",
@@ -31,31 +46,7 @@ export const INTAKE_ISSUE_TYPES = [
 
 export type IntakeIssueType = (typeof INTAKE_ISSUE_TYPES)[number];
 
-export const INTAKE_ISSUE_TYPE_LABELS: Record<IntakeIssueType, string> = {
-  payment_delayed: "Payment delayed",
-  tds_query: "TDS query",
-  gst_query: "GST query",
-  campaign_execution: "Campaign execution",
-  poc_conduct: "POC / Conduct",
-  other: "Other",
-};
-
-const ISSUE_TYPE_ALIASES: Record<string, IntakeIssueType> = {
-  payment_delayed: "payment_delayed",
-  "payment delayed": "payment_delayed",
-  "payment delayed / not received": "payment_delayed",
-  tds_query: "tds_query",
-  "tds query": "tds_query",
-  gst_query: "gst_query",
-  "gst query": "gst_query",
-  campaign_execution: "campaign_execution",
-  "campaign execution": "campaign_execution",
-  poc_conduct: "poc_conduct",
-  poc_conduct_concern: "poc_conduct",
-  "poc / conduct": "poc_conduct",
-  "poc / conduct concern": "poc_conduct",
-  other: "other",
-};
+export type IntakePlatform = "instagram" | "youtube";
 
 const UNKNOWN_PATTERN =
   /^(i\s*don'?t\s*know|idk|don'?t\s*know|unknown|n\/?a|not\s*sure|no\s*idea|none|skip)$/i;
@@ -63,38 +54,24 @@ const UNKNOWN_PATTERN =
 const PLACEHOLDER_PATTERN =
   /^(n\/?a|not applicable|unknown creator|placeholder|test|asdf|xxx+)$/i;
 
-const OPTIONAL_FIELDS = new Set<IntakeField>([
-  "campaign_name",
-  "brand_name",
-  "cloutflow_poc_name",
-  "cloutflow_poc_contact",
-]);
+const PHONE_CANDIDATE_PATTERN = /(?:\+|00)?\d[\d\s\-().]{6,18}\d/g;
+const PLATFORM_FIND_PATTERN =
+  /\b(instagram|insta|ig|youtube|yt)\b/gi;
+const HANDLE_AT_PATTERN = /@([A-Za-z0-9._]{2,64})/;
 
 export type IntakePhoneValue = {
   display: string;
   normalized: string;
 };
 
-export type IntakeFieldSuccess = {
-  ok: true;
-  value: string | null;
-  phone?: IntakePhoneValue;
-  campaignMonth?: string;
-};
-
-export type IntakeFieldFailure = {
-  ok: false;
-  errorText: string;
-};
-
-export type IntakeFieldResult = IntakeFieldSuccess | IntakeFieldFailure;
-
 export type IntakeCollectedData = {
   creatorName: string | null;
   email: string | null;
   phoneDisplay: string | null;
   phoneNormalized: string | null;
+  platform: IntakePlatform | null;
   socialHandle: string | null;
+  socialHandleDisplay: string | null;
   issueType: IntakeIssueType | null;
   campaignName: string | null;
   brandName: string | null;
@@ -115,7 +92,9 @@ export function emptyIntakeCollected(
     email: null,
     phoneDisplay: null,
     phoneNormalized: null,
+    platform: null,
     socialHandle: null,
+    socialHandleDisplay: null,
     issueType: null,
     campaignName: null,
     brandName: null,
@@ -130,28 +109,12 @@ export function emptyIntakeCollected(
   };
 }
 
-export function nextIntakeField(
-  current: IntakeField | null,
-): IntakeField | null {
-  if (!current) return INTAKE_FIELDS[0];
-  const index = INTAKE_FIELDS.indexOf(current);
-  if (index < 0 || index >= INTAKE_FIELDS.length - 1) return null;
-  return INTAKE_FIELDS[index + 1] ?? null;
-}
-
 export function isUnknownOptionalAnswer(value: string): boolean {
   return UNKNOWN_PATTERN.test(value.trim());
 }
 
 export function isFakePlaceholder(value: string): boolean {
   return PLACEHOLDER_PATTERN.test(value.trim());
-}
-
-export function normalizeIntakeIssueType(
-  value: string | null | undefined,
-): IntakeIssueType | null {
-  if (!value) return null;
-  return ISSUE_TYPE_ALIASES[value.trim().toLowerCase()] ?? null;
 }
 
 function compactPhone(value: string): string {
@@ -191,251 +154,449 @@ export function parseIntakePhone(value: string): IntakePhoneValue | null {
   return null;
 }
 
-export function validateIntakeField(
-  field: IntakeField,
+export function normalizeIntakePlatform(
+  value: string | null | undefined,
+): IntakePlatform | null {
+  if (!value) return null;
+  const token = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (token === "ig" || token === "insta" || token === "instagram") {
+    return "instagram";
+  }
+  if (token === "yt" || token === "youtube") {
+    return "youtube";
+  }
+  return null;
+}
+
+export function normalizeSocialHandle(value: string): {
+  stored: string;
+  display: string;
+} | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const stored = trimmed.replace(/^@+/, "").trim();
+  if (!stored || stored.length < 2) return null;
+  if (isFakePlaceholder(stored) || isUnknownOptionalAnswer(stored)) return null;
+  if (normalizeIntakePlatform(stored)) return null;
+  return {
+    stored,
+    display: trimmed.startsWith("@") ? `@${stored}` : stored,
+  };
+}
+
+function labelledChunks(text: string): string[] {
+  const parts: string[] = [];
+  for (const line of splitLines(text)) {
+    if (line.includes(",") && /[:\-]/.test(line)) {
+      parts.push(...line.split(",").map((part) => part.trim()).filter(Boolean));
+    } else {
+      parts.push(line);
+    }
+  }
+  return parts;
+}
+
+function labelledValue(text: string, labels: RegExp): string | null {
+  for (const line of labelledChunks(text)) {
+    const match = line.match(/^([^:\n]{1,40})\s*[:\-]\s*(.+)$/);
+    if (!match) continue;
+    const label = match[1]?.trim() ?? "";
+    const value = match[2]?.trim() ?? "";
+    if (labels.test(label) && value) return value;
+  }
+  return null;
+}
+
+function splitLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function splitParts(text: string): string[] {
+  const lines = splitLines(text);
+  if (lines.length >= 2) return lines;
+  return text
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+function firstValidEmail(text: string): string | null {
+  const matches = text.match(/[^\s,;<>]+@[^\s,;<>]+/g) ?? [];
+  for (const candidate of matches) {
+    const cleaned = candidate.replace(/[.,;:]+$/, "");
+    if (isValidEmailAddress(cleaned)) return cleaned.toLowerCase();
+  }
+  return null;
+}
+
+function extractPhoneFromText(text: string): {
+  phone: IntakePhoneValue;
+  matched: string;
+} | null {
+  const labelled = labelledValue(
+    text,
+    /^(phone|mobile|contact(?:\s*(?:number|no\.?)?)?|number)$/i,
+  );
+  if (labelled) {
+    const phone = parseIntakePhone(labelled);
+    if (phone) return { phone, matched: labelled };
+  }
+
+  const letters = text.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 3) {
+    const onlyPhone = parseIntakePhone(text);
+    if (onlyPhone) return { phone: onlyPhone, matched: text.trim() };
+  }
+
+  PHONE_CANDIDATE_PATTERN.lastIndex = 0;
+  const candidates = text.match(PHONE_CANDIDATE_PATTERN) ?? [];
+  for (const candidate of candidates) {
+    const phone = parseIntakePhone(candidate);
+    if (phone) return { phone, matched: candidate };
+  }
+
+  for (const part of splitParts(text)) {
+    const phone = parseIntakePhone(part);
+    if (phone) return { phone, matched: part };
+  }
+
+  return null;
+}
+
+function cleanNameCandidate(value: string): string | null {
+  const name = value
+    .replace(/[^\s,;<>]+@[^\s,;<>]+/g, " ")
+    .replace(
+      /(?:^|\n)\s*(?:full\s*)?(?:creator\s*)?name\s*[:\-]\s*/gi,
+      " ",
+    )
+    .replace(
+      /(?:^|\n)\s*(?:e-?mail|mail|phone|mobile|contact(?:\s*number)?|number)\s*[:\-]\s*/gi,
+      " ",
+    )
+    .replace(/[,;]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!name) return null;
+  if (name.length < 2) return null;
+  if (isFakePlaceholder(name) || isUnknownOptionalAnswer(name)) return null;
+  if (isValidEmailAddress(name)) return null;
+  if (parseIntakePhone(name) && name.replace(/\D/g, "").length >= 8) return null;
+  return name;
+}
+
+export function parseCreatorDetailsBundle(raw: string): {
+  creatorName: string | null;
+  email: string | null;
+  phone: IntakePhoneValue | null;
+} {
+  const text = toUntrustedPlainText(raw);
+  if (!text) {
+    return { creatorName: null, email: null, phone: null };
+  }
+
+  const labelledEmail = labelledValue(text, /^(e-?mail|mail)$/i);
+  const email =
+    labelledEmail && isValidEmailAddress(labelledEmail)
+      ? labelledEmail.trim().toLowerCase()
+      : firstValidEmail(text);
+
+  const labelledName = labelledValue(text, /^(full\s*)?(creator\s*)?name$/i);
+  const phoneFound = extractPhoneFromText(text);
+
+  let working = text;
+  if (email) {
+    working = working.replace(new RegExp(escapeRegExp(email), "ig"), " ");
+  }
+  working = working.replace(/[^\s,;<>]+@[^\s,;<>]+/g, " ");
+  if (phoneFound) {
+    working = working.replace(phoneFound.matched, " ");
+  }
+
+  const creatorName = cleanNameCandidate(labelledName ?? working);
+
+  return {
+    creatorName,
+    email,
+    phone: phoneFound?.phone ?? null,
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function keepExisting<T>(existing: T, parsed: T): T {
+  if (existing !== null && existing !== undefined && existing !== "") {
+    return existing;
+  }
+  return parsed;
+}
+
+export function mergeCreatorDetails(
+  collected: IntakeCollectedData,
   raw: string,
-  collected: IntakeCollectedData,
-): IntakeFieldResult {
-  const trimmed = toPlainTicketDescription(raw);
-  if (!trimmed) {
-    return { ok: false, errorText: fieldEmptyError(field) };
-  }
-
-  if (OPTIONAL_FIELDS.has(field) && isUnknownOptionalAnswer(trimmed)) {
-    return { ok: true, value: null };
-  }
-
-  if (isFakePlaceholder(trimmed) && field !== "issue_description") {
-    return {
-      ok: false,
-      errorText:
-        "Please enter a real value. Placeholders like N/A cannot be stored.",
-    };
-  }
-
-  switch (field) {
-    case "creator_name":
-      if (trimmed.length < 2) {
-        return { ok: false, errorText: "Please send your full name." };
-      }
-      return { ok: true, value: trimmed };
-    case "creator_email":
-      if (!isValidEmailAddress(trimmed)) {
-        return {
-          ok: false,
-          errorText: "Please send a valid email address, for example name@domain.com.",
-        };
-      }
-      return { ok: true, value: trimmed.toLowerCase() };
-    case "creator_phone": {
-      const phone = parseIntakePhone(trimmed);
-      if (!phone) {
-        return {
-          ok: false,
-          errorText:
-            "Please send a valid phone number with country code, for example +91 98765 43210.",
-        };
-      }
-      return { ok: true, value: phone.display, phone };
-    }
-    case "social_handle":
-      if (/^(yes|y|confirm)$/i.test(trimmed)) {
-        if (collected.socialHandle) {
-          return { ok: true, value: collected.socialHandle };
-        }
-        return {
-          ok: false,
-          errorText: "Please send your Instagram or YouTube handle.",
-        };
-      }
-      return { ok: true, value: trimmed.replace(/^@/, "") };
-    case "issue_type": {
-      const issueType = normalizeIntakeIssueType(trimmed);
-      if (!issueType) {
-        return {
-          ok: false,
-          errorText: "Please choose one of the issue types below.",
-        };
-      }
-      return { ok: true, value: issueType };
-    }
-    case "campaign_name":
-    case "brand_name":
-    case "cloutflow_poc_name":
-      return { ok: true, value: trimmed };
-    case "campaign_month": {
-      const month = parseCampaignMonthForDb(trimmed);
-      if (!month) {
-        return {
-          ok: false,
-          errorText:
-            "Please send the campaign month and year, for example August 2026.",
-        };
-      }
-      return { ok: true, value: month, campaignMonth: month };
-    }
-    case "cloutflow_poc_contact": {
-      const phone = parseIntakePhone(trimmed);
-      if (!phone) {
-        return {
-          ok: false,
-          errorText:
-            "Please send a valid POC contact number, or reply \"I don't know\".",
-        };
-      }
-      return { ok: true, value: phone.normalized, phone };
-    }
-    case "issue_description":
-      if (
-        /^(yes|y|use original|original)$/i.test(trimmed) &&
-        collected.originalInboundText
-      ) {
-        return { ok: true, value: collected.originalInboundText };
-      }
-      if (trimmed.length < 4) {
-        return {
-          ok: false,
-          errorText: "Please describe the issue in a bit more detail.",
-        };
-      }
-      return { ok: true, value: trimmed };
-    default: {
-      const _exhaustive: never = field;
-      return { ok: false, errorText: `Unsupported field: ${_exhaustive}` };
-    }
-  }
-}
-
-export function applyIntakeValue(
-  collected: IntakeCollectedData,
-  field: IntakeField,
-  result: IntakeFieldSuccess,
 ): IntakeCollectedData {
-  const next = { ...collected };
-  switch (field) {
-    case "creator_name":
-      next.creatorName = result.value;
-      break;
-    case "creator_email":
-      next.email = result.value;
-      break;
-    case "creator_phone":
-      next.phoneDisplay = result.phone?.display ?? result.value;
-      next.phoneNormalized = result.phone?.normalized ?? result.value;
-      break;
-    case "social_handle":
-      next.socialHandle = result.value;
-      break;
-    case "issue_type":
-      next.issueType = (result.value as IntakeIssueType | null) ?? null;
-      break;
-    case "campaign_name":
-      next.campaignName = result.value;
-      break;
-    case "brand_name":
-      next.brandName = result.value;
-      break;
-    case "campaign_month":
-      next.campaignMonth = result.campaignMonth ?? result.value;
-      break;
-    case "cloutflow_poc_name":
-      next.cloutflowPocName = result.value;
-      break;
-    case "cloutflow_poc_contact":
-      next.cloutflowPocContact = result.phone?.normalized ?? result.value;
-      break;
-    case "issue_description":
-      next.issueDescription = result.value;
-      break;
-    default: {
-      const _exhaustive: never = field;
-      void _exhaustive;
-    }
-  }
-  return next;
+  const parsed = parseCreatorDetailsBundle(raw);
+  return {
+    ...collected,
+    creatorName: keepExisting(collected.creatorName, parsed.creatorName),
+    email: keepExisting(collected.email, parsed.email),
+    phoneDisplay: keepExisting(
+      collected.phoneDisplay,
+      parsed.phone?.display ?? null,
+    ),
+    phoneNormalized: keepExisting(
+      collected.phoneNormalized,
+      parsed.phone?.normalized ?? null,
+    ),
+  };
 }
 
-export function formatIntakeSummary(collected: IntakeCollectedData): string {
-  const rows: Array<[string, string | null]> = [
-    ["Name", collected.creatorName],
-    ["Email", collected.email],
-    ["Phone", collected.phoneDisplay ?? collected.phoneNormalized],
-    ["Social handle", collected.socialHandle],
-    [
-      "Issue type",
-      collected.issueType
-        ? INTAKE_ISSUE_TYPE_LABELS[collected.issueType]
-        : null,
-    ],
-    ["Campaign", collected.campaignName],
-    ["Brand", collected.brandName],
-    ["Campaign month", collected.campaignMonth],
-    ["Cloutflow POC", collected.cloutflowPocName],
-    ["POC contact", collected.cloutflowPocContact],
-    ["Description", collected.issueDescription],
-  ];
-  const lines = ["Here’s a summary of your Creator Support request:", ""];
-  for (const [label, value] of rows) {
-    lines.push(`${label}: ${value?.trim() || "—"}`);
-  }
-  return lines.join("\n");
-}
-
-function fieldEmptyError(field: IntakeField): string {
-  switch (field) {
-    case "creator_name":
-      return "Please send your name.";
-    case "creator_email":
-      return "Please send your email address.";
-    case "creator_phone":
-      return "Please send your phone number.";
-    case "social_handle":
-      return "Please send your social handle.";
-    case "issue_type":
-      return "Please choose an issue type.";
-    case "campaign_month":
-      return "Please send the campaign month and year.";
-    case "issue_description":
-      return "Please describe the issue.";
-    default:
-      return `Please send a value, or reply "I don't know".`;
-  }
-}
-
-export function intakePromptForField(
-  field: IntakeField,
+export function missingCreatorDetailsPrompt(
   collected: IntakeCollectedData,
-): string {
-  switch (field) {
-    case "creator_name":
-      return "What name should we use on the ticket?";
-    case "creator_email":
-      return "What email address should we use for ticket updates?";
-    case "creator_phone":
-      return "What phone number can we reach you on? Include the country code if you have one.";
-    case "social_handle":
-      return collected.socialHandle
-        ? `Is your social handle ${collected.socialHandle}? Reply YES to confirm, or send the correct handle.`
-        : "What is your Instagram or YouTube handle?";
-    case "issue_type":
-      return "What is this about? Choose one of the options below.";
-    case "campaign_name":
-      return `What is the campaign name? ${UNKNOWN_OPTIONAL_HINT}`;
-    case "brand_name":
-      return `What is the brand name? ${UNKNOWN_OPTIONAL_HINT}`;
-    case "campaign_month":
-      return "Which month and year is this campaign from? For example August 2026.";
-    case "cloutflow_poc_name":
-      return `Who is your Cloutflow point of contact? ${UNKNOWN_OPTIONAL_HINT}`;
-    case "cloutflow_poc_contact":
-      return `What is your Cloutflow POC’s contact number? ${UNKNOWN_OPTIONAL_HINT}`;
-    case "issue_description":
-      return collected.originalInboundText
-        ? "Please describe the issue. Reply YES to use your original message, or type a new description."
-        : "Please describe the issue.";
-    default: {
-      const _exhaustive: never = field;
-      return `Unsupported field: ${_exhaustive}`;
+): string | null {
+  const missing: string[] = [];
+  if (!collected.creatorName) missing.push("name");
+  if (!collected.email) missing.push("email");
+  if (!collected.phoneNormalized) missing.push("phone");
+  if (missing.length === 0) return null;
+  if (missing.length === 3) return CREATOR_DETAILS_PROMPT_TEXT;
+  if (missing.length === 1) {
+    if (missing[0] === "name") return "Please send your full name.";
+    if (missing[0] === "email") return "Please send a valid email address.";
+    return "Please send a valid contact number.";
+  }
+  if (!missing.includes("name")) {
+    return "Please send a valid email address and contact number.";
+  }
+  if (!missing.includes("email")) {
+    return "Please send your full name and contact number.";
+  }
+  return "Please send your full name and a valid email address.";
+}
+
+export function parsePlatformDetailsBundle(raw: string): {
+  platform: IntakePlatform | null;
+  socialHandle: string | null;
+  socialHandleDisplay: string | null;
+} {
+  const text = toUntrustedPlainText(raw);
+  if (!text) {
+    return { platform: null, socialHandle: null, socialHandleDisplay: null };
+  }
+
+  let platform =
+    normalizeIntakePlatform(labelledValue(text, /^(platform|channel)$/i) ?? "") ??
+    null;
+  if (!platform) {
+    PLATFORM_FIND_PATTERN.lastIndex = 0;
+    const matches = text.match(PLATFORM_FIND_PATTERN) ?? [];
+    for (const match of matches) {
+      platform = normalizeIntakePlatform(match);
+      if (platform) break;
     }
   }
+
+  const labelledHandle = labelledValue(
+    text,
+    /^(username|user\s*name|handle|social\s*handle|ig\s*handle)$/i,
+  );
+  let handleSource = labelledHandle;
+  if (!handleSource) {
+    const atMatch = text.match(HANDLE_AT_PATTERN);
+    if (atMatch?.[0]) handleSource = atMatch[0];
+  }
+  if (!handleSource) {
+    const remainder = text
+      .replace(/\b(instagram|insta|ig|youtube|yt)\b/gi, " ")
+      .replace(
+        /(?:platform|channel|username|user\s*name|handle)\s*[:\-]/gi,
+        " ",
+      )
+      .replace(/[,]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    handleSource = remainder || null;
+  }
+
+  const handle = handleSource ? normalizeSocialHandle(handleSource) : null;
+  return {
+    platform,
+    socialHandle: handle?.stored ?? null,
+    socialHandleDisplay: handle?.display ?? null,
+  };
+}
+
+export function mergePlatformDetails(
+  collected: IntakeCollectedData,
+  raw: string,
+): IntakeCollectedData {
+  const parsed = parsePlatformDetailsBundle(raw);
+  return {
+    ...collected,
+    platform: keepExisting(collected.platform, parsed.platform),
+    socialHandle: keepExisting(collected.socialHandle, parsed.socialHandle),
+    socialHandleDisplay: keepExisting(
+      collected.socialHandleDisplay,
+      parsed.socialHandleDisplay,
+    ),
+  };
+}
+
+export function missingPlatformDetailsPrompt(
+  collected: IntakeCollectedData,
+): string | null {
+  const missingPlatform = !collected.platform;
+  const missingHandle = !collected.socialHandle;
+  if (!missingPlatform && !missingHandle) return null;
+  if (missingPlatform && missingHandle) return PLATFORM_DETAILS_PROMPT_TEXT;
+  if (missingPlatform) {
+    return "Please tell us whether this is Instagram or YouTube.";
+  }
+  return "Please send your username or handle.";
+}
+
+function requiredTextValue(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return null;
+  if (isUnknownOptionalAnswer(trimmed) || isFakePlaceholder(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+export function parseCampaignDetailsBundle(raw: string): {
+  campaignName: string | null;
+  brandName: string | null;
+  campaignMonth: string | null;
+} {
+  const text = toUntrustedPlainText(raw);
+  if (!text) {
+    return { campaignName: null, brandName: null, campaignMonth: null };
+  }
+
+  let campaignName = requiredTextValue(
+    labelledValue(text, /^(campaign(?:\s*name)?)$/i),
+  );
+  let brandName = requiredTextValue(
+    labelledValue(text, /^(brand(?:\s*name)?)$/i),
+  );
+  const monthRaw = labelledValue(
+    text,
+    /^(month|campaign\s*month|date)$/i,
+  );
+  let campaignMonth = monthRaw ? parseCampaignMonthForDb(monthRaw) : null;
+
+  if (!campaignName || !brandName || !campaignMonth) {
+    const parts = splitParts(text).map((part) => {
+      const stripped = part.replace(
+        /^(campaign(?:\s*name)?|brand(?:\s*name)?|month|campaign\s*month|date)\s*[:\-]\s*/i,
+        "",
+      );
+      return stripped.trim();
+    });
+
+    if (!campaignMonth) {
+      for (const part of parts) {
+        const month = parseCampaignMonthForDb(part);
+        if (month) {
+          campaignMonth = month;
+          break;
+        }
+      }
+    }
+
+    const remaining = parts.filter(
+      (part) =>
+        requiredTextValue(part) &&
+        parseCampaignMonthForDb(part) === null &&
+        !/^(campaign(?:\s*name)?|brand(?:\s*name)?|month|campaign\s*month|date)$/i.test(
+          part,
+        ),
+    );
+
+    if (!campaignName && remaining[0]) {
+      campaignName = requiredTextValue(remaining[0]);
+    }
+    if (!brandName && remaining[1]) {
+      brandName = requiredTextValue(remaining[1]);
+    }
+    if (!campaignName && remaining.length === 1 && brandName) {
+      campaignName = requiredTextValue(remaining[0]);
+    }
+    if (!brandName && remaining.length === 1 && campaignName) {
+      brandName = requiredTextValue(remaining[0]);
+    }
+  }
+
+  return {
+    campaignName: requiredTextValue(campaignName),
+    brandName: requiredTextValue(brandName),
+    campaignMonth,
+  };
+}
+
+export function mergeCampaignDetails(
+  collected: IntakeCollectedData,
+  raw: string,
+): IntakeCollectedData {
+  const parsed = parseCampaignDetailsBundle(raw);
+  return {
+    ...collected,
+    campaignName: keepExisting(collected.campaignName, parsed.campaignName),
+    brandName: keepExisting(collected.brandName, parsed.brandName),
+    campaignMonth: keepExisting(collected.campaignMonth, parsed.campaignMonth),
+  };
+}
+
+export function missingCampaignDetailsPrompt(
+  collected: IntakeCollectedData,
+): string | null {
+  const missing: string[] = [];
+  if (!collected.campaignName) missing.push("campaign");
+  if (!collected.brandName) missing.push("brand");
+  if (!collected.campaignMonth) missing.push("month");
+  if (missing.length === 0) return null;
+  if (missing.length === 3) return CAMPAIGN_DETAILS_PROMPT_TEXT;
+  if (missing.length === 1) {
+    if (missing[0] === "campaign") return "Please send the campaign name.";
+    if (missing[0] === "brand") return "Please send the brand name.";
+    return "Please send the campaign month and year, for example August 2026.";
+  }
+  if (!missing.includes("campaign")) {
+    return "Please send the brand name and campaign month.";
+  }
+  if (!missing.includes("brand")) {
+    return "Please send the campaign name and campaign month.";
+  }
+  return "Please send the campaign name and brand name.";
+}
+
+export function isIntakeComplete(collected: IntakeCollectedData): boolean {
+  return Boolean(
+    collected.creatorName &&
+      collected.email &&
+      collected.phoneNormalized &&
+      collected.platform &&
+      collected.socialHandle &&
+      collected.campaignName &&
+      collected.brandName &&
+      collected.campaignMonth,
+  );
+}
+
+export function originalInboundForTicket(
+  collected: IntakeCollectedData,
+): string | null {
+  const source = collected.originalInboundText;
+  if (!source) return null;
+  const plain = toUntrustedPlainText(source);
+  return plain.length > 0 ? plain : null;
 }

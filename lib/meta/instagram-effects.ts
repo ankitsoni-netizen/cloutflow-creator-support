@@ -2,11 +2,14 @@ import "server-only";
 
 import {
   sendInstagramInboundHelpNotification,
-  sendInstagramIntakeInternalEmail,
   sendInstagramTicketConfirmationEmail,
 } from "@/lib/email/instagram-ticket-mail";
 import type { MachineEffect, MachineSendEffect } from "@/lib/meta/conversation-machine";
-import { TICKET_CREATED_TEXT } from "@/lib/meta/routing-copy";
+import {
+  firstNameFromFullName,
+  ticketCreatedWithEmailText,
+  ticketCreatedWithoutEmailText,
+} from "@/lib/meta/routing-copy";
 import {
   sendInstagramQuickReplies,
   sendInstagramText,
@@ -159,48 +162,64 @@ export async function applyInstagramEffects(options: {
     }
 
     if (effect.type === "create_ticket") {
-      const created = await options.deps.store.insertInstagramTicket(
-        mapIntakeToInstagramTicketInsert({
-          collected: options.collected,
-          externalContactId: options.event.externalContactId,
+      let createdId = options.snapshotTicketId;
+      let createdCode: string | null = ticketCode;
+
+      if (!createdId) {
+        const existing = await options.deps.store.findActiveInstagramTicket({
           externalConversationId: options.event.externalConversationId,
-        }),
-      );
-      if (created.outcome === "failed") {
-        return { ticketId: null, ticketCode: null, retryableFailure: true };
+          externalContactId: options.event.externalContactId,
+        });
+        if (existing && "errorCode" in existing) {
+          return { ticketId: null, ticketCode: null, retryableFailure: true };
+        }
+        if (existing) {
+          createdId = existing.id;
+          createdCode = existing.ticketCode ?? null;
+        } else {
+          const created = await options.deps.store.insertInstagramTicket(
+            mapIntakeToInstagramTicketInsert({
+              collected: options.collected,
+              externalContactId: options.event.externalContactId,
+              externalConversationId: options.event.externalConversationId,
+            }),
+          );
+          if (created.outcome === "failed") {
+            return { ticketId: null, ticketCode: null, retryableFailure: true };
+          }
+          createdId = created.id;
+          createdCode = created.ticketCode;
+        }
+      } else if (!createdCode) {
+        const linked = await options.deps.store.getTicket(createdId);
+        if (linked && "errorCode" in linked) {
+          return { ticketId: createdId, ticketCode: null, retryableFailure: true };
+        }
+        createdCode = linked?.ticketCode ?? null;
       }
-      ticketId = created.id;
-      ticketCode = created.ticketCode;
+
+      ticketId = createdId;
+      ticketCode = createdCode;
+
       await options.deps.store.linkSupportMessagesToTicket({
         conversationId: options.deps.conversationId,
-        ticketId: created.id,
+        ticketId: createdId,
       });
 
-      const confirmKey = `ticket_created:${created.id}`;
-      const confirmSend = await dispatchSend(
-        {
-          type: "send_text",
-          text: TICKET_CREATED_TEXT(created.ticketCode),
-          promptKey: confirmKey,
-        },
-        options.deps,
-        created.id,
-      );
-      if (confirmSend.retryableFailure) retryableFailure = true;
-
-      const ticket = await loadCreatedTicket(created.id, options.deps.loadTicket);
+      const ticket = await loadCreatedTicket(createdId, options.deps.loadTicket);
+      let emailSent = false;
       if (ticket) {
         const transcriptRows = await options.deps.store.listSupportTranscript({
           conversationId: options.deps.conversationId,
-          ticketId: created.id,
+          ticketId: createdId,
         });
         const transcriptText = formatTranscript(transcriptRows);
 
         const confirmationClaim = await options.deps.store.claimEmailDelivery({
-          ticketId: created.id,
+          ticketId: createdId,
           conversationId: options.deps.conversationId,
           purpose: "instagram-ticket-confirmation",
-          idempotencyKey: `email:ig-confirm:${created.id}`,
+          idempotencyKey: `email:ig-confirm:${createdId}`,
         });
         if (confirmationClaim.outcome === "claimed") {
           const mailed = await sendInstagramTicketConfirmationEmail({
@@ -218,31 +237,33 @@ export async function applyInstagramEffects(options: {
               mailed.outcome === "sent" ? mailed.messageId : null,
             errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
           });
+          emailSent = mailed.outcome === "sent";
+        } else if (
+          confirmationClaim.outcome === "duplicate" &&
+          confirmationClaim.deliveryStatus === "sent"
+        ) {
+          emailSent = true;
         }
+      }
 
-        const internalClaim = await options.deps.store.claimEmailDelivery({
-          ticketId: created.id,
-          conversationId: options.deps.conversationId,
-          purpose: "instagram-intake-internal",
-          idempotencyKey: `email:ig-intake:${created.id}`,
-        });
-        if (internalClaim.outcome === "claimed") {
-          const mailed = await sendInstagramIntakeInternalEmail({
-            ticket,
-            transcriptText,
-          });
-          await options.deps.store.markEmailDelivery(internalClaim.id, {
-            deliveryStatus:
-              mailed.outcome === "sent"
-                ? "sent"
-                : mailed.outcome === "skipped"
-                  ? "skipped"
-                  : "failed",
-            brevoMessageId:
-              mailed.outcome === "sent" ? mailed.messageId : null,
-            errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
-          });
-        }
+      const firstName = firstNameFromFullName(
+        ticket?.creator_name ?? options.collected.creatorName ?? "",
+      );
+      const confirmCode = createdCode ?? ticket?.ticket_code ?? "";
+      if (confirmCode) {
+        const confirmKey = `ticket_created:${createdId}`;
+        const confirmSend = await dispatchSend(
+          {
+            type: "send_text",
+            text: emailSent
+              ? ticketCreatedWithEmailText(firstName, confirmCode)
+              : ticketCreatedWithoutEmailText(firstName, confirmCode),
+            promptKey: confirmKey,
+          },
+          options.deps,
+          createdId,
+        );
+        if (confirmSend.retryableFailure) retryableFailure = true;
       }
       continue;
     }

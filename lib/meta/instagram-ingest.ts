@@ -13,15 +13,18 @@ import {
   type InstagramIngestStore,
 } from "@/lib/meta/instagram-store";
 import { sha256Hex } from "@/lib/meta/signature";
+import { isIntakeComplete } from "@/lib/meta/intake-validate";
 import type { InstagramSendDeps } from "@/lib/meta/instagram-send";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import type { PersistContext, PersistResult } from "@/lib/meta/store";
+import type { DbTicket } from "@/lib/tickets/types";
 
 export type { InstagramIngestStore, InstagramTicketRow } from "@/lib/meta/instagram-store";
 export { createAdminInstagramStore, createSupabaseInstagramStore } from "@/lib/meta/instagram-store";
 
 export type InstagramIngestDeps = {
   sendDeps?: InstagramSendDeps;
+  loadTicket?: (id: string) => Promise<DbTicket | null>;
 };
 
 async function upsertConversation(
@@ -195,6 +198,50 @@ export async function ingestInstagramInboundMessage(
         );
         return { outcome: "failed", errorCode: "instagram_send_failed" };
       }
+
+      if (
+        reduced.snapshot.state === "ticket_open" &&
+        !reduced.snapshot.ticketId &&
+        isIntakeComplete(reduced.snapshot.collected)
+      ) {
+        const applied = await applyInstagramEffects({
+          effects: [{ type: "create_ticket" }],
+          snapshotTicketId: null,
+          collected: reduced.snapshot.collected,
+          inboundMessageId: event.externalMessageId,
+          inboundText: event.messageBody,
+          event: {
+            externalContactId: event.externalContactId,
+            externalConversationId: event.externalConversationId,
+          },
+          deps: {
+            store,
+            recipientId: event.externalContactId,
+            conversationId: conversation.row.id,
+            sendDeps: ingestDeps.sendDeps,
+            loadTicket: ingestDeps.loadTicket,
+          },
+        });
+        if (applied.ticketId) {
+          reduced.snapshot.ticketId = applied.ticketId;
+          reduced.snapshot.state = "ticket_open";
+          await store.saveConversationSnapshot(
+            conversation.row.id,
+            reduced.snapshot,
+            event.timestamp,
+            event.displayName,
+          );
+        }
+        if (applied.retryableFailure) {
+          await store.markWebhookEvent(
+            eventId,
+            WEBHOOK_STATUS_FAILED,
+            "instagram_send_failed",
+          );
+          return { outcome: "failed", errorCode: "instagram_send_failed" };
+        }
+      }
+
       await store.markWebhookEvent(eventId, "completed");
       return { outcome: "duplicate" };
     }
@@ -237,6 +284,7 @@ export async function ingestInstagramInboundMessage(
         recipientId: event.externalContactId,
         conversationId: conversation.row.id,
         sendDeps: ingestDeps.sendDeps,
+        loadTicket: ingestDeps.loadTicket,
       },
     });
 

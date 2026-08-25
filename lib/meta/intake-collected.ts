@@ -1,10 +1,27 @@
-import type { IntakeCollectedData, IntakeField } from "@/lib/meta/intake-validate";
-import { emptyIntakeCollected, INTAKE_FIELDS } from "@/lib/meta/intake-validate";
+import type {
+  IntakeCollectedData,
+  IntakeField,
+  IntakeIssueType,
+  IntakePlatform,
+} from "@/lib/meta/intake-validate";
+import {
+  emptyIntakeCollected,
+  INTAKE_FIELDS,
+  resolveIntakeStep,
+} from "@/lib/meta/intake-validate";
 import type { RoutingIntent } from "@/lib/meta/conversation-machine";
 import { ROUTING_INTENTS } from "@/lib/meta/conversation-machine";
 
 const INTAKE_FIELD_SET = new Set<string>(INTAKE_FIELDS);
 const INTENT_SET = new Set<string>(ROUTING_INTENTS);
+const ISSUE_TYPES = new Set<string>([
+  "payment_delayed",
+  "tds_query",
+  "gst_query",
+  "campaign_execution",
+  "poc_conduct",
+  "other",
+]);
 
 function asString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -20,9 +37,15 @@ export function parseRoutingIntent(value: unknown): RoutingIntent {
 }
 
 export function parseIntakeField(value: unknown): IntakeField | null {
-  if (typeof value === "string" && INTAKE_FIELD_SET.has(value)) {
-    return value as IntakeField;
-  }
+  if (typeof value !== "string") return null;
+  const resolved = resolveIntakeStep(value);
+  if (resolved) return resolved;
+  if (INTAKE_FIELD_SET.has(value)) return value as IntakeField;
+  return null;
+}
+
+function parsePlatform(value: unknown): IntakePlatform | null {
+  if (value === "instagram" || value === "youtube") return value;
   return null;
 }
 
@@ -37,16 +60,12 @@ export function collectedFromRecord(value: unknown): IntakeCollectedData {
     email: asString(record.email),
     phoneDisplay: asString(record.phoneDisplay),
     phoneNormalized: asString(record.phoneNormalized),
+    platform: parsePlatform(record.platform),
     socialHandle: asString(record.socialHandle),
-    issueType:
-      issueType === "payment_delayed" ||
-      issueType === "tds_query" ||
-      issueType === "gst_query" ||
-      issueType === "campaign_execution" ||
-      issueType === "poc_conduct" ||
-      issueType === "other"
-        ? issueType
-        : null,
+    socialHandleDisplay: asString(record.socialHandleDisplay),
+    issueType: ISSUE_TYPES.has(issueType ?? "")
+      ? (issueType as IntakeIssueType)
+      : null,
     campaignName: asString(record.campaignName),
     brandName: asString(record.brandName),
     campaignMonth: asString(record.campaignMonth),
@@ -67,7 +86,9 @@ export function collectedToRecord(
     email: collected.email,
     phoneDisplay: collected.phoneDisplay,
     phoneNormalized: collected.phoneNormalized,
+    platform: collected.platform,
     socialHandle: collected.socialHandle,
+    socialHandleDisplay: collected.socialHandleDisplay,
     issueType: collected.issueType,
     campaignName: collected.campaignName,
     brandName: collected.brandName,

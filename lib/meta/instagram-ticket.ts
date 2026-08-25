@@ -3,9 +3,14 @@ import {
   incompleteCollectedFields,
   type ChannelCollectedData,
 } from "@/lib/meta/collected-data";
-import type { IntakeCollectedData } from "@/lib/meta/intake-validate";
+import {
+  emptyIntakeCollected,
+  originalInboundForTicket,
+  type IntakeCollectedData,
+} from "@/lib/meta/intake-validate";
 import { toPlainTicketDescription } from "@/lib/meta/plain-text";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
+import type { DbPlatform } from "@/lib/tickets/types";
 
 export const INSTAGRAM_TICKET_ASSIGNED_TEAM = "Creator Support";
 
@@ -20,7 +25,7 @@ export type InstagramTicketInsert = {
   creator_phone: string | null;
   creator_email: string | null;
   social_handle: string | null;
-  platform: "instagram";
+  platform: DbPlatform;
   issue_type: string | null;
   campaign_name: string | null;
   brand_name: string | null;
@@ -53,42 +58,48 @@ export function buildInstagramCollectedData(
   });
 }
 
+function ticketPlatform(collected: IntakeCollectedData): DbPlatform {
+  return collected.platform === "youtube" ? "youtube" : "instagram";
+}
+
 export function mapIntakeToInstagramTicketInsert(input: {
   collected: IntakeCollectedData;
   externalContactId: string;
   externalConversationId: string;
 }): InstagramTicketInsert {
   const collected = input.collected;
-  const description =
-    collected.issueDescription ?? collected.originalInboundText;
+  const description = originalInboundForTicket(collected);
+  const platform = ticketPlatform(collected);
   const channelCollected = emptyCollectedData({
     creatorName: collected.creatorName,
     phone: collected.phoneNormalized,
     email: collected.email,
     socialHandle: collected.socialHandle,
-    platform: "instagram",
-    issueType: collected.issueType,
+    platform,
     campaignName: collected.campaignName,
     brand: collected.brandName,
     campaignMonth: collected.campaignMonth,
-    cloutflowPocName: collected.cloutflowPocName,
-    cloutflowPocContactNumber: collected.cloutflowPocContact,
     issueDescription: description,
   });
-  const incompleteFields = incompleteCollectedFields(channelCollected);
+  const incompleteFields = incompleteCollectedFields(channelCollected).filter(
+    (field) =>
+      field !== "issueType" &&
+      field !== "cloutflowPocName" &&
+      field !== "cloutflowPocContactNumber",
+  );
 
   return {
     creator_name: collected.creatorName,
     creator_phone: collected.phoneNormalized,
     creator_email: collected.email,
     social_handle: collected.socialHandle,
-    platform: "instagram",
-    issue_type: collected.issueType,
+    platform,
+    issue_type: null,
     campaign_name: collected.campaignName,
     brand_name: collected.brandName,
     campaign_month: collected.campaignMonth,
-    cloutflow_poc_name: collected.cloutflowPocName,
-    cloutflow_poc_contact_number: collected.cloutflowPocContact,
+    cloutflow_poc_name: null,
+    cloutflow_poc_contact_number: null,
     request_category: "creator_support",
     source_channel: "instagram",
     status: "open",
@@ -106,6 +117,7 @@ export function mapIntakeToInstagramTicketInsert(input: {
       incomplete: incompleteFields.length > 0,
       incompleteFields,
       phoneDisplay: collected.phoneDisplay,
+      socialHandleDisplay: collected.socialHandleDisplay,
       originalInboundMessageId: collected.originalInboundMessageId,
     },
     metadata: {
@@ -122,25 +134,13 @@ export function mapIntakeToInstagramTicketInsert(input: {
 export function mapInstagramEventToTicketInsert(
   event: NormalizedMetaInboundText,
 ): InstagramTicketInsert {
-  const description = toPlainTicketDescription(event.messageBody);
   return mapIntakeToInstagramTicketInsert({
-    collected: {
+    collected: emptyIntakeCollected({
       creatorName: event.displayName,
-      email: null,
-      phoneDisplay: null,
-      phoneNormalized: null,
-      socialHandle: null,
-      issueType: null,
-      campaignName: null,
-      brandName: null,
-      campaignMonth: null,
-      cloutflowPocName: null,
-      cloutflowPocContact: null,
-      issueDescription: description.length > 0 ? description : null,
-      originalInboundText: description.length > 0 ? description : null,
+      platform: "instagram",
+      originalInboundText: event.messageBody,
       originalInboundMessageId: event.externalMessageId,
-      routingSessionId: null,
-    },
+    }),
     externalContactId: event.externalContactId,
     externalConversationId: event.externalConversationId,
   });

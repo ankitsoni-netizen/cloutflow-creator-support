@@ -7,6 +7,8 @@ import { buildTicketResolutionEmail } from "@/lib/email/templates/ticket-resolut
 import {
   formatTicketEmailLabels,
   sendAcknowledgementForTicket,
+  buildAcknowledgementEmailContent,
+  buildInstagramTicketAcknowledgementContent,
 } from "@/lib/email/ticket-mail";
 import {
   formatCampaignMonthForDisplay,
@@ -107,6 +109,76 @@ describe("acknowledgement template", () => {
     expect(email.text).toContain("Campaign month: August 2026");
     expect(email.html).toContain("Riya &lt;b&gt;Sharma&lt;/b&gt;");
     expect(email.html).not.toContain("<b>Sharma</b>");
+  });
+});
+
+describe("Instagram acknowledgement reuses the website template", () => {
+  const instagramTicket: DbTicket = {
+    id: "t1",
+    ticket_code: "CF-2026-00001",
+    creator_name: "Riya Sharma",
+    creator_phone: "+919876543210",
+    creator_email: "riya@example.com",
+    social_handle: "riya_creates",
+    platform: "youtube",
+    issue_type: null,
+    campaign_name: "Summer Drop",
+    brand_name: "Acme",
+    campaign_month: "2026-08-01",
+    cloutflow_poc_name: null,
+    cloutflow_poc_contact_number: null,
+    request_category: "creator_support",
+    company_name: null,
+    requester_type: null,
+    topic_or_module: null,
+    intake_details: null,
+    source_channel: "instagram",
+    status: "open",
+    priority: "normal",
+    assigned_team: "Creator Support",
+    assigned_executive_id: null,
+    assigned_executive_name: null,
+    issue_description: "Need help with a campaign",
+    internal_notes: null,
+    acknowledgement_email_requested: true,
+    acknowledgement_email_sent_at: null,
+    resolution_summary: null,
+    first_response_at: null,
+    resolved_at: null,
+    customer_last_notified_at: null,
+    metadata: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  it("keeps website acknowledgement rows unchanged", () => {
+    const website = buildAcknowledgementEmailContent({
+      ...instagramTicket,
+      source_channel: "website",
+      issue_description: "Website enquiry body",
+    });
+    expect(website.detailRows.some((row) => row.label === "Original inquiry")).toBe(
+      false,
+    );
+    expect(website.detailRows.some((row) => row.label === "Issue type")).toBe(
+      false,
+    );
+  });
+
+  it("renders ticket code, creator, platform, username, campaign, brand, month and original inquiry", () => {
+    const content = buildInstagramTicketAcknowledgementContent(instagramTicket);
+    const email = buildTicketAcknowledgementEmail(content);
+    expect(email.subject).toBe("We've received your request — CF-2026-00001");
+    expect(email.html).toContain("We&#39;ve received your request");
+    expect(email.text).toContain("Ticket code: CF-2026-00001");
+    expect(email.text).toContain("Platform: YouTube");
+    expect(email.text).toContain("Username: riya_creates");
+    expect(email.text).toContain("Campaign: Summer Drop");
+    expect(email.text).toContain("Brand: Acme");
+    expect(email.text).toContain("Campaign month: August 2026");
+    expect(email.text).toContain("Original inquiry: Need help with a campaign");
+    expect(email.text).toContain("follow up as soon as possible");
+    expect(email.html).not.toContain(instagramTicket.id);
   });
 });
 

@@ -147,6 +147,30 @@ export function buildAcknowledgementEmailContent(
   };
 }
 
+/**
+ * Same website acknowledgement content, with Instagram intake fields
+ * (username + original inquiry) overlaid. Does not change website emails.
+ */
+export function buildInstagramTicketAcknowledgementContent(
+  ticket: DbTicket,
+): TicketAcknowledgementContent {
+  const base = buildAcknowledgementEmailContent(ticket);
+  const detailRows = base.detailRows.map((row) => {
+    if (row.label === "Platform") {
+      return { ...row, value: formatPlatformLabel(row.value) || row.value };
+    }
+    if (row.label === "Social handle") {
+      return { label: "Username", value: row.value };
+    }
+    return row;
+  });
+  const inquiry = ticket.issue_description?.trim();
+  if (inquiry && !detailRows.some((row) => row.label === "Original inquiry")) {
+    detailRows.push({ label: "Original inquiry", value: inquiry });
+  }
+  return { ...base, detailRows };
+}
+
 function formatPlatformLabel(value: string | null | undefined): string {
   if (!value?.trim()) return "";
   const key = value.trim().toLowerCase();

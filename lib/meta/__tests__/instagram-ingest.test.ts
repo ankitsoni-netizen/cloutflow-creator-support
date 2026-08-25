@@ -4,7 +4,7 @@ import { ingestInstagramInboundMessage } from "@/lib/meta/instagram-ingest";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
-import { ROUTING_QUESTION_TEXT } from "@/lib/meta/routing-copy";
+import { ROUTING_QUESTION_TEXT, ROUTE_CREATOR_SUPPORT_PAYLOAD, ticketCreatedWithoutEmailText } from "@/lib/meta/routing-copy";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
 
@@ -471,6 +471,88 @@ describe("ingestInstagramInboundMessage routing", () => {
     expect(JSON.stringify(store.events[0])).not.toContain("riya@example.com");
     errorSpy.mockRestore();
   });
+
+  it("creates exactly one ticket after the three intake answers using the original DM", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    const textSend = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    const original = "Need help with a campaign";
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({ messageBody: original }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.route",
+        externalMessageId: "mid.route",
+        messageBody: "Creator Support",
+        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.creator",
+        externalMessageId: "mid.creator",
+        messageBody: "Riya Sharma, riya@example.com, 9876543210",
+      }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.platform",
+        externalMessageId: "mid.platform",
+        messageBody: "Instagram, @riya_creates",
+      }),
+      store,
+      context,
+    );
+    const created = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.campaign",
+        externalMessageId: "mid.campaign",
+        messageBody: "Summer Drop, Acme, August 2026",
+      }),
+      store,
+      context,
+    );
+    expect(created.outcome).toBe("stored");
+    expect(store.tickets).toHaveLength(1);
+    expect(store.tickets[0]?.issue_description).toBe(original);
+    expect(store.tickets[0]?.platform).toBe("instagram");
+    expect(store.tickets[0]?.external_contact_id).toBe("12334");
+    expect(store.conversations[0]?.state).toBe("ticket_open");
+    const confirmation = textSend.mock.calls
+      .map((call) => call[0]?.text)
+      .find((text) => typeof text === "string" && text.includes("CF-2026-00001"));
+    expect(confirmation).toBe(
+      ticketCreatedWithoutEmailText("Riya", "CF-2026-00001"),
+    );
+
+    const duplicate = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.campaign",
+        externalMessageId: "mid.campaign",
+        messageBody: "Summer Drop, Acme, August 2026",
+      }),
+      store,
+      context,
+    );
+    expect(duplicate.outcome).toBe("duplicate");
+    expect(store.tickets).toHaveLength(1);
+    textSend.mockRestore();
+  });
 });
 
 describe("mapIntakeToInstagramTicketInsert", () => {
@@ -481,19 +563,25 @@ describe("mapIntakeToInstagramTicketInsert", () => {
         email: "riya@example.com",
         phoneNormalized: "+919876543210",
         phoneDisplay: "9876543210",
+        platform: "youtube",
         socialHandle: "riya_creates",
-        issueType: "payment_delayed",
-        campaignName: null,
-        brandName: null,
+        campaignName: "Summer Drop",
+        brandName: "Acme",
         campaignMonth: "2026-08-01",
-        issueDescription: "Payment not received",
+        originalInboundText: "Need help with a campaign",
       }),
       externalContactId: "12334",
       externalConversationId: "12334",
     });
     expect(insert.source_channel).toBe("instagram");
+    expect(insert.status).toBe("open");
+    expect(insert.priority).toBe("normal");
     expect(insert.assigned_team).toBe("Creator Support");
-    expect(insert.campaign_name).toBeNull();
+    expect(insert.platform).toBe("youtube");
+    expect(insert.social_handle).toBe("riya_creates");
+    expect(insert.issue_type).toBeNull();
+    expect(insert.cloutflow_poc_name).toBeNull();
+    expect(insert.issue_description).toBe("Need help with a campaign");
     expect(insert.creator_email).toBe("riya@example.com");
     expect(JSON.stringify(insert)).not.toMatch(/Not applicable|Unknown Creator|N\/A|placeholder/i);
   });
