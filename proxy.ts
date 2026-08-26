@@ -7,6 +7,7 @@ import { updateSession } from "@/lib/supabase/proxy";
  * - /help
  * - /api/public/*
  * - /api/webhooks/meta
+ * - /api/webhooks/wati
  *
  * Staff protection remains page-level via requireActiveStaff() on CRM pages.
  * Do not weaken CRM authentication here.

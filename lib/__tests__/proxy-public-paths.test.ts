@@ -9,6 +9,10 @@ describe("isUnauthenticatedProxyPath", () => {
     );
   });
 
+  it("keeps the WATI webhook publicly reachable", () => {
+    expect(isUnauthenticatedProxyPath("/api/webhooks/wati")).toBe(true);
+  });
+
   it("keeps existing public intake paths unauthenticated", () => {
     expect(isUnauthenticatedProxyPath("/help")).toBe(true);
     expect(isUnauthenticatedProxyPath("/api/public/website-tickets")).toBe(

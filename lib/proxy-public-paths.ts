@@ -8,6 +8,8 @@ export function isUnauthenticatedProxyPath(pathname: string): boolean {
     pathname === "/help" ||
     pathname.startsWith("/api/public/") ||
     pathname === "/api/webhooks/meta" ||
-    pathname.startsWith("/api/webhooks/meta/")
+    pathname.startsWith("/api/webhooks/meta/") ||
+    pathname === "/api/webhooks/wati" ||
+    pathname.startsWith("/api/webhooks/wati/")
   );
 }

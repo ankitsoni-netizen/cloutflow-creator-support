@@ -3,6 +3,7 @@ import {
   META_WHATSAPP_PROVIDER,
   type MetaWebhookProvider,
 } from "@/lib/meta/constants";
+import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
 
 export const META_CHANNELS = ["whatsapp", "instagram"] as const;
 export type MetaChannel = (typeof META_CHANNELS)[number];
@@ -10,9 +11,18 @@ export type MetaChannel = (typeof META_CHANNELS)[number];
 export const META_MESSAGE_DIRECTIONS = ["inbound", "outbound"] as const;
 export type MetaMessageDirection = (typeof META_MESSAGE_DIRECTIONS)[number];
 
+/** inbound webhook_events.provider for WhatsApp (Meta Cloud API or WATI). */
+export type WhatsAppWebhookProvider =
+  | typeof META_WHATSAPP_PROVIDER
+  | typeof WATI_WHATSAPP_PROVIDER;
+
+export type ChannelWebhookProvider =
+  | MetaWebhookProvider
+  | typeof WATI_WHATSAPP_PROVIDER;
+
 export type NormalizedMetaInboundText = {
   channel: MetaChannel;
-  provider: MetaWebhookProvider;
+  provider: ChannelWebhookProvider;
   externalEventId: string;
   externalMessageId: string;
   externalConversationId: string;
@@ -32,13 +42,17 @@ export type NormalizedMetaInboundText = {
 
 export type NormalizedWhatsAppStatus = {
   channel: "whatsapp";
-  provider: typeof META_WHATSAPP_PROVIDER;
+  provider: WhatsAppWebhookProvider;
   externalEventId: string;
   metaMessageId: string;
   status: "sent" | "delivered" | "read" | "failed" | "deleted";
   timestamp: string;
   phoneNumberId: string | null;
   errorCode: string | null;
+  /** WATI localMessageId when correlating legacy delivery callbacks. */
+  localMessageId?: string | null;
+  /** WATI internal event/message id (webhook `id`) for secondary lookup. */
+  watiEventId?: string | null;
 };
 
 export type NormalizedInstagramEcho = {

@@ -4,10 +4,13 @@ import {
   WEBHOOK_STATUS_COMPLETED,
   WEBHOOK_STATUS_FAILED,
   WEBHOOK_STATUS_PROCESSING,
-  type MetaWebhookProvider,
 } from "@/lib/meta/constants";
 import { sha256Hex } from "@/lib/meta/signature";
-import type { MetaChannel, NormalizedMetaInboundText } from "@/lib/meta/types";
+import type {
+  ChannelWebhookProvider,
+  MetaChannel,
+  NormalizedMetaInboundText,
+} from "@/lib/meta/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -32,7 +35,7 @@ type ConversationRow = {
 
 export type MetaInboundStore = {
   claimWebhookEvent(input: {
-    provider: MetaWebhookProvider;
+    provider: ChannelWebhookProvider;
     externalEventId: string;
     payload: unknown;
     payloadHash: string | null;

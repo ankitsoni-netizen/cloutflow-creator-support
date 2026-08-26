@@ -6,12 +6,16 @@ import {
   createAdminInstagramStore,
   type InstagramIngestStore,
 } from "@/lib/meta/instagram-store";
-import { sendWhatsAppText } from "@/lib/meta/whatsapp-send";
+import { sendWhatsAppProviderText } from "@/lib/meta/whatsapp-provider";
 import { COLLABORATION_IDLE_MS } from "@/lib/meta/conversation-machine";
 import { WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
 import { channelCrmReplyKey } from "@/lib/meta/prompt-keys";
 import { toPlainTicketDescription } from "@/lib/meta/plain-text";
 import type { DbTicket } from "@/lib/tickets/types";
+import {
+  getWatiChannelPhoneNumber,
+  resolveWhatsAppProvider,
+} from "@/lib/wati/config";
 
 export type WhatsAppStaffReplyResult =
   | {
@@ -120,13 +124,20 @@ export async function sendStaffWhatsAppReply(input: {
   }
 
   const windowOpen = messagingWindowOpen(conversation.lastActivityAt);
+  const idempotencyKey = channelCrmReplyKey("wa", input.commentId);
+  const provider = resolveWhatsAppProvider();
+  const businessAddress =
+    provider.ok && provider.provider === "wati"
+      ? (getWatiChannelPhoneNumber() ?? undefined)
+      : undefined;
   const claimed = await store.claimOutboundMessage({
     conversationId,
     ticketId: input.ticket.id,
     channel: "whatsapp",
     recipientExternalId: recipientId,
+    senderAddress: businessAddress,
     messageBody: text,
-    idempotencyKey: channelCrmReplyKey("wa", input.commentId),
+    idempotencyKey,
     purpose: "staff_reply",
     commentId: input.commentId,
   });
@@ -230,7 +241,10 @@ export async function sendStaffWhatsAppReply(input: {
     };
   }
 
-  const sent = await sendWhatsAppText({ recipientId, text });
+  const sent = await sendWhatsAppProviderText({
+    recipientId,
+    text,
+  });
   if (sent.ok) {
     await store.markOutboundMessage(outboundId, {
       deliveryStatus: "sent",

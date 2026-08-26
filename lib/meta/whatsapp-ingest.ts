@@ -26,7 +26,7 @@ import {
   intakeEffectType,
 } from "@/lib/meta/prompt-keys";
 import { WHATSAPP_INTAKE_COPY } from "@/lib/meta/routing-copy";
-import type { WhatsAppSendDeps } from "@/lib/meta/whatsapp-send";
+import type { WhatsAppProviderSendDeps } from "@/lib/meta/whatsapp-provider";
 import type {
   NormalizedMetaInboundText,
   NormalizedWhatsAppStatus,
@@ -35,7 +35,7 @@ import type { PersistContext, PersistResult } from "@/lib/meta/store";
 import type { DbTicket } from "@/lib/tickets/types";
 
 export type WhatsAppIngestDeps = {
-  sendDeps?: WhatsAppSendDeps;
+  sendDeps?: WhatsAppProviderSendDeps;
   loadTicket?: (id: string) => Promise<DbTicket | null>;
 };
 
@@ -274,21 +274,52 @@ export async function ingestWhatsAppStatus(
   }
 
   try {
-    const outbound = await store.findOutboundByExternalMessageId(event.metaMessageId);
+    let outbound = await store.findOutboundByExternalMessageId(event.metaMessageId);
     if (outbound && "errorCode" in outbound) {
       await store.markWebhookEvent(claim.id, WEBHOOK_STATUS_FAILED, outbound.errorCode);
       return { outcome: "failed", errorCode: outbound.errorCode };
     }
+    // Secondary: WATI internal event id when send response stored ConversationEventDto.id.
+    if (
+      !outbound &&
+      event.watiEventId &&
+      event.watiEventId !== event.metaMessageId
+    ) {
+      const byWatiId = await store.findOutboundByExternalMessageId(event.watiEventId);
+      if (byWatiId && "errorCode" in byWatiId) {
+        await store.markWebhookEvent(claim.id, WEBHOOK_STATUS_FAILED, byWatiId.errorCode);
+        return { outcome: "failed", errorCode: byWatiId.errorCode };
+      }
+      outbound = byWatiId;
+    }
+    // Legacy only: correlate by localMessageId → outbound idempotency key.
+    if (!outbound && event.localMessageId) {
+      const byLocal = await store.findOutboundByIdempotencyKey(event.localMessageId);
+      if (byLocal && "errorCode" in byLocal) {
+        await store.markWebhookEvent(claim.id, WEBHOOK_STATUS_FAILED, byLocal.errorCode);
+        return { outcome: "failed", errorCode: byLocal.errorCode };
+      }
+      outbound = byLocal;
+    }
     if (outbound) {
       const nextStatus =
         event.status === "deleted" ? "failed" : event.status;
-      await store.markOutboundMessage(outbound.id, {
+      const patch: {
+        deliveryStatus: "pending" | "sent" | "delivered" | "read" | "failed";
+        deliveryErrorCode?: string | null;
+        externalMessageId?: string | null;
+      } = {
         deliveryStatus: nextStatus,
         deliveryErrorCode:
           event.status === "failed" || event.status === "deleted"
             ? event.errorCode ?? event.status
             : null,
-      });
+      };
+      // Prefer WhatsApp message id once known.
+      if (event.metaMessageId) {
+        patch.externalMessageId = event.metaMessageId;
+      }
+      await store.markOutboundMessage(outbound.id, patch);
     }
     await store.markWebhookEvent(claim.id, "completed");
     return { outcome: outbound ? "stored" : "duplicate" };

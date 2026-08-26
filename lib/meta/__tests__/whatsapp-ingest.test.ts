@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { META_WHATSAPP_PROVIDER } from "@/lib/meta/constants";
 import {
   ingestWhatsAppInboundMessage,
@@ -28,6 +28,16 @@ import * as whatsappSend from "@/lib/meta/whatsapp-send";
 
 const WA_ID = "16315551181";
 const PHONE_NUMBER_ID = "123456123";
+
+beforeEach(() => {
+  // Fail-closed provider selection requires an explicit transport.
+  process.env.WHATSAPP_PROVIDER = "meta";
+});
+
+afterEach(() => {
+  delete process.env.WHATSAPP_PROVIDER;
+  vi.restoreAllMocks();
+});
 const CONVO_EXTERNAL_ID = `${PHONE_NUMBER_ID}:${WA_ID}`;
 
 function sampleWhatsAppEvent(
@@ -393,10 +403,6 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
 }
 
 const context = { webhookPayload: { object: "whatsapp_business_account" } };
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
 
 describe("ingestWhatsAppInboundMessage routing", () => {
   it("asks the routing question on the first DM and creates no ticket", async () => {
@@ -1021,6 +1027,72 @@ describe("ingestWhatsAppInboundMessage routing", () => {
     expect(store.messages[0]?.deliveryStatus).toBe("delivered");
     expect(store.messages.filter((message) => message.direction === "inbound")).toHaveLength(0);
     expect(store.tickets).toHaveLength(0);
+  });
+
+  it("correlates WATI delivery callbacks by whatsappMessageId", async () => {
+    const { WATI_WHATSAPP_PROVIDER } = await import("@/lib/wati/constants");
+    const store = createMemoryInstagramStore();
+    store.messages.push({
+      id: "out-wati",
+      conversationId: "convo-1",
+      direction: "outbound",
+      externalMessageId: "wamid.wati.out",
+      deliveryStatus: "sent",
+      messageBody: "CRM reply",
+      idempotencyKey: "wa:crm:legacy-only",
+    });
+    const result = await ingestWhatsAppStatus(
+      {
+        channel: "whatsapp",
+        provider: WATI_WHATSAPP_PROVIDER,
+        externalEventId: "status:wamid.wati.out:delivered",
+        metaMessageId: "wamid.wati.out",
+        status: "delivered",
+        timestamp: "2020-10-18T22:13:27.000Z",
+        phoneNumberId: null,
+        errorCode: null,
+        localMessageId: null,
+        watiEventId: "wati-internal-1",
+      },
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("stored");
+    expect(store.messages[0]?.deliveryStatus).toBe("delivered");
+    expect(store.messages[0]?.externalMessageId).toBe("wamid.wati.out");
+  });
+
+  it("keeps legacy localMessageId correlation for older WATI rows", async () => {
+    const { WATI_WHATSAPP_PROVIDER } = await import("@/lib/wati/constants");
+    const store = createMemoryInstagramStore();
+    store.messages.push({
+      id: "out-legacy",
+      conversationId: "convo-1",
+      direction: "outbound",
+      externalMessageId: null,
+      deliveryStatus: "pending",
+      messageBody: "Legacy",
+      idempotencyKey: "wa:crm:comment-legacy",
+    });
+    const result = await ingestWhatsAppStatus(
+      {
+        channel: "whatsapp",
+        provider: WATI_WHATSAPP_PROVIDER,
+        externalEventId: "status:wamid.late:sent",
+        metaMessageId: "wamid.late",
+        status: "sent",
+        timestamp: "2020-10-18T22:13:27.000Z",
+        phoneNumberId: null,
+        errorCode: null,
+        localMessageId: "wa:crm:comment-legacy",
+        watiEventId: null,
+      },
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("stored");
+    expect(store.messages[0]?.deliveryStatus).toBe("sent");
+    expect(store.messages[0]?.externalMessageId).toBe("wamid.late");
   });
 
   it("applies a WhatsApp status webhook through the verified payload processor", async () => {

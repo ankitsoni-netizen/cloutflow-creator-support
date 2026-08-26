@@ -6,7 +6,9 @@ import {
 } from "@/lib/tickets/whatsapp-reply";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import type { DbTicket } from "@/lib/tickets/types";
-import * as whatsappSend from "@/lib/meta/whatsapp-send";
+import * as whatsappProvider from "@/lib/meta/whatsapp-provider";
+import * as watiSend from "@/lib/wati/send";
+import * as metaSend from "@/lib/meta/whatsapp-send";
 import * as instagramTicketMail from "@/lib/email/instagram-ticket-mail";
 import { WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
 
@@ -118,11 +120,13 @@ function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestSt
 
 describe("CRM WhatsApp replies", () => {
   it("sends a public reply to the ticket wa_id", async () => {
-    const send = vi.spyOn(whatsappSend, "sendWhatsAppText").mockResolvedValue({
-      ok: true,
-      metaMessageId: "wamid.staff",
-      recipientId: WA_ID,
-    });
+    const send = vi
+      .spyOn(whatsappProvider, "sendWhatsAppProviderText")
+      .mockResolvedValue({
+        ok: true,
+        metaMessageId: "wamid.staff",
+        recipientId: WA_ID,
+      });
     vi.spyOn(instagramTicketMail, "sendInstagramCreatorReplyEmail").mockResolvedValue({
       outcome: "sent",
       messageId: "brevo-1",
@@ -141,8 +145,45 @@ describe("CRM WhatsApp replies", () => {
     send.mockRestore();
   });
 
+  it("routes CRM public replies through WATI when WHATSAPP_PROVIDER=wati", async () => {
+    const previous = process.env.WHATSAPP_PROVIDER;
+    process.env.WHATSAPP_PROVIDER = "wati";
+    process.env.WATI_API_ENDPOINT = "https://live-mt-server.wati.io/tenant";
+    process.env.WATI_API_TOKEN = "wati-token";
+    process.env.WATI_CHANNEL_PHONE_NUMBER = "17435002445";
+    const wati = vi.spyOn(watiSend, "sendWatiSessionText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "wamid.wati.crm",
+      recipientId: WA_ID,
+    });
+    const meta = vi.spyOn(metaSend, "sendWhatsAppText");
+    vi.spyOn(instagramTicketMail, "sendInstagramCreatorReplyEmail").mockResolvedValue({
+      outcome: "skipped",
+      errorCode: "no_email",
+    });
+    try {
+      const result = await sendStaffWhatsAppReply({
+        ticket: ticket(),
+        commentId: "comment-wati",
+        commentText: "WATI reply",
+        store: store(),
+      });
+      expect(result.ok).toBe(true);
+      expect(wati).toHaveBeenCalled();
+      expect(meta).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.WHATSAPP_PROVIDER;
+      else process.env.WHATSAPP_PROVIDER = previous;
+      delete process.env.WATI_API_ENDPOINT;
+      delete process.env.WATI_API_TOKEN;
+      delete process.env.WATI_CHANNEL_PHONE_NUMBER;
+      wati.mockRestore();
+      meta.mockRestore();
+    }
+  });
+
   it("does not send when the recipient would not match the conversation", async () => {
-    const send = vi.spyOn(whatsappSend, "sendWhatsAppText");
+    const send = vi.spyOn(whatsappProvider, "sendWhatsAppProviderText");
     const result = await sendStaffWhatsAppReply({
       ticket: ticket(),
       commentId: "comment-1",
@@ -172,11 +213,13 @@ describe("CRM WhatsApp replies", () => {
   });
 
   it("does not double-send when the same comment is retried", async () => {
-    const send = vi.spyOn(whatsappSend, "sendWhatsAppText").mockResolvedValue({
-      ok: true,
-      metaMessageId: "wamid.staff",
-      recipientId: WA_ID,
-    });
+    const send = vi
+      .spyOn(whatsappProvider, "sendWhatsAppProviderText")
+      .mockResolvedValue({
+        ok: true,
+        metaMessageId: "wamid.staff",
+        recipientId: WA_ID,
+      });
     vi.spyOn(instagramTicketMail, "sendInstagramCreatorReplyEmail").mockResolvedValue({
       outcome: "sent",
       messageId: "brevo-1",
@@ -202,7 +245,7 @@ describe("CRM WhatsApp replies", () => {
   });
 
   it("marks outside-window failures without sending a template", async () => {
-    const send = vi.spyOn(whatsappSend, "sendWhatsAppText");
+    const send = vi.spyOn(whatsappProvider, "sendWhatsAppProviderText");
     const marked: Array<Record<string, unknown>> = [];
     const result = await sendStaffWhatsAppReply({
       ticket: ticket(),
@@ -246,11 +289,13 @@ describe("CRM WhatsApp replies", () => {
   });
 
   it("keeps WhatsApp success when the mirrored email fails", async () => {
-    const send = vi.spyOn(whatsappSend, "sendWhatsAppText").mockResolvedValue({
-      ok: true,
-      metaMessageId: "wamid.staff",
-      recipientId: WA_ID,
-    });
+    const send = vi
+      .spyOn(whatsappProvider, "sendWhatsAppProviderText")
+      .mockResolvedValue({
+        ok: true,
+        metaMessageId: "wamid.staff",
+        recipientId: WA_ID,
+      });
     vi.spyOn(instagramTicketMail, "sendInstagramCreatorReplyEmail").mockResolvedValue({
       outcome: "failed",
       errorCode: "brevo_failed",
@@ -287,9 +332,10 @@ describe("CRM WhatsApp replies", () => {
     expect(noteFn).toContain("send_to_creator: false");
     expect(noteFn).not.toContain("sendStaffWhatsAppReply");
     expect(noteFn).not.toContain("sendWhatsAppText");
+    expect(noteFn).not.toContain("sendWhatsAppProviderText");
   });
 
-  it("routes CRM WhatsApp tickets through Cloud API from the composer", () => {
+  it("routes CRM WhatsApp tickets through the provider adapter from the composer", () => {
     const composer = readFileSync(
       new URL("../../../components/ticket/ReplyComposer.tsx", import.meta.url),
       "utf8",
@@ -298,9 +344,14 @@ describe("CRM WhatsApp replies", () => {
       new URL("../workflow-actions.ts", import.meta.url),
       "utf8",
     );
+    const reply = readFileSync(
+      new URL("../whatsapp-reply.ts", import.meta.url),
+      "utf8",
+    );
     expect(composer).toContain('sourceChannel.trim().toLowerCase() === "whatsapp"');
     expect(composer).toContain("isWhatsApp");
     expect(workflow).toContain("isWhatsAppTicket(ticket)");
     expect(workflow).toContain("sendStaffWhatsAppReply");
+    expect(reply).toContain("sendWhatsAppProviderText");
   });
 });

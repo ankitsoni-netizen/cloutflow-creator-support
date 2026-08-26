@@ -30,10 +30,10 @@ import {
   type InstagramSendDeps,
 } from "@/lib/meta/instagram-send";
 import {
-  sendWhatsAppReplyButtons,
-  sendWhatsAppText,
-  type WhatsAppSendDeps,
-} from "@/lib/meta/whatsapp-send";
+  sendWhatsAppProviderReplyButtons,
+  sendWhatsAppProviderText,
+  type WhatsAppProviderSendDeps,
+} from "@/lib/meta/whatsapp-provider";
 import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import type {
   InstagramIngestStore,
@@ -58,7 +58,7 @@ export type InstagramEffectDeps = {
   recipientId: string;
   conversationId: string;
   outboundSenderAddress?: string | null;
-  sendDeps?: InstagramSendDeps | WhatsAppSendDeps;
+  sendDeps?: InstagramSendDeps | WhatsAppProviderSendDeps;
   loadTicket?: (id: string) => Promise<DbTicket | null>;
 };
 
@@ -112,13 +112,13 @@ async function sendChannelMessage(
   const sendDeps = deps.sendDeps;
   if (channel === "whatsapp") {
     return effect.type === "send_quick_replies" && effect.quickReplies
-      ? sendWhatsAppReplyButtons({
+      ? sendWhatsAppProviderReplyButtons({
           recipientId: deps.recipientId,
           text: effect.text,
           quickReplies: effect.quickReplies,
           deps: sendDeps,
         })
-      : sendWhatsAppText({
+      : sendWhatsAppProviderText({
           recipientId: deps.recipientId,
           text: effect.text,
           deps: sendDeps,
@@ -840,7 +840,7 @@ export async function retryFailedInstagramOutbounds(
   const failed = await deps.store.listFailedOutbounds(deps.conversationId);
   let retryableFailure = false;
   for (const row of failed) {
-    const result = await sendWhatsAppText({
+    const result = await sendWhatsAppProviderText({
       recipientId: deps.recipientId,
       text: row.messageBody,
       deps: deps.sendDeps,

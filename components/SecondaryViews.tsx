@@ -881,24 +881,24 @@ export function ChannelsView({
 
           <div>
             <IntegrationCard
-              name="WhatsApp via Meta Cloud API"
-              description="Handle WhatsApp creator conversations with Cloud API inbound, intake, and CRM replies."
+              name="WhatsApp via WATI"
+              description="Handle WhatsApp creator conversations with WATI inbound, intake, and CRM replies. Meta Cloud API remains an inactive fallback."
               inbound="Not connected"
               outbound="Queued until connected"
-              setupNotes="Requires Meta WhatsApp Cloud API credentials stored server-side. Do not paste access tokens here."
+              setupNotes="Requires WATI server-only credentials (WATI_API_ENDPOINT, WATI_API_TOKEN, WATI_CHANNEL_PHONE_NUMBER, WATI_WEBHOOK_SECRET). Do not paste tokens here."
               status="not_connected"
             />
             <ChannelSetupBlock title="Setup detail">
-              <p>Webhook status: configure Meta to POST /api/webhooks/meta.</p>
-              <p>Inbound mapping: WhatsApp Cloud API conversation → support ticket.</p>
-              <p>Outbound: staff CRM replies send through Meta Cloud API.</p>
+              <p>Webhook status: configure WATI to POST /api/webhooks/wati?token=…</p>
+              <p>Inbound mapping: WATI messageReceived → support ticket conversation.</p>
+              <p>Outbound: staff CRM replies send through WATI session messages.</p>
               <DisabledField
-                label="WhatsApp phone number ID"
+                label="WATI channel phone number"
                 placeholder="Configure server-side only"
               />
               <DisabledField
                 label="Webhook URL"
-                placeholder="/api/webhooks/meta"
+                placeholder="/api/webhooks/wati"
               />
               <button
                 type="button"
