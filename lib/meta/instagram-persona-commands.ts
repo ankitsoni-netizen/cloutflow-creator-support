@@ -9,6 +9,7 @@ import {
   CREATOR_PAYMENT_ISSUE_PAYLOAD,
   CREATOR_TICKET_CONFIRM_PAYLOAD,
   CREATOR_TICKET_EDIT_PAYLOAD,
+  FLOW_BACK_PAYLOAD,
   FLOW_CANCEL_PAYLOAD,
   OTHER_EDIT_PAYLOAD,
   OTHER_SEND_PAYLOAD,
@@ -42,6 +43,7 @@ export type InstagramPersonaCommand =
   | "edit"
   | "yes"
   | "flow_cancel"
+  | "flow_back"
   | "post_main_menu"
   | "post_done";
 
@@ -92,6 +94,8 @@ function payloadCommand(
       return "other_edit";
     case FLOW_CANCEL_PAYLOAD:
       return "flow_cancel";
+    case FLOW_BACK_PAYLOAD:
+      return "flow_back";
     case POST_MAIN_MENU_PAYLOAD:
       return "post_main_menu";
     case POST_DONE_PAYLOAD:
@@ -120,6 +124,7 @@ const TEXT_COMMANDS: Array<[InstagramPersonaCommand, readonly string[]]> = [
   ["agency_send", ["send to team"]],
   ["other_send", ["yes, send it", "yes send it"]],
   ["flow_cancel", ["cancel"]],
+  ["flow_back", ["back", "go back"]],
   ["post_main_menu", ["main menu"]],
   ["post_done", ["i'm done", "i am done", "im done", "done"]],
 ];
@@ -140,6 +145,19 @@ export function isGlobalMenuOrRestart(
   if (normalized === "menu") return "menu";
   if (normalized === "restart") return "restart";
   return null;
+}
+
+/**
+ * Global Go back: FLOW_BACK payload or entire trimmed message "back" / "go back".
+ * Does not match those words inside a longer description.
+ */
+export function isGlobalFlowBack(
+  text: string,
+  quickReplyPayload: string | null = null,
+): boolean {
+  if (payloadCommand(quickReplyPayload) === "flow_back") return true;
+  const normalized = normalizeChoiceText(text);
+  return normalized === "back" || normalized === "go back";
 }
 
 export function detectInstagramPersonaCommand(

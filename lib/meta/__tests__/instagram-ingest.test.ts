@@ -11,6 +11,7 @@ import {
   CREATOR_ISSUE_CATEGORY_TEXT,
   CREATOR_REASON_TEXT,
   CREATOR_TICKET_CONFIRM_PAYLOAD,
+  FLOW_BACK_PAYLOAD,
   INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
   PERSONA_CREATOR_PAYLOAD,
   activeTicketAttachText,
@@ -26,7 +27,10 @@ import { instagramMemoryOutbox, instagramMemoryEmailOutbox } from "@/lib/meta/__
 import { drainDueInstagramOutbox, drainInstagramOutbox } from "@/lib/meta/instagram-outbox";
 import * as afterResponse from "@/lib/meta/after-response";
 import { ingestInstagramEcho } from "@/lib/meta/instagram-echo";
-import { personaQuickReplies } from "@/lib/meta/instagram-persona-machine";
+import {
+  personaBackPromptKey,
+  personaQuickReplies,
+} from "@/lib/meta/instagram-persona-machine";
 
 function sampleInstagramEvent(
   overrides: Partial<NormalizedMetaInboundText> = {},
@@ -1447,13 +1451,12 @@ describe("Instagram DM reliability hardening", () => {
     "sends the text-only fallback once for %s and does not advance state",
     async (kind) => {
       mockSends();
-      const textSend = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
-        ok: true,
-        metaMessageId: "mid.text",
-        recipientId: "12334",
-      });
+      const qrSend = vi.mocked(instagramSend.sendInstagramQuickReplies);
       const store = createMemoryInstagramStore();
       await reachCreatorReason(store);
+      const fallbackCallsBefore = qrSend.mock.calls.filter(
+        (call) => call[0]?.text === INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
+      ).length;
       const first = await ingestInstagramInboundMessage(
         sampleInstagramEvent({
           externalEventId: `mid.${kind}`,
@@ -1467,11 +1470,15 @@ describe("Instagram DM reliability hardening", () => {
       );
       expect(first.outcome).toBe("stored");
       expect(store.conversations[0]?.state).toBe("awaiting_creator_reason");
-      expect(
-        textSend.mock.calls.filter(
-          (call) => call[0]?.text === INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
-        ),
-      ).toHaveLength(1);
+      const fallbackCalls = qrSend.mock.calls.filter(
+        (call) => call[0]?.text === INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
+      );
+      expect(fallbackCalls).toHaveLength(fallbackCallsBefore + 1);
+      expect(fallbackCalls.at(-1)?.[0]?.quickReplies).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ payload: FLOW_BACK_PAYLOAD }),
+        ]),
+      );
 
       const duplicate = await ingestInstagramInboundMessage(
         sampleInstagramEvent({
@@ -1486,10 +1493,10 @@ describe("Instagram DM reliability hardening", () => {
       );
       expect(duplicate.outcome).toBe("duplicate");
       expect(
-        textSend.mock.calls.filter(
+        qrSend.mock.calls.filter(
           (call) => call[0]?.text === INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
         ),
-      ).toHaveLength(1);
+      ).toHaveLength(fallbackCallsBefore + 1);
     },
   );
 
@@ -2533,5 +2540,90 @@ describe("Instagram sender actions and fast replies", () => {
         (body) => body.sender_action === "typing_off",
       ),
     ).toHaveLength(1);
+  });
+
+  it("FLOW_BACK revisits a prior prompt with a navigation key and ignores webhook retries", async () => {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: "12334",
+    });
+    const store = createMemoryInstagramStore();
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({ messageBody: "Need help with a campaign" }),
+      store,
+      context,
+    );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: "I'm a creator",
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    const conversationId = String(store.conversations[0]?.id);
+    const version = Number(store.conversations[0]?.intakeSessionVersion ?? 0);
+    const originalReasonKey = chatbotOutboundIdempotencyKey(
+      conversationId,
+      version,
+      "awaiting_creator_reason",
+    );
+    expect(
+      store.messages.some((message) => message.idempotencyKey === originalReasonKey),
+    ).toBe(true);
+
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.flow.back",
+        externalMessageId: "mid.flow.back",
+        messageBody: "Go back",
+        quickReplyPayload: FLOW_BACK_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
+    expect(Number(store.conversations[0]?.intakeSessionVersion ?? 0)).toBe(version);
+    expect(store.tickets).toHaveLength(0);
+    expect(store.emails).toHaveLength(0);
+    const backKey = chatbotOutboundIdempotencyKey(
+      conversationId,
+      version,
+      personaBackPromptKey("awaiting_persona", "mid.flow.back"),
+    );
+    expect(backKey).toBe(
+      `ig:prompt:${conversationId}:v${version}:awaiting_persona:back:mid.flow.back`,
+    );
+    expect(
+      store.messages.filter((message) => message.idempotencyKey === backKey),
+    ).toHaveLength(1);
+    expect(
+      store.messages.filter((message) => message.idempotencyKey === originalReasonKey),
+    ).toHaveLength(1);
+
+    const duplicate = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.flow.back",
+        externalMessageId: "mid.flow.back",
+        messageBody: "Go back",
+        quickReplyPayload: FLOW_BACK_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(duplicate.outcome).toBe("duplicate");
+    expect(
+      store.messages.filter((message) => message.idempotencyKey === backKey),
+    ).toHaveLength(1);
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
+    expect(Number(store.conversations[0]?.intakeSessionVersion ?? 0)).toBe(version);
   });
 });

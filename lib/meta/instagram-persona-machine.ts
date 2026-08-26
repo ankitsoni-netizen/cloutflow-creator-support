@@ -1,6 +1,7 @@
 import {
   commandAllowedAtState,
   detectInstagramPersonaCommand,
+  isGlobalFlowBack,
   isGlobalMenuOrRestart,
   type InstagramPersonaCommand,
 } from "@/lib/meta/instagram-persona-commands";
@@ -37,6 +38,8 @@ import {
   CREATOR_TICKET_EDIT_PAYLOAD,
   CREATOR_TICKET_EDIT_TITLE,
   creatorConfirmationText,
+  FLOW_BACK_PAYLOAD,
+  FLOW_BACK_TITLE,
   FLOW_CANCEL_PAYLOAD,
   FLOW_CANCEL_TITLE,
   INSTAGRAM_SAFE_MESSAGE_LENGTH,
@@ -115,6 +118,23 @@ export type InstagramPersonaState = (typeof INSTAGRAM_PERSONA_STATES)[number];
 
 const PERSONA_STATE_SET = new Set<string>(INSTAGRAM_PERSONA_STATES);
 
+/** Reversible intake states and where FLOW_BACK / typed back navigates. */
+export const INSTAGRAM_FLOW_BACK_TRANSITIONS: Readonly<
+  Record<string, InstagramPersonaState>
+> = {
+  awaiting_creator_reason: "awaiting_persona",
+  awaiting_creator_issue_category: "awaiting_creator_reason",
+  creator_campaign_details: "awaiting_creator_issue_category",
+  creator_issue_details: "creator_campaign_details",
+  creator_confirmation: "creator_issue_details",
+  brand_action: "awaiting_persona",
+  agency_details: "awaiting_persona",
+  agency_confirmation: "agency_details",
+  other_inquiry: "awaiting_persona",
+  other_contact: "other_inquiry",
+  other_confirmation: "other_contact",
+};
+
 const LEGACY_CHATBOT_STATES = new Set<string>([
   "unclassified",
   "awaiting_route",
@@ -146,6 +166,29 @@ function qr(title: string, payload: string): InstagramQuickReply {
     title: title.slice(0, 20),
     payload,
   };
+}
+
+function flowBackQuickReply(): InstagramQuickReply {
+  return qr(FLOW_BACK_TITLE, FLOW_BACK_PAYLOAD);
+}
+
+export function isInstagramFlowBackState(state: string): boolean {
+  return Object.prototype.hasOwnProperty.call(
+    INSTAGRAM_FLOW_BACK_TRANSITIONS,
+    state,
+  );
+}
+
+/** Append Go back to reversible prompts; leave non-reversible prompts unchanged. */
+export function withFlowBackQuickReply(
+  state: string,
+  replies: InstagramQuickReply[],
+): InstagramQuickReply[] {
+  if (!isInstagramFlowBackState(state)) return replies;
+  if (replies.some((reply) => reply.payload === FLOW_BACK_PAYLOAD)) {
+    return replies;
+  }
+  return [...replies, flowBackQuickReply()];
 }
 
 export function personaQuickReplies(): InstagramQuickReply[] {
@@ -216,6 +259,14 @@ export function personaPromptKey(
   return retryMessageId ? `${state}:retry:${retryMessageId}` : state;
 }
 
+/** Navigation-specific prompt key so revisiting a state does not reuse the prior outbound row. */
+export function personaBackPromptKey(
+  targetState: string,
+  inboundMessageId: string,
+): string {
+  return `${targetState}:back:${inboundMessageId}`;
+}
+
 function greetingName(snapshot: ConversationSnapshot): string | null {
   return snapshot.collected.cachedUsername ?? snapshot.suggestedSocialHandle;
 }
@@ -282,7 +333,7 @@ function sendQr(
         type: "send_quick_replies",
         text,
         promptKey: key,
-        quickReplies: replies,
+        quickReplies: withFlowBackQuickReply(state, replies),
       },
     ],
     attachTicketId: hasActiveTicket(snapshot) ? snapshot.ticketId : null,
@@ -300,6 +351,18 @@ function sendText(
   retry: boolean,
   inboundRoutingKind: MachineResult["inboundRoutingKind"] = "unclassified",
 ): MachineResult {
+  if (isInstagramFlowBackState(state)) {
+    return sendQr(
+      snapshot,
+      signal,
+      patch,
+      text,
+      state,
+      [],
+      retry,
+      inboundRoutingKind,
+    );
+  }
   const key = personaPromptKey(state, retry ? signal.messageId : null);
   return {
     snapshot: withActivity(snapshot, signal, {
@@ -481,7 +544,7 @@ export function instagramPromptForState(
       type: "send_quick_replies",
       text: CREATOR_REASON_TEXT,
       promptKey: key,
-      quickReplies: creatorReasonQuickReplies(),
+      quickReplies: withFlowBackQuickReply(state, creatorReasonQuickReplies()),
     };
   }
   if (state === "awaiting_creator_issue_category") {
@@ -489,23 +552,28 @@ export function instagramPromptForState(
       type: "send_quick_replies",
       text: CREATOR_ISSUE_CATEGORY_TEXT,
       promptKey: key,
-      quickReplies: creatorIssueCategoryQuickReplies(),
+      quickReplies: withFlowBackQuickReply(
+        state,
+        creatorIssueCategoryQuickReplies(),
+      ),
     };
   }
   if (state === "creator_campaign_details") {
     return {
-      type: "send_text",
+      type: "send_quick_replies",
       text:
         missingCreatorCampaignPrompt(creatorCampaignFields(snapshot.collected)) ??
         CREATOR_CAMPAIGN_DETAILS_TEXT,
       promptKey: key,
+      quickReplies: withFlowBackQuickReply(state, []),
     };
   }
   if (state === "creator_issue_details") {
     return {
-      type: "send_text",
+      type: "send_quick_replies",
       text: CREATOR_ISSUE_DETAILS_TEXT,
       promptKey: key,
+      quickReplies: withFlowBackQuickReply(state, []),
     };
   }
   if (state === "creator_confirmation") {
@@ -515,7 +583,10 @@ export function instagramPromptForState(
       type: "send_quick_replies",
       text,
       promptKey: key,
-      quickReplies: creatorConfirmationQuickReplies(),
+      quickReplies: withFlowBackQuickReply(
+        state,
+        creatorConfirmationQuickReplies(),
+      ),
     };
   }
   if (state === "brand_action") {
@@ -523,16 +594,17 @@ export function instagramPromptForState(
       type: "send_quick_replies",
       text: BRAND_ACTION_TEXT,
       promptKey: key,
-      quickReplies: brandActionQuickReplies(),
+      quickReplies: withFlowBackQuickReply(state, brandActionQuickReplies()),
     };
   }
   if (state === "agency_details") {
     return {
-      type: "send_text",
+      type: "send_quick_replies",
       text:
         missingAgencyDetailsPrompt(agencyFields(snapshot.collected)) ??
         AGENCY_DETAILS_TEXT,
       promptKey: key,
+      quickReplies: withFlowBackQuickReply(state, []),
     };
   }
   if (state === "agency_confirmation") {
@@ -542,23 +614,28 @@ export function instagramPromptForState(
       type: "send_quick_replies",
       text,
       promptKey: key,
-      quickReplies: agencyConfirmationQuickReplies(),
+      quickReplies: withFlowBackQuickReply(
+        state,
+        agencyConfirmationQuickReplies(),
+      ),
     };
   }
   if (state === "other_inquiry") {
     return {
-      type: "send_text",
+      type: "send_quick_replies",
       text: OTHER_INQUIRY_TEXT,
       promptKey: key,
+      quickReplies: withFlowBackQuickReply(state, []),
     };
   }
   if (state === "other_contact") {
     return {
-      type: "send_text",
+      type: "send_quick_replies",
       text:
         missingOtherContactPrompt(otherContactFields(snapshot.collected)) ??
         OTHER_CONTACT_TEXT,
       promptKey: key,
+      quickReplies: withFlowBackQuickReply(state, []),
     };
   }
   if (state === "other_confirmation") {
@@ -568,7 +645,10 @@ export function instagramPromptForState(
       type: "send_quick_replies",
       text,
       promptKey: key,
-      quickReplies: otherConfirmationQuickReplies(),
+      quickReplies: withFlowBackQuickReply(
+        state,
+        otherConfirmationQuickReplies(),
+      ),
     };
   }
   if (state === "awaiting_post_completion") {
@@ -580,6 +660,58 @@ export function instagramPromptForState(
     };
   }
   return null;
+}
+
+function routingKindForSnapshot(
+  snapshot: ConversationSnapshot,
+): MachineResult["inboundRoutingKind"] {
+  if (snapshot.routingIntent === "collaboration") return "collaboration";
+  if (snapshot.routingIntent === "creator_support") return "support";
+  return "unclassified";
+}
+
+function handleFlowBack(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+): MachineResult | null {
+  const targetState = INSTAGRAM_FLOW_BACK_TRANSITIONS[snapshot.state];
+  if (!targetState) return null;
+
+  const prompt = instagramPromptForState({
+    ...snapshot,
+    state: targetState,
+  });
+  if (!prompt) return null;
+
+  const key = personaBackPromptKey(targetState, signal.messageId);
+  return {
+    snapshot: withActivity(snapshot, signal, {
+      state: targetState,
+      lastPromptKey: key,
+    }),
+    effects: [
+      {
+        ...prompt,
+        promptKey: key,
+      },
+    ],
+    attachTicketId: hasActiveTicket(snapshot) ? snapshot.ticketId : null,
+    inboundRoutingKind: routingKindForSnapshot(snapshot),
+    processed: true,
+  };
+}
+
+function absorbFlowBackWithoutEffects(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+): MachineResult {
+  return {
+    snapshot: withActivity(snapshot, signal, {}),
+    effects: [],
+    attachTicketId: hasActiveTicket(snapshot) ? snapshot.ticketId : null,
+    inboundRoutingKind: routingKindForSnapshot(snapshot),
+    processed: true,
+  };
 }
 
 function isPersonaState(state: string): state is InstagramPersonaState {
@@ -1242,6 +1374,18 @@ export function reduceInstagramPersonaConversation(
   const global = isGlobalMenuOrRestart(signal.text, signal.quickReplyPayload);
   if (global) {
     return startInstagramPersonaMenu(snapshot, signal, { incrementSession: true });
+  }
+
+  if (isGlobalFlowBack(signal.text, signal.quickReplyPayload)) {
+    const wentBack = handleFlowBack(snapshot, signal);
+    if (wentBack) return wentBack;
+    // Do not treat exact "back" / FLOW_BACK as a ticket follow-up or side effect.
+    if (
+      hasActiveTicket(snapshot) &&
+      (snapshot.state === "ticket_open" || snapshot.state === "completed")
+    ) {
+      return absorbFlowBackWithoutEffects(snapshot, signal);
+    }
   }
 
   const command = detectInstagramPersonaCommand(

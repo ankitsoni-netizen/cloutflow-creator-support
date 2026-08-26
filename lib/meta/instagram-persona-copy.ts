@@ -25,6 +25,7 @@ export const OTHER_SEND_PAYLOAD = "OTHER_SEND";
 export const OTHER_EDIT_PAYLOAD = "OTHER_EDIT";
 
 export const FLOW_CANCEL_PAYLOAD = "FLOW_CANCEL";
+export const FLOW_BACK_PAYLOAD = "FLOW_BACK";
 export const POST_MAIN_MENU_PAYLOAD = "POST_MAIN_MENU";
 export const POST_DONE_PAYLOAD = "POST_DONE";
 
@@ -40,6 +41,7 @@ export const CREATOR_PAYMENT_ISSUE_TITLE = "Payment issue";
 export const CREATOR_TICKET_CONFIRM_TITLE = "Yes, raise it";
 export const CREATOR_TICKET_EDIT_TITLE = "Edit details";
 export const FLOW_CANCEL_TITLE = "Cancel";
+export const FLOW_BACK_TITLE = "Go back";
 
 export const BRAND_BOOK_CALL_TITLE = "Book a call";
 export const BRAND_BOOK_DEMO_TITLE = "Book a demo";

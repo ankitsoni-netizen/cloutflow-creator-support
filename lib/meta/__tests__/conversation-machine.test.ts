@@ -25,6 +25,8 @@ import {
   CREATOR_REASON_TEXT,
   CREATOR_TICKET_CONFIRM_PAYLOAD,
   CREATOR_TICKET_EDIT_PAYLOAD,
+  FLOW_BACK_PAYLOAD,
+  FLOW_BACK_TITLE,
   FLOW_CANCEL_PAYLOAD,
   INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
   OTHER_INQUIRY_TEXT,
@@ -716,6 +718,587 @@ describe("Instagram persona routing state machine", () => {
   });
 });
 
+describe("Instagram FLOW_BACK / Go back", () => {
+  function quickRepliesOf(
+    result: ReturnType<typeof reduceInstagramConversation>,
+  ): Array<{ title: string; payload: string }> {
+    const effect = result.effects.find(
+      (item) => item.type === "send_quick_replies",
+    );
+    if (!effect || effect.type !== "send_quick_replies") return [];
+    return (effect.quickReplies ?? []).map((reply) => ({
+      title: reply.title,
+      payload: reply.payload,
+    }));
+  }
+
+  function hasGoBack(
+    result: ReturnType<typeof reduceInstagramConversation>,
+  ): boolean {
+    return quickRepliesOf(result).some(
+      (reply) =>
+        reply.title === FLOW_BACK_TITLE && reply.payload === FLOW_BACK_PAYLOAD,
+    );
+  }
+
+  function assertNoSideEffects(
+    result: ReturnType<typeof reduceInstagramConversation>,
+  ) {
+    expect(result.effects.some((effect) => effect.type === "create_ticket")).toBe(
+      false,
+    );
+    expect(
+      result.effects.some((effect) => effect.type === "queue_internal_email"),
+    ).toBe(false);
+    expect(
+      result.effects.some((effect) => effect.type === "notify_help_inbound"),
+    ).toBe(false);
+  }
+
+  const backCases = [
+    {
+      from: "awaiting_creator_reason",
+      to: "awaiting_persona",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.1",
+        },
+      ],
+      preserved: { igPersona: "creator" },
+    },
+    {
+      from: "awaiting_creator_issue_category",
+      to: "awaiting_creator_reason",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.1",
+        },
+        {
+          text: "Existing campaign",
+          payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+          messageId: "mid.2",
+        },
+      ],
+      preserved: {
+        igPersona: "creator",
+        igCreatorReason: "existing_campaign",
+      },
+    },
+    {
+      from: "creator_campaign_details",
+      to: "awaiting_creator_issue_category",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.1",
+        },
+        {
+          text: "Existing campaign",
+          payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+          messageId: "mid.2",
+        },
+        {
+          text: "Campaign issue",
+          payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+          messageId: "mid.3",
+        },
+      ],
+      preserved: {
+        igPersona: "creator",
+        igCreatorReason: "existing_campaign",
+        igIssueCategory: "campaign",
+      },
+    },
+    {
+      from: "creator_issue_details",
+      to: "creator_campaign_details",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.1",
+        },
+        {
+          text: "Existing campaign",
+          payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+          messageId: "mid.2",
+        },
+        {
+          text: "Campaign issue",
+          payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+          messageId: "mid.3",
+        },
+        {
+          text: "Summer Drop, Acme, August 2026, riya@example.com",
+          messageId: "mid.4",
+        },
+      ],
+      preserved: {
+        campaignName: "Summer Drop",
+        brandName: "Acme",
+        email: "riya@example.com",
+      },
+    },
+    {
+      from: "creator_confirmation",
+      to: "creator_issue_details",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.1",
+        },
+        {
+          text: "Existing campaign",
+          payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+          messageId: "mid.2",
+        },
+        {
+          text: "Campaign issue",
+          payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+          messageId: "mid.3",
+        },
+        {
+          text: "Summer Drop, Acme, August 2026, riya@example.com",
+          messageId: "mid.4",
+        },
+        { text: "Payment never arrived", messageId: "mid.5" },
+      ],
+      preserved: {
+        campaignName: "Summer Drop",
+        issueDescription: "Payment never arrived",
+      },
+    },
+    {
+      from: "brand_action",
+      to: "awaiting_persona",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm a brand",
+          payload: PERSONA_BRAND_PAYLOAD,
+          messageId: "mid.1",
+        },
+      ],
+      preserved: { igPersona: "brand" },
+    },
+    {
+      from: "agency_details",
+      to: "awaiting_persona",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm an agency",
+          payload: PERSONA_AGENCY_PAYLOAD,
+          messageId: "mid.1",
+        },
+      ],
+      preserved: { igPersona: "agency" },
+    },
+    {
+      from: "agency_confirmation",
+      to: "agency_details",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm an agency",
+          payload: PERSONA_AGENCY_PAYLOAD,
+          messageId: "mid.1",
+        },
+        {
+          text: "North Star, Sam, sam@agency.com, https://example.com/roster",
+          messageId: "mid.2",
+        },
+      ],
+      preserved: {
+        agencyName: "North Star",
+        creatorName: "Sam",
+        email: "sam@agency.com",
+      },
+    },
+    {
+      from: "other_inquiry",
+      to: "awaiting_persona",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "Something else",
+          payload: PERSONA_OTHER_PAYLOAD,
+          messageId: "mid.1",
+        },
+      ],
+      preserved: { igPersona: "other" },
+    },
+    {
+      from: "other_contact",
+      to: "other_inquiry",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "Something else",
+          payload: PERSONA_OTHER_PAYLOAD,
+          messageId: "mid.1",
+        },
+        { text: "I need help with my login", messageId: "mid.2" },
+      ],
+      preserved: { inquiryDetails: "I need help with my login" },
+    },
+    {
+      from: "other_confirmation",
+      to: "other_contact",
+      setup: [
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "Something else",
+          payload: PERSONA_OTHER_PAYLOAD,
+          messageId: "mid.1",
+        },
+        { text: "I need help with my login", messageId: "mid.2" },
+        {
+          text: "Riya, riya@example.com, +919876543210",
+          messageId: "mid.3",
+        },
+      ],
+      preserved: {
+        creatorName: "Riya",
+        email: "riya@example.com",
+        inquiryDetails: "I need help with my login",
+      },
+    },
+  ] as const;
+
+  it.each(backCases)(
+    "FLOW_BACK from $from returns to $to and preserves collected values",
+    (backCase) => {
+      const atState = play([...backCase.setup]);
+      expect(atState.snapshot.state).toBe(backCase.from);
+      expect(hasGoBack(atState)).toBe(true);
+      const version = atState.snapshot.intakeSessionVersion;
+      const collectedBefore = { ...atState.snapshot.collected };
+
+      const back = reduceInstagramConversation(
+        atState.snapshot,
+        signal("Go back", {
+          messageId: `mid.back.${backCase.from}`,
+          payload: FLOW_BACK_PAYLOAD,
+        }),
+      );
+      expect(back.snapshot.state).toBe(backCase.to);
+      expect(back.snapshot.intakeSessionVersion).toBe(version);
+      expect(back.snapshot.collected).toEqual(collectedBefore);
+      for (const [key, value] of Object.entries(backCase.preserved)) {
+        expect(
+          back.snapshot.collected[key as keyof typeof back.snapshot.collected],
+        ).toBe(value);
+      }
+      expect(back.effects[0]).toMatchObject({
+        promptKey: `${backCase.to}:back:mid.back.${backCase.from}`,
+      });
+      assertNoSideEffects(back);
+      if (backCase.to === "awaiting_persona") {
+        expect(hasGoBack(back)).toBe(false);
+      } else {
+        expect(hasGoBack(back)).toBe(true);
+      }
+    },
+  );
+
+  it.each(["back", "go back", "  Go Back  "] as const)(
+    "accepts typed equivalent %s",
+    (text) => {
+      const atReason = play([
+        { text: "Hi", messageId: "mid.0" },
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.1",
+        },
+      ]);
+      const back = reduceInstagramConversation(
+        atReason.snapshot,
+        signal(text, { messageId: `mid.typed.${text.trim()}` }),
+      );
+      expect(back.snapshot.state).toBe("awaiting_persona");
+      expect(back.effects[0]).toMatchObject({
+        promptKey: `awaiting_persona:back:mid.typed.${text.trim()}`,
+      });
+      assertNoSideEffects(back);
+    },
+  );
+
+  it.each([
+    "please go back",
+    "go back to the menu",
+    "I want to go back now",
+    "send me back",
+  ])("does not treat longer sentence %s as Go back", (text) => {
+    const atReason = play([
+      { text: "Hi", messageId: "mid.0" },
+      {
+        text: "I'm a creator",
+        payload: PERSONA_CREATOR_PAYLOAD,
+        messageId: "mid.1",
+      },
+    ]);
+    const result = reduceInstagramConversation(
+      atReason.snapshot,
+      signal(text, { messageId: `mid.long.${text.slice(0, 8)}` }),
+    );
+    expect(result.snapshot.state).toBe("awaiting_creator_reason");
+    expect(result.effects[0]).toMatchObject({
+      promptKey: expect.stringContaining("awaiting_creator_reason:retry:"),
+    });
+  });
+
+  it("lets a new answer overwrite only the relevant fields after going back", () => {
+    const confirmed = play([
+      { text: "Hi", messageId: "mid.0" },
+      {
+        text: "I'm a creator",
+        payload: PERSONA_CREATOR_PAYLOAD,
+        messageId: "mid.1",
+      },
+      {
+        text: "Existing campaign",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+        messageId: "mid.2",
+      },
+      {
+        text: "Campaign issue",
+        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+        messageId: "mid.3",
+      },
+      {
+        text: "Summer Drop, Acme, August 2026, riya@example.com",
+        messageId: "mid.4",
+      },
+      { text: "Payment never arrived", messageId: "mid.5" },
+    ]);
+    const back = reduceInstagramConversation(
+      confirmed.snapshot,
+      signal("back", { messageId: "mid.back.issue" }),
+    );
+    expect(back.snapshot.state).toBe("creator_issue_details");
+    expect(back.snapshot.collected.issueDescription).toBe("Payment never arrived");
+    expect(back.snapshot.collected.campaignName).toBe("Summer Drop");
+
+    const revised = reduceInstagramConversation(
+      back.snapshot,
+      signal("Brand never shared the brief", { messageId: "mid.revised" }),
+    );
+    expect(revised.snapshot.state).toBe("creator_confirmation");
+    expect(revised.snapshot.collected.issueDescription).toBe(
+      "Brand never shared the brief",
+    );
+    expect(revised.snapshot.collected.campaignName).toBe("Summer Drop");
+    expect(revised.snapshot.collected.email).toBe("riya@example.com");
+    assertNoSideEffects(revised);
+  });
+
+  it("uses a navigation prompt key distinct from the original state prompt", () => {
+    const atReason = play([
+      { text: "Hi", messageId: "mid.0" },
+      {
+        text: "I'm a creator",
+        payload: PERSONA_CREATOR_PAYLOAD,
+        messageId: "mid.1",
+      },
+    ]);
+    expect(atReason.snapshot.lastPromptKey).toBe("awaiting_creator_reason");
+    const back = reduceInstagramConversation(
+      atReason.snapshot,
+      signal("Go back", {
+        messageId: "mid.nav.1",
+        payload: FLOW_BACK_PAYLOAD,
+      }),
+    );
+    expect(back.snapshot.state).toBe("awaiting_persona");
+    expect(back.snapshot.lastPromptKey).toBe("awaiting_persona:back:mid.nav.1");
+    expect(back.effects[0]).toMatchObject({
+      promptKey: "awaiting_persona:back:mid.nav.1",
+    });
+
+    const again = reduceInstagramConversation(
+      back.snapshot,
+      signal("I'm a creator", {
+        messageId: "mid.nav.2",
+        payload: PERSONA_CREATOR_PAYLOAD,
+      }),
+    );
+    const backAgain = reduceInstagramConversation(
+      again.snapshot,
+      signal("Go back", {
+        messageId: "mid.nav.3",
+        payload: FLOW_BACK_PAYLOAD,
+      }),
+    );
+    expect(backAgain.snapshot.lastPromptKey).toBe(
+      "awaiting_persona:back:mid.nav.3",
+    );
+    expect(backAgain.effects[0]).toMatchObject({
+      promptKey: "awaiting_persona:back:mid.nav.3",
+    });
+  });
+
+  it("does not show Go back on the initial persona menu or post-completion prompts", () => {
+    const menu = toPersona();
+    expect(menu.snapshot.state).toBe("awaiting_persona");
+    expect(hasGoBack(menu)).toBe(false);
+    expect(quickRepliesOf(menu).map((reply) => reply.payload)).toEqual([
+      PERSONA_CREATOR_PAYLOAD,
+      PERSONA_BRAND_PAYLOAD,
+      PERSONA_AGENCY_PAYLOAD,
+      PERSONA_OTHER_PAYLOAD,
+    ]);
+
+    const post = play([
+      { text: "Hi", messageId: "mid.0" },
+      {
+        text: "I'm a brand",
+        payload: PERSONA_BRAND_PAYLOAD,
+        messageId: "mid.1",
+      },
+      {
+        text: "Book a call",
+        payload: BRAND_BOOK_CALL_PAYLOAD,
+        messageId: "mid.2",
+      },
+    ]);
+    expect(post.snapshot.state).toBe("awaiting_post_completion");
+    expect(hasGoBack(post)).toBe(false);
+    expect(quickRepliesOf(post).map((reply) => reply.payload)).toEqual([
+      POST_MAIN_MENU_PAYLOAD,
+      POST_DONE_PAYLOAD,
+    ]);
+  });
+
+  it("keeps the active ticket linked when going back", () => {
+    const withTicket = play(
+      [
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.1",
+        },
+        {
+          text: "Existing campaign",
+          payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+          messageId: "mid.2",
+        },
+      ],
+      emptyConversationSnapshot({
+        state: "awaiting_persona",
+        ticketId: "ticket-1",
+        ticketCode: "CF-2026-00001",
+        ticketStatus: "open",
+        intakeSessionVersion: 1,
+      }),
+    );
+    expect(withTicket.snapshot.state).toBe("awaiting_creator_issue_category");
+    expect(withTicket.snapshot.ticketId).toBe("ticket-1");
+    const back = reduceInstagramConversation(
+      withTicket.snapshot,
+      signal("back", { messageId: "mid.back.ticket" }),
+    );
+    expect(back.snapshot.state).toBe("awaiting_creator_reason");
+    expect(back.snapshot.ticketId).toBe("ticket-1");
+    expect(back.snapshot.ticketCode).toBe("CF-2026-00001");
+    expect(back.attachTicketId).toBe("ticket-1");
+    assertNoSideEffects(back);
+  });
+
+  it("does not notify staff when back is typed on an open ticket conversation", () => {
+    const result = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        state: "ticket_open",
+        routingIntent: "creator_support",
+        ticketId: "ticket-1",
+        ticketStatus: "open",
+      }),
+      signal("back", { messageId: "mid.ticket.back" }),
+    );
+    expect(result.snapshot.state).toBe("ticket_open");
+    expect(result.snapshot.ticketId).toBe("ticket-1");
+    expect(result.effects).toEqual([]);
+    assertNoSideEffects(result);
+  });
+
+  it("leaves menu and restart behaviour unchanged", () => {
+    const atReason = play([
+      { text: "Hi", messageId: "mid.0" },
+      {
+        text: "I'm a creator",
+        payload: PERSONA_CREATOR_PAYLOAD,
+        messageId: "mid.1",
+      },
+    ]);
+    const version = atReason.snapshot.intakeSessionVersion;
+    const menu = reduceInstagramConversation(
+      atReason.snapshot,
+      signal("menu", { messageId: "mid.menu.unchanged" }),
+    );
+    expect(menu.snapshot.state).toBe("awaiting_persona");
+    expect(menu.snapshot.intakeSessionVersion).toBe(version + 1);
+    expect(menu.snapshot.collected.igPersona).toBeNull();
+    expect(hasGoBack(menu)).toBe(false);
+
+    const restarted = reduceInstagramConversation(
+      atReason.snapshot,
+      signal("restart", { messageId: "mid.restart.unchanged" }),
+    );
+    expect(restarted.snapshot.state).toBe("awaiting_persona");
+    expect(restarted.snapshot.intakeSessionVersion).toBe(version + 1);
+  });
+
+  it("preserves original action button payloads and appends Go back", () => {
+    const confirmation = play([
+      { text: "Hi", messageId: "mid.0" },
+      {
+        text: "I'm a creator",
+        payload: PERSONA_CREATOR_PAYLOAD,
+        messageId: "mid.1",
+      },
+      {
+        text: "Existing campaign",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+        messageId: "mid.2",
+      },
+      {
+        text: "Campaign issue",
+        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+        messageId: "mid.3",
+      },
+      {
+        text: "Summer Drop, Acme, August 2026, riya@example.com",
+        messageId: "mid.4",
+      },
+      { text: "Payment never arrived", messageId: "mid.5" },
+    ]);
+    expect(quickRepliesOf(confirmation).map((reply) => reply.payload)).toEqual([
+      CREATOR_TICKET_CONFIRM_PAYLOAD,
+      CREATOR_TICKET_EDIT_PAYLOAD,
+      FLOW_CANCEL_PAYLOAD,
+      FLOW_BACK_PAYLOAD,
+    ]);
+    expect(quickRepliesOf(confirmation).map((reply) => reply.title)).toEqual([
+      "Yes, raise it",
+      "Edit details",
+      "Cancel",
+      FLOW_BACK_TITLE,
+    ]);
+  });
+});
+
 describe("WhatsApp routing copy adapter", () => {
   it("asks the WhatsApp routing question and prefills phone on Creator Support", () => {
     const first = reduceChannelConversation(
@@ -750,6 +1333,29 @@ describe("WhatsApp routing copy adapter", () => {
     );
     expect(support.effects.map((effect) => ("text" in effect ? effect.text : ""))).not.toContain(
       CREATOR_DETAILS_PROMPT_TEXT,
+    );
+  });
+
+  it("does not gain Instagram FLOW_BACK behaviour", () => {
+    const first = reduceChannelConversation(
+      emptyConversationSnapshot({ suggestedPhone: "+16315551181" }),
+      signal("Need help", { messageId: "wamid.first" }),
+      WHATSAPP_INTAKE_COPY,
+    );
+    const back = reduceChannelConversation(
+      first.snapshot,
+      signal("back", { messageId: "wamid.back" }),
+      WHATSAPP_INTAKE_COPY,
+    );
+    expect(back.snapshot.state).toBe("awaiting_route");
+    expect(back.effects.some((effect) => effect.type === "create_ticket")).toBe(
+      false,
+    );
+    const effect = back.effects.find((item) => item.type === "send_quick_replies");
+    expect(effect && "quickReplies" in effect ? effect.quickReplies : []).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ payload: FLOW_BACK_PAYLOAD }),
+      ]),
     );
   });
 });
