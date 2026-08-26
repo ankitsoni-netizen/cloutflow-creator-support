@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildWatiExternalEventId,
   extractWatiMessageRecords,
+  normalizeWatiEventType,
   normalizeWatiWebhookPayload,
   sanitizeWatiEventFragment,
 } from "@/lib/wati/normalize";
@@ -21,16 +23,17 @@ afterEach(() => {
 });
 
 describe("WATI normalize", () => {
-  it("maps a text messageReceived payload", () => {
+  it("maps a text messageReceived payload with provider=wati", () => {
     const result = normalizeWatiWebhookPayload(watiTextPayload(), {
       expectedChannelPhoneNumber: CHANNEL,
     });
     expect(result.events).toHaveLength(1);
+    expect(WATI_WHATSAPP_PROVIDER).toBe("wati");
     expect(result.events[0]).toMatchObject({
       channel: "whatsapp",
-      provider: WATI_WHATSAPP_PROVIDER,
+      provider: "wati",
       externalMessageId: WAMID,
-      externalEventId: WAMID,
+      externalEventId: `messageReceived:${WAMID}`,
       externalContactId: WA_ID,
       externalConversationId: "68c8d56157578adb12ada249",
       senderAddress: WA_ID,
@@ -43,6 +46,7 @@ describe("WATI normalize", () => {
     expect(fragment).not.toContain("cdn.example");
     expect(fragment).not.toContain("secret");
     expect(fragment).not.toContain("avatar");
+    expect(fragment).not.toContain("wati_whatsapp");
   });
 
   it("normalizes list and button replies", () => {
@@ -58,6 +62,7 @@ describe("WATI normalize", () => {
       messageType: "interactive",
       quickReplyPayload: "route_creator_support",
       messageBody: "Creator Support",
+      externalEventId: "messageReceived:wamid.list.1",
     });
 
     const button = normalizeWatiWebhookPayload(
@@ -141,6 +146,34 @@ describe("WATI normalize", () => {
     );
     expect(result.events[0]?.externalConversationId).toBe(WA_ID);
     expect(result.events[0]?.externalMessageId).toBe("wati-internal-1");
+    expect(result.events[0]?.externalEventId).toBe(
+      "messageReceived:wati-internal-1",
+    );
+  });
+
+  it("safely ignores callbacks missing both whatsappMessageId and callback id", () => {
+    const result = normalizeWatiWebhookPayload(
+      watiTextPayload({
+        whatsappMessageId: null,
+        id: null,
+      }),
+    );
+    expect(result.events).toHaveLength(0);
+    expect(result.ignored.some((item) => item.reason === "missing_message_id")).toBe(
+      true,
+    );
+
+    const status = normalizeWatiWebhookPayload({
+      eventType: "sentMessageDELIVERED_v2",
+      statusString: "Delivered",
+      whatsappMessageId: null,
+      id: null,
+      channelPhoneNumber: CHANNEL,
+    });
+    expect(status.statuses).toHaveLength(0);
+    expect(status.ignored.some((item) => item.reason === "missing_status_id")).toBe(
+      true,
+    );
   });
 
   it("unwraps wrapper and array forms", () => {
@@ -155,7 +188,53 @@ describe("WATI normalize", () => {
     expect(array).toHaveLength(1);
   });
 
-  it("maps delivery callbacks to statuses", () => {
+  it("gives sent/delivered/read distinct externalEventIds for the same WAMID", () => {
+    const wamid = "wamid.shared.1";
+    const sent = normalizeWatiWebhookPayload({
+      eventType: "sessionMessageSent_v2",
+      statusString: "SENT",
+      whatsappMessageId: wamid,
+      id: "evt-sent",
+      channelPhoneNumber: CHANNEL,
+      owner: true,
+    });
+    const delivered = normalizeWatiWebhookPayload({
+      eventType: "sentMessageDELIVERED_v2",
+      statusString: "Delivered",
+      whatsappMessageId: wamid,
+      id: "evt-delivered",
+      channelPhoneNumber: CHANNEL,
+    });
+    const read = normalizeWatiWebhookPayload({
+      eventType: "sentMessageREAD_v2",
+      statusString: "Read",
+      whatsappMessageId: wamid,
+      id: "evt-read",
+      channelPhoneNumber: CHANNEL,
+    });
+
+    expect(sent.statuses[0]?.externalEventId).toBe(
+      `sessionMessageSent_v2:${wamid}`,
+    );
+    expect(delivered.statuses[0]?.externalEventId).toBe(
+      `sentMessageDELIVERED_v2:${wamid}`,
+    );
+    expect(read.statuses[0]?.externalEventId).toBe(
+      `sentMessageREAD_v2:${wamid}`,
+    );
+    expect(sent.statuses[0]?.metaMessageId).toBe(wamid);
+    expect(delivered.statuses[0]?.metaMessageId).toBe(wamid);
+    expect(read.statuses[0]?.metaMessageId).toBe(wamid);
+
+    const ids = [
+      sent.statuses[0]?.externalEventId,
+      delivered.statuses[0]?.externalEventId,
+      read.statuses[0]?.externalEventId,
+    ];
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it("maps delivery callbacks to statuses with provider=wati", () => {
     const result = normalizeWatiWebhookPayload({
       eventType: "sentMessageDELIVERED_v2",
       statusString: "Delivered",
@@ -167,12 +246,40 @@ describe("WATI normalize", () => {
     });
     expect(result.statuses).toHaveLength(1);
     expect(result.statuses[0]).toMatchObject({
-      provider: WATI_WHATSAPP_PROVIDER,
+      provider: "wati",
       metaMessageId: "wamid.out.1",
+      externalEventId: "sentMessageDELIVERED_v2:wamid.out.1",
       localMessageId: "wa:crm:comment-1",
       watiEventId: "wati-event-1",
       status: "delivered",
     });
+  });
+
+  it("normalizes event types through a strict allowlist", () => {
+    expect(normalizeWatiEventType("message")).toBe("messageReceived");
+    expect(normalizeWatiEventType("sessionMessageSent_v2")).toBe(
+      "sessionMessageSent_v2",
+    );
+    expect(normalizeWatiEventType("sentMessageDELIVERED_v2")).toBe(
+      "sentMessageDELIVERED_v2",
+    );
+    expect(normalizeWatiEventType("sentMessageREAD_v2")).toBe(
+      "sentMessageREAD_v2",
+    );
+    expect(normalizeWatiEventType("sessionMessageFailed_v2")).toBe(
+      "sessionMessageFailed_v2",
+    );
+    expect(normalizeWatiEventType("unknownThing")).toBeNull();
+    expect(normalizeWatiEventType(null, { fallbackInbound: true })).toBe(
+      "messageReceived",
+    );
+    expect(
+      buildWatiExternalEventId("messageReceived", WAMID, null),
+    ).toBe(`messageReceived:${WAMID}`);
+    expect(
+      buildWatiExternalEventId("messageReceived", null, "wati-cb-1"),
+    ).toBe("messageReceived:wati-cb-1");
+    expect(buildWatiExternalEventId("messageReceived", null, null)).toBeNull();
   });
 
   it("sanitizes fragments without personal media URLs", () => {
@@ -180,5 +287,6 @@ describe("WATI normalize", () => {
     expect(fragment).not.toHaveProperty("sourceUrl");
     expect(fragment).not.toHaveProperty("avatarUrl");
     expect(fragment).not.toHaveProperty("text");
+    expect(fragment.provider).toBe("wati");
   });
 });

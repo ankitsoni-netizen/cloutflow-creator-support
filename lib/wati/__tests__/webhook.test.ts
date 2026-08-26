@@ -5,6 +5,8 @@ import { handleWatiWebhookPost } from "@/lib/wati/webhook";
 import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
 import { watiTextPayload } from "@/lib/wati/__tests__/fixtures";
 import * as whatsappIngest from "@/lib/meta/whatsapp-ingest";
+import { META_INSTAGRAM_PROVIDER, META_WHATSAPP_PROVIDER } from "@/lib/meta/constants";
+import { webhookProviderForChannel } from "@/lib/meta/types";
 
 const SECRET = "wati-webhook-secret-test";
 const CHANNEL = "17435002445";
@@ -56,7 +58,7 @@ describe("WATI webhook route", () => {
     expect(response.status).toBe(401);
   });
 
-  it("accepts a correct token and text payload with provider=wati_whatsapp", async () => {
+  it("accepts a correct token and inserts provider=wati", async () => {
     const inbound = vi
       .spyOn(whatsappIngest, "ingestWhatsAppInboundMessage")
       .mockResolvedValue({ outcome: "stored" });
@@ -66,14 +68,18 @@ describe("WATI webhook route", () => {
     });
     expect(response.status).toBe(200);
     expect(inbound).toHaveBeenCalledTimes(1);
+    expect(WATI_WHATSAPP_PROVIDER).toBe("wati");
     expect(inbound.mock.calls[0]?.[0]).toMatchObject({
-      provider: WATI_WHATSAPP_PROVIDER,
+      provider: "wati",
       channel: "whatsapp",
       messageBody: "hello",
+      externalEventId: expect.stringMatching(/^messageReceived:/),
     });
+    expect(inbound.mock.calls[0]?.[0].provider).not.toBe("wati_whatsapp");
     const storage = inbound.mock.calls[0]?.[2]?.webhookPayload;
     expect(JSON.stringify(storage)).not.toContain("cdn.example");
     expect(JSON.stringify(storage)).not.toContain("avatar");
+    expect(JSON.stringify(storage)).not.toContain("wati_whatsapp");
   });
 
   it("returns 400 for invalid JSON", async () => {
@@ -108,7 +114,6 @@ describe("WATI webhook route", () => {
     );
     expect(response.status).toBe(200);
     expect(inbound).not.toHaveBeenCalled();
-    // Owner session sent may be treated as a delivery status callback.
     expect(status.mock.calls.length + inbound.mock.calls.length).toBeGreaterThanOrEqual(0);
   });
 
@@ -124,7 +129,7 @@ describe("WATI webhook route", () => {
     expect(inbound).not.toHaveBeenCalled();
   });
 
-  it("does not re-ingest when webhook ingest reports duplicate WAMID", async () => {
+  it("deduplicates the same messageReceived retry", async () => {
     const inbound = vi
       .spyOn(whatsappIngest, "ingestWhatsAppInboundMessage")
       .mockResolvedValueOnce({ outcome: "stored" })
@@ -140,5 +145,20 @@ describe("WATI webhook route", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(inbound).toHaveBeenCalledTimes(2);
+    expect(inbound.mock.calls[0]?.[0].externalEventId).toBe(
+      inbound.mock.calls[1]?.[0].externalEventId,
+    );
+    expect(inbound.mock.calls[0]?.[0].externalEventId).toMatch(
+      /^messageReceived:/,
+    );
+  });
+
+  it("keeps Meta Instagram and Meta WhatsApp provider values unchanged", () => {
+    expect(META_WHATSAPP_PROVIDER).toBe("meta_whatsapp");
+    expect(META_INSTAGRAM_PROVIDER).toBe("meta_instagram");
+    expect(webhookProviderForChannel("whatsapp")).toBe("meta_whatsapp");
+    expect(webhookProviderForChannel("instagram")).toBe("meta_instagram");
+    expect(WATI_WHATSAPP_PROVIDER).toBe("wati");
+    expect(WATI_WHATSAPP_PROVIDER).not.toBe("wati_whatsapp");
   });
 });

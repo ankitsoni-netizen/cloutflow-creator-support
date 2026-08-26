@@ -3,6 +3,7 @@ import "server-only";
 import {
   WATI_WEBHOOK_EVENT_RECEIVED,
   WATI_WEBHOOK_MAX_BODY_BYTES,
+  WATI_WHATSAPP_PROVIDER,
 } from "@/lib/wati/constants";
 import {
   getWatiChannelPhoneNumber,
@@ -108,7 +109,7 @@ function storagePayloadFor(
   if (fallback && typeof fallback === "object" && !Array.isArray(fallback)) {
     return sanitizeWatiWebhookStoragePayload(fallback as Record<string, unknown>);
   }
-  return { provider: "wati_whatsapp", sanitized: true };
+  return { provider: WATI_WHATSAPP_PROVIDER, sanitized: true };
 }
 
 export async function handleWatiWebhookPost(

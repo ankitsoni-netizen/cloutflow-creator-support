@@ -1045,7 +1045,7 @@ describe("ingestWhatsAppInboundMessage routing", () => {
       {
         channel: "whatsapp",
         provider: WATI_WHATSAPP_PROVIDER,
-        externalEventId: "status:wamid.wati.out:delivered",
+        externalEventId: "sentMessageDELIVERED_v2:wamid.wati.out",
         metaMessageId: "wamid.wati.out",
         status: "delivered",
         timestamp: "2020-10-18T22:13:27.000Z",
@@ -1060,6 +1060,88 @@ describe("ingestWhatsAppInboundMessage routing", () => {
     expect(result.outcome).toBe("stored");
     expect(store.messages[0]?.deliveryStatus).toBe("delivered");
     expect(store.messages[0]?.externalMessageId).toBe("wamid.wati.out");
+  });
+
+  it("updates the same outbound row across sent/delivered/read with distinct event ids", async () => {
+    const { WATI_WHATSAPP_PROVIDER } = await import("@/lib/wati/constants");
+    const store = createMemoryInstagramStore();
+    store.messages.push({
+      id: "out-lifecycle",
+      conversationId: "convo-1",
+      direction: "outbound",
+      externalMessageId: "wamid.lifecycle",
+      deliveryStatus: "pending",
+      messageBody: "Hello",
+    });
+    const wamid = "wamid.lifecycle";
+    const stages = [
+      {
+        externalEventId: `sessionMessageSent_v2:${wamid}`,
+        status: "sent" as const,
+      },
+      {
+        externalEventId: `sentMessageDELIVERED_v2:${wamid}`,
+        status: "delivered" as const,
+      },
+      {
+        externalEventId: `sentMessageREAD_v2:${wamid}`,
+        status: "read" as const,
+      },
+    ];
+    for (const stage of stages) {
+      const result = await ingestWhatsAppStatus(
+        {
+          channel: "whatsapp",
+          provider: WATI_WHATSAPP_PROVIDER,
+          externalEventId: stage.externalEventId,
+          metaMessageId: wamid,
+          status: stage.status,
+          timestamp: "2020-10-18T22:13:27.000Z",
+          phoneNumberId: null,
+          errorCode: null,
+        },
+        store,
+        context,
+      );
+      expect(result.outcome).toBe("stored");
+      expect(store.messages[0]?.deliveryStatus).toBe(stage.status);
+      expect(store.messages[0]?.externalMessageId).toBe(wamid);
+    }
+    expect(new Set(stages.map((stage) => stage.externalEventId)).size).toBe(3);
+    expect(store.events).toHaveLength(3);
+    expect(store.events.every((event) => event.provider === "wati")).toBe(true);
+  });
+
+  it("does not process a duplicate delivered callback twice", async () => {
+    const { WATI_WHATSAPP_PROVIDER } = await import("@/lib/wati/constants");
+    const store = createMemoryInstagramStore();
+    store.messages.push({
+      id: "out-dup",
+      conversationId: "convo-1",
+      direction: "outbound",
+      externalMessageId: "wamid.dup",
+      deliveryStatus: "sent",
+      messageBody: "Hello",
+    });
+    const status = {
+      channel: "whatsapp" as const,
+      provider: WATI_WHATSAPP_PROVIDER,
+      externalEventId: "sentMessageDELIVERED_v2:wamid.dup",
+      metaMessageId: "wamid.dup",
+      status: "delivered" as const,
+      timestamp: "2020-10-18T22:13:27.000Z",
+      phoneNumberId: null,
+      errorCode: null,
+    };
+    const first = await ingestWhatsAppStatus(status, store, context);
+    const second = await ingestWhatsAppStatus(status, store, context);
+    expect(first.outcome).toBe("stored");
+    expect(second.outcome).toBe("duplicate");
+    expect(store.events).toHaveLength(1);
+    expect(store.events[0]?.provider).toBe("wati");
+    expect(store.events[0]?.externalEventId).toBe(
+      "sentMessageDELIVERED_v2:wamid.dup",
+    );
   });
 
   it("keeps legacy localMessageId correlation for older WATI rows", async () => {
@@ -1078,7 +1160,7 @@ describe("ingestWhatsAppInboundMessage routing", () => {
       {
         channel: "whatsapp",
         provider: WATI_WHATSAPP_PROVIDER,
-        externalEventId: "status:wamid.late:sent",
+        externalEventId: "sessionMessageSent_v2:wamid.late",
         metaMessageId: "wamid.late",
         status: "sent",
         timestamp: "2020-10-18T22:13:27.000Z",
@@ -1093,6 +1175,43 @@ describe("ingestWhatsAppInboundMessage routing", () => {
     expect(result.outcome).toBe("stored");
     expect(store.messages[0]?.deliveryStatus).toBe("sent");
     expect(store.messages[0]?.externalMessageId).toBe("wamid.late");
+  });
+
+  it("covers webhook_event_insert_failed regression by using provider=wati", async () => {
+    const { WATI_WHATSAPP_PROVIDER } = await import("@/lib/wati/constants");
+    expect(WATI_WHATSAPP_PROVIDER).toBe("wati");
+    expect(WATI_WHATSAPP_PROVIDER).not.toBe("wati_whatsapp");
+    // DB check allows: wati, meta, meta_whatsapp, meta_instagram, website, brevo
+    const allowed = new Set([
+      "wati",
+      "meta",
+      "meta_whatsapp",
+      "meta_instagram",
+      "website",
+      "brevo",
+    ]);
+    expect(allowed.has(WATI_WHATSAPP_PROVIDER)).toBe(true);
+    expect(allowed.has("wati_whatsapp")).toBe(false);
+
+    const store = createMemoryInstagramStore();
+    const result = await ingestWhatsAppStatus(
+      {
+        channel: "whatsapp",
+        provider: WATI_WHATSAPP_PROVIDER,
+        externalEventId: "sentMessageDELIVERED_v2:wamid.constraint",
+        metaMessageId: "wamid.constraint",
+        status: "delivered",
+        timestamp: "2020-10-18T22:13:27.000Z",
+        phoneNumberId: null,
+        errorCode: null,
+      },
+      store,
+      context,
+    );
+    // Unknown outbound still completes the webhook event (no insert failure).
+    expect(result.outcome).toBe("duplicate");
+    expect(store.events[0]?.provider).toBe("wati");
+    expect(store.events[0]?.processingStatus).toBe("completed");
   });
 
   it("applies a WhatsApp status webhook through the verified payload processor", async () => {

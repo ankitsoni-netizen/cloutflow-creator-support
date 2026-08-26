@@ -318,5 +318,6 @@ describe("persistNormalizedInboundMessage", () => {
     expect(webhookProviderForChannel("whatsapp")).toBe(META_WHATSAPP_PROVIDER);
     expect(webhookProviderForChannel("instagram")).toBe("meta_instagram");
     expect(webhookProviderForChannel("whatsapp")).not.toBe("wati");
+    expect(META_WHATSAPP_PROVIDER).toBe("meta_whatsapp");
   });
 });

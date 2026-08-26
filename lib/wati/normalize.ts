@@ -1,4 +1,7 @@
-import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
+import {
+  WATI_WHATSAPP_PROVIDER,
+  type WatiNormalizedEventType,
+} from "@/lib/wati/constants";
 import type {
   NormalizedMetaInboundText,
   NormalizedWhatsAppStatus,
@@ -21,6 +24,78 @@ export function normalizeWaId(value: unknown): string | null {
   const digits = raw.replace(/\D/g, "");
   if (!/^\d{6,20}$/.test(digits)) return null;
   return digits;
+}
+
+/**
+ * Strict allowlist mapping from raw WATI eventType → canonical external_event_id prefix.
+ * Unknown types return null (callback is ignored).
+ */
+const WATI_EVENT_TYPE_ALLOWLIST: Record<string, WatiNormalizedEventType> = {
+  message: "messageReceived",
+  message_bsuid: "messageReceived",
+  messagereceived: "messageReceived",
+  message_received: "messageReceived",
+  messageReceived: "messageReceived",
+  sessionmessagesent_v2: "sessionMessageSent_v2",
+  sessionmessagesent: "sessionMessageSent_v2",
+  sessionMessageSent_v2: "sessionMessageSent_v2",
+  templatemessagesent_v2: "templateMessageSent_v2",
+  templatemessagesent: "templateMessageSent_v2",
+  templateMessageSent_v2: "templateMessageSent_v2",
+  sentmessagedelivered_v2: "sentMessageDELIVERED_v2",
+  sentmessagedelivered: "sentMessageDELIVERED_v2",
+  sentMessageDELIVERED_v2: "sentMessageDELIVERED_v2",
+  sentMessageDELIVERED: "sentMessageDELIVERED_v2",
+  sentmessageread_v2: "sentMessageREAD_v2",
+  sentmessageread: "sentMessageREAD_v2",
+  sentMessageREAD_v2: "sentMessageREAD_v2",
+  sentMessageREAD: "sentMessageREAD_v2",
+  sessionmessagefailed_v2: "sessionMessageFailed_v2",
+  sessionmessagefailed: "sessionMessageFailed_v2",
+  sessionMessageFailed_v2: "sessionMessageFailed_v2",
+};
+
+const STATUS_EVENT_TYPES = new Set<WatiNormalizedEventType>([
+  "sessionMessageSent_v2",
+  "templateMessageSent_v2",
+  "sentMessageDELIVERED_v2",
+  "sentMessageREAD_v2",
+  "sessionMessageFailed_v2",
+]);
+
+/**
+ * Normalize a raw WATI eventType through the strict allowlist.
+ * For inbound message payloads without eventType, defaults to messageReceived
+ * only when `fallbackInbound` is true.
+ */
+export function normalizeWatiEventType(
+  raw: string | null | undefined,
+  options: { fallbackInbound?: boolean } = {},
+): WatiNormalizedEventType | null {
+  if (raw && raw.trim()) {
+    const trimmed = raw.trim();
+    const direct = WATI_EVENT_TYPE_ALLOWLIST[trimmed];
+    if (direct) return direct;
+    const lower = WATI_EVENT_TYPE_ALLOWLIST[trimmed.toLowerCase()];
+    if (lower) return lower;
+    return null;
+  }
+  if (options.fallbackInbound) return "messageReceived";
+  return null;
+}
+
+/**
+ * Deterministic webhook_events.external_event_id:
+ * `{normalizedEventType}:{whatsappMessageId|watiCallbackId}`
+ */
+export function buildWatiExternalEventId(
+  eventType: WatiNormalizedEventType,
+  whatsappMessageId: string | null,
+  watiCallbackId: string | null,
+): string | null {
+  const idPart = whatsappMessageId ?? watiCallbackId;
+  if (!idPart) return null;
+  return `${eventType}:${idPart}`;
 }
 
 function parseWatiTimestamp(value: unknown, created?: unknown): string {
@@ -120,13 +195,8 @@ function looksLikeWatiMessageRecord(value: unknown): value is Record<string, unk
   if (asNonEmptyString(value.whatsappMessageId) || asNonEmptyString(value.waId)) {
     return true;
   }
-  const eventType = asNonEmptyString(value.eventType)?.toLowerCase() ?? "";
-  if (
-    eventType === "message" ||
-    eventType === "message_bsuid" ||
-    eventType.includes("messagereceived") ||
-    eventType.includes("message_received")
-  ) {
+  const normalized = normalizeWatiEventType(asNonEmptyString(value.eventType));
+  if (normalized === "messageReceived" || (normalized && STATUS_EVENT_TYPES.has(normalized))) {
     return true;
   }
   return (
@@ -179,47 +249,45 @@ export type WatiNormalizeResult = {
   rejected: Array<{ reason: string }>;
 };
 
+function statusFromNormalizedEventType(
+  eventType: WatiNormalizedEventType,
+): NormalizedWhatsAppStatus["status"] | null {
+  switch (eventType) {
+    case "sessionMessageSent_v2":
+    case "templateMessageSent_v2":
+      return "sent";
+    case "sentMessageDELIVERED_v2":
+      return "delivered";
+    case "sentMessageREAD_v2":
+      return "read";
+    case "sessionMessageFailed_v2":
+      return "failed";
+    default:
+      return null;
+  }
+}
+
 function mapStatusString(
   statusString: string | null,
-  eventType: string | null,
+  eventType: WatiNormalizedEventType | null,
 ): NormalizedWhatsAppStatus["status"] | null {
+  if (eventType) {
+    const fromType = statusFromNormalizedEventType(eventType);
+    if (fromType) return fromType;
+  }
   const status = (statusString ?? "").toLowerCase();
-  const event = (eventType ?? "").toLowerCase();
-
-  if (
-    status === "failed" ||
-    status === "deleted" ||
-    event.includes("failed") ||
-    event.includes("deleted")
-  ) {
-    if (status === "deleted" || event.includes("deleted")) return "deleted";
-    return "failed";
+  if (status === "failed" || status === "deleted") {
+    return status === "deleted" ? "deleted" : "failed";
   }
-  if (status === "read" || event.includes("read")) return "read";
-  if (status === "delivered" || event.includes("delivered")) return "delivered";
-  if (
-    status === "sent" ||
-    event.includes("sent") ||
-    event.includes("sessionmessagesent") ||
-    event.includes("templatemessagesent")
-  ) {
-    return "sent";
-  }
+  if (status === "read") return "read";
+  if (status === "delivered") return "delivered";
+  if (status === "sent") return "sent";
   return null;
 }
 
 function isDeliveryCallback(record: Record<string, unknown>): boolean {
-  const eventType = asNonEmptyString(record.eventType)?.toLowerCase() ?? "";
-  if (
-    eventType.includes("delivered") ||
-    eventType.includes("read") ||
-    eventType.includes("failed") ||
-    eventType.includes("sessionmessagesent") ||
-    eventType.includes("templatemessagesent") ||
-    eventType.includes("sentmessage")
-  ) {
-    return true;
-  }
+  const normalized = normalizeWatiEventType(asNonEmptyString(record.eventType));
+  if (normalized && STATUS_EVENT_TYPES.has(normalized)) return true;
   if (record.owner === true && asNonEmptyString(record.statusString)) {
     return true;
   }
@@ -228,28 +296,14 @@ function isDeliveryCallback(record: Record<string, unknown>): boolean {
 
 function isInboundMessageCandidate(record: Record<string, unknown>): boolean {
   if (record.owner === true) return false;
-  if (isDeliveryCallback(record) && !asNonEmptyString(record.text) && !interactiveReply(record).payload) {
-    // Pure status callbacks without inbound content.
-    if (
-      (asNonEmptyString(record.eventType)?.toLowerCase() ?? "").includes("sent") ||
-      (asNonEmptyString(record.eventType)?.toLowerCase() ?? "").includes("delivered") ||
-      (asNonEmptyString(record.eventType)?.toLowerCase() ?? "").includes("read")
-    ) {
-      return false;
-    }
-  }
-  const eventType = asNonEmptyString(record.eventType)?.toLowerCase() ?? "";
-  if (
-    eventType.includes("sessionmessagesent") ||
-    eventType.includes("templatemessagesent") ||
-    eventType.includes("delivered") ||
-    eventType.includes("read") ||
-    eventType === "sentmessagedelivered_v2" ||
-    eventType === "sentmessageread" ||
-    eventType === "sentmessageread_v2"
-  ) {
-    return false;
-  }
+  const hasEventType = Boolean(asNonEmptyString(record.eventType));
+  const normalized = normalizeWatiEventType(asNonEmptyString(record.eventType), {
+    fallbackInbound: !hasEventType,
+  });
+  if (normalized && STATUS_EVENT_TYPES.has(normalized)) return false;
+  if (normalized === "messageReceived") return looksLikeWatiMessageRecord(record);
+  // Unknown event type — do not treat as inbound.
+  if (hasEventType) return false;
   return looksLikeWatiMessageRecord(record);
 }
 
@@ -277,17 +331,35 @@ function normalizeInboundRecord(
     return { ok: false, reason: "wrong_channel", rejected: true };
   }
 
+  const eventType = normalizeWatiEventType(asNonEmptyString(record.eventType), {
+    fallbackInbound: true,
+  });
+  if (!eventType || eventType !== "messageReceived") {
+    return { ok: false, reason: "unknown_event_type" };
+  }
+
   const waId = normalizeWaId(record.waId);
   if (!waId) {
     return { ok: false, reason: "missing_wa_id" };
   }
 
   const whatsappMessageId = asNonEmptyString(record.whatsappMessageId);
-  const watiId = asNonEmptyString(record.id);
-  const externalMessageId = whatsappMessageId ?? watiId;
-  if (!externalMessageId) {
+  const watiCallbackId = asNonEmptyString(record.id);
+  if (!whatsappMessageId && !watiCallbackId) {
     return { ok: false, reason: "missing_message_id" };
   }
+
+  const externalEventId = buildWatiExternalEventId(
+    eventType,
+    whatsappMessageId,
+    watiCallbackId,
+  );
+  if (!externalEventId) {
+    return { ok: false, reason: "missing_message_id" };
+  }
+
+  // channel_messages.external_message_id prefers WhatsApp message id.
+  const externalMessageId = whatsappMessageId ?? watiCallbackId!;
 
   const conversationId =
     asNonEmptyString(record.conversationId) ?? waId;
@@ -331,7 +403,7 @@ function normalizeInboundRecord(
     event: {
       channel: "whatsapp",
       provider: WATI_WHATSAPP_PROVIDER,
-      externalEventId: externalMessageId,
+      externalEventId,
       externalMessageId,
       externalConversationId: conversationId,
       externalContactId: waId,
@@ -365,8 +437,12 @@ function normalizeStatusRecord(
     return { ok: false, reason: "wrong_channel", rejected: true };
   }
 
+  const eventType = normalizeWatiEventType(asNonEmptyString(record.eventType));
+  if (!eventType || !STATUS_EVENT_TYPES.has(eventType)) {
+    return { ok: false, reason: eventType ? "not_status_event" : "unknown_event_type" };
+  }
+
   const statusString = asNonEmptyString(record.statusString);
-  const eventType = asNonEmptyString(record.eventType);
   const mapped = mapStatusString(statusString, eventType);
   if (!mapped) {
     return { ok: false, reason: "unknown_status" };
@@ -374,14 +450,22 @@ function normalizeStatusRecord(
 
   const whatsappMessageId = asNonEmptyString(record.whatsappMessageId);
   const localMessageId = asNonEmptyString(record.localMessageId);
-  const watiEventId = asNonEmptyString(record.id);
-  // Primary correlation is WhatsApp message id; localMessageId is legacy-only.
-  const correlationId = whatsappMessageId ?? localMessageId ?? watiEventId;
-  if (!correlationId) {
+  const watiCallbackId = asNonEmptyString(record.id);
+  if (!whatsappMessageId && !watiCallbackId) {
     return { ok: false, reason: "missing_status_id" };
   }
 
-  const externalEventId = `status:${correlationId}:${mapped}:${eventType ?? statusString ?? "status"}`;
+  const externalEventId = buildWatiExternalEventId(
+    eventType,
+    whatsappMessageId,
+    watiCallbackId,
+  );
+  if (!externalEventId) {
+    return { ok: false, reason: "missing_status_id" };
+  }
+
+  // Outbound correlation uses WhatsApp message id when present.
+  const metaMessageId = whatsappMessageId ?? watiCallbackId!;
 
   let errorCode: string | null = null;
   if (mapped === "failed" || mapped === "deleted") {
@@ -398,13 +482,13 @@ function normalizeStatusRecord(
       channel: "whatsapp",
       provider: WATI_WHATSAPP_PROVIDER,
       externalEventId,
-      metaMessageId: whatsappMessageId ?? correlationId,
+      metaMessageId,
       status: mapped,
       timestamp: parseWatiTimestamp(record.timestamp, record.created),
       phoneNumberId: channelPhone ? normalizeWaId(channelPhone) : null,
       errorCode,
       localMessageId: localMessageId ?? null,
-      watiEventId: watiEventId ?? null,
+      watiEventId: watiCallbackId ?? null,
     },
   };
 }
@@ -423,7 +507,6 @@ export function normalizeWatiWebhookPayload(
   const ignored: Array<{ reason: string }> = [];
   const rejected: Array<{ reason: string }> = [];
 
-  // Also scan top-level delivery-only records that may not look like inbound messages.
   const candidates: Record<string, unknown>[] = [...records];
   if (isRecord(payload) && !records.includes(payload) && isDeliveryCallback(payload)) {
     candidates.push(payload);
@@ -454,7 +537,6 @@ export function normalizeWatiWebhookPayload(
     }
 
     if (record.owner === true) {
-      // Owner outbound: treat as delivery/status if possible, else ignore for chatbot.
       const status = normalizeStatusRecord(record, options);
       if (status.ok) {
         statuses.push(status.status);
