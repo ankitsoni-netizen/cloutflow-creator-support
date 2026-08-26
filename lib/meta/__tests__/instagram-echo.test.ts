@@ -72,6 +72,9 @@ function store(overrides: Partial<InstagramIngestStore> = {}): InstagramIngestSt
       messages.push({ id: "echo-1", ...input });
       return { outcome: "inserted" as const };
     },
+    async findPendingTimeoutOutbound() {
+      return null;
+    },
     ...overrides,
   } as InstagramIngestStore;
 }
@@ -104,7 +107,7 @@ describe("ingestInstagramEcho", () => {
     });
     expect(result.outcome).toBe("duplicate");
     expect(inserted).toHaveLength(0);
-    expect(marked[0]).toMatchObject({ deliveryStatus: "delivered" });
+    expect(marked[0]).toMatchObject({ deliveryStatus: "sent" });
   });
 
   it("stores an unmatched echo as outbound transcript without routing", async () => {

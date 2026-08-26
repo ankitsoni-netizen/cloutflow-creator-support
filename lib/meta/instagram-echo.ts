@@ -49,9 +49,10 @@ export async function ingestInstagramEcho(
     if (existing) {
       if (existing.deliveryStatus === "pending") {
         await store.markOutboundMessage(existing.id, {
-          deliveryStatus: "delivered",
+          deliveryStatus: "sent",
           externalMessageId: echo.externalMessageId,
           deliveryErrorCode: null,
+          nextAttemptAt: null,
         });
       }
       await store.markWebhookEvent(claim.id, "completed");
@@ -72,6 +73,29 @@ export async function ingestInstagramEcho(
     }
 
     if (!conversation) {
+      await store.markWebhookEvent(claim.id, "completed");
+      return { outcome: "stored" };
+    }
+
+    const pendingTimeout = await store.findPendingTimeoutOutbound({
+      conversationId: conversation.id,
+      messageBody: echo.messageBody,
+    });
+    if (pendingTimeout && "errorCode" in pendingTimeout) {
+      await store.markWebhookEvent(
+        claim.id,
+        WEBHOOK_STATUS_FAILED,
+        pendingTimeout.errorCode,
+      );
+      return { outcome: "failed", errorCode: pendingTimeout.errorCode };
+    }
+    if (pendingTimeout) {
+      await store.markOutboundMessage(pendingTimeout.id, {
+        deliveryStatus: "sent",
+        externalMessageId: echo.externalMessageId,
+        deliveryErrorCode: null,
+        nextAttemptAt: null,
+      });
       await store.markWebhookEvent(claim.id, "completed");
       return { outcome: "stored" };
     }

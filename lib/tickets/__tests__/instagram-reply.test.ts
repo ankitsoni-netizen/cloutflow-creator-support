@@ -216,6 +216,7 @@ describe("CRM Instagram replies", () => {
       errorCode: "http_5xx",
       retryable: true,
       messagingWindowExpired: false,
+      deliveryUnknown: false,
       httpStatus: 500,
     });
     const marked: Array<Record<string, unknown>> = [];

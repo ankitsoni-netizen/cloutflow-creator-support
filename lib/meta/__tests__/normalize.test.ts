@@ -215,6 +215,39 @@ describe("normalizeMetaWebhookPayload", () => {
     });
   });
 
+  it.each([
+    ["image", { attachments: [{ type: "image", payload: { url: "https://lookaside.fbsbx.com/x?access_token=secret" } }] }],
+    ["video", { attachments: [{ type: "video", payload: { url: "https://cdn.example/video?access_token=secret" } }] }],
+    ["audio", { attachments: [{ type: "audio" }] }],
+    ["sticker", { sticker_id: "123" }],
+    ["share", { attachments: [{ type: "share" }] }],
+    ["attachment", { attachments: [{ type: "file" }] }],
+  ] as const)(
+    "stores a sanitized Instagram %s placeholder without media URLs or tokens",
+    (kind, extra) => {
+      const payload = instagramTextPayload();
+      const message = payload.entry[0].messaging[0].message as Record<string, unknown>;
+      delete message.text;
+      Object.assign(message, extra);
+      const events = normalizeMetaWebhookPayload(payload);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.messageType).toBe("unsupported");
+      expect(events[0]?.unsupportedKind).toBe(kind);
+      expect(events[0]?.messageBody).toBe(`[${kind}]`);
+      expect(JSON.stringify(events[0]?.eventFragment)).not.toContain("access_token");
+      expect(JSON.stringify(events[0]?.eventFragment)).not.toContain("lookaside");
+      expect(JSON.stringify(events[0]?.eventFragment)).not.toContain("http");
+    },
+  );
+
+  it("ignores Instagram reactions instead of advancing intake", () => {
+    const payload = instagramTextPayload();
+    const item = payload.entry[0].messaging[0] as Record<string, unknown>;
+    item.reaction = { emoji: "❤️", action: "react", mid: "mid.instagram.abc" };
+    delete item.message;
+    expect(normalizeMetaWebhookPayload(payload)).toEqual([]);
+  });
+
   it("does not invent Instagram IDs when mid or sender is missing", () => {
     expect(
       normalizeMetaWebhookPayload(instagramTextPayload({ mid: "" })),

@@ -2,14 +2,21 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { applyInstagramEffects } from "@/lib/meta/instagram-effects";
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
+import * as afterResponse from "@/lib/meta/after-response";
+import {
+  startInstagramAttendingIndicators,
+} from "@/lib/meta/instagram-sender-actions";
 import { emptyConversationSnapshot } from "@/lib/meta/conversation-machine";
 import {
+  activeTicketAttachText,
   creatorTicketRaisedText,
   withPostCompletionQuestion,
+  personaWelcomeText,
 } from "@/lib/meta/instagram-persona-copy";
 import type { DbTicket } from "@/lib/tickets/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
 import * as instagramMail from "@/lib/email/instagram-ticket-mail";
+import { instagramMemoryOutbox } from "@/lib/meta/__tests__/instagram-memory-outbox";
 
 function dbTicket(overrides: Partial<DbTicket> = {}): DbTicket {
   return {
@@ -93,6 +100,16 @@ function memoryStore(): InstagramIngestStore & {
       };
     },
     async insertInstagramTicket(row: Record<string, unknown>) {
+      const existing = tickets.find((ticket) =>
+        ["open", "in_progress", "waiting"].includes(String(ticket.status)),
+      );
+      if (existing) {
+        return {
+          outcome: "duplicate" as const,
+          id: existing.id as string,
+          ticketCode: String(existing.ticketCode ?? existing.ticket_code ?? ""),
+        };
+      }
       const id = nextId();
       const ticketCode = `CF-2026-${String(tickets.length + 1).padStart(5, "0")}`;
       tickets.push({
@@ -184,22 +201,31 @@ function memoryStore(): InstagramIngestStore & {
       messages.push({
         id,
         ...input,
+        direction: "outbound",
         deliveryStatus: "pending",
+        deliveryAttemptCount: 0,
       });
       return { outcome: "claimed" as const, id };
     },
     async markOutboundMessage(id: string, patch: Record<string, unknown>) {
       const row = messages.find((message) => message.id === id);
       if (!row) return;
+      row.outboundClaimed = false;
       Object.assign(row, patch);
     },
+    ...instagramMemoryOutbox(messages),
     async claimEmailDelivery(input: Record<string, unknown>) {
       const duplicate = emails.find((row) => row.idempotencyKey === input.idempotencyKey);
       if (duplicate) {
+        const status = String(duplicate.deliveryStatus ?? "pending");
+        if (status === "failed" || status === "skipped") {
+          duplicate.deliveryStatus = "pending";
+          return { outcome: "claimed" as const, id: duplicate.id as string };
+        }
         return {
           outcome: "duplicate" as const,
           id: duplicate.id as string,
-          deliveryStatus: String(duplicate.deliveryStatus ?? "pending"),
+          deliveryStatus: status,
         };
       }
       const id = nextId();
@@ -376,5 +402,78 @@ describe("applyInstagramEffects ticket creation", () => {
     });
     expect(store.tickets).toHaveLength(1);
     expect(store.tickets[0]?.id).toBe("ticket-existing");
+    expect(instagramSend.sendInstagramQuickReplies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: withPostCompletionQuestion(activeTicketAttachText("CF-2026-00001")),
+      }),
+    );
+    expect(instagramMail.sendInstagramTicketConfirmationEmail).not.toHaveBeenCalled();
+  });
+
+  it("finishes typing once from the after() owner even when drain setup throws", async () => {
+    const actions: string[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      if (body.sender_action) actions.push(String(body.sender_action));
+      return new Response("{}", { status: 200 });
+    });
+    const afterTasks: Array<() => Promise<void>> = [];
+    vi.spyOn(afterResponse, "scheduleAfterResponse").mockImplementation(async (task) => {
+      afterTasks.push(task);
+    });
+    const store = memoryStore();
+    store.claimInstagramOutboundSend = async () => {
+      throw new Error("claim rpc failed");
+    };
+    const attending = startInstagramAttendingIndicators({
+      recipientId: "12334",
+      config: {
+        accessToken: "token",
+        accountId: "17841400008460000",
+        graphVersion: "v23.0",
+      },
+      deps: { fetchImpl },
+    });
+    await applyInstagramEffects({
+      effects: [
+        {
+          type: "send_quick_replies",
+          text: personaWelcomeText(null),
+          promptKey: "awaiting_persona",
+          quickReplies: [
+            {
+              content_type: "text",
+              title: "I'm a creator",
+              payload: "PERSONA_CREATOR",
+            },
+          ],
+        },
+      ],
+      snapshotTicketId: null,
+      collected: collected(),
+      inboundMessageId: "mid.first",
+      inboundText: "hello",
+      intakeSessionVersion: 1,
+      snapshotToPersist: emptyConversationSnapshot({
+        state: "awaiting_persona",
+        intakeSessionVersion: 1,
+      }),
+      lastMessageAt: "2026-08-25T10:00:00.000Z",
+      attending,
+      event: {
+        externalContactId: "12334",
+        externalConversationId: "12334",
+      },
+      deps: {
+        store,
+        recipientId: "12334",
+        conversationId: "convo-1",
+        outboundSenderAddress: "17841400008460000",
+        sendDeps: { fetchImpl },
+      },
+    });
+    expect(afterTasks.length).toBeGreaterThan(0);
+    await Promise.all(afterTasks.map((task) => task()));
+    expect(actions.filter((action) => action === "typing_off")).toHaveLength(1);
   });
 });

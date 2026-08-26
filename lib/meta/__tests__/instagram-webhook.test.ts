@@ -269,6 +269,20 @@ describe("instagram webhook POST", () => {
     ingestSpy.mockRestore();
   });
 
+  it("does not send typing indicators for ignored Meta events", async () => {
+    const sender = vi.spyOn(
+      await import("@/lib/meta/instagram-sender-actions"),
+      "sendInstagramSenderAction",
+    );
+    const unknown = await handleInstagramWebhookPost(
+      signedPost({ object: "page", entry: [] }),
+      { env: testEnv(), instagramStore: stubStore() },
+    );
+    expect(unknown.status).toBe(200);
+    expect(sender).not.toHaveBeenCalled();
+    sender.mockRestore();
+  });
+
   it("returns 200 for echo Instagram messages without chatbot ingest", async () => {
     const ingestSpy = vi.spyOn(
       await import("@/lib/meta/instagram-ingest"),

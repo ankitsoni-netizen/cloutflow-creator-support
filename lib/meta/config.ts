@@ -15,6 +15,9 @@ import "server-only";
  * - META_IG_ACCOUNT_ID (falls back to META_INSTAGRAM_ACCOUNT_ID)
  * - META_WHATSAPP_ACCESS_TOKEN / META_WHATSAPP_PHONE_NUMBER_ID (WhatsApp Cloud API send)
  *
+ * Independent Instagram outbox drain (server-only, never NEXT_PUBLIC_*):
+ * - INSTAGRAM_OUTBOX_DRAIN_SECRET
+ *
  * Readers are lazy: CRM pages can load before Meta is configured.
  */
 

@@ -226,24 +226,72 @@ function normalizeWhatsAppStatuses(value: unknown): NormalizedWhatsAppStatus[] {
   return events;
 }
 
+const INSTAGRAM_ATTACHMENT_KIND: Record<string, string> = {
+  image: "image",
+  video: "video",
+  audio: "audio",
+  sticker: "sticker",
+  share: "share",
+  story_mention: "share",
+  ig_reel: "video",
+  file: "attachment",
+  template: "attachment",
+  location: "attachment",
+  fallback: "attachment",
+};
+
+function instagramAttachmentKind(message: Record<string, unknown>): string | null {
+  if (message.is_unsupported === true) return "unsupported";
+  if (message.sticker != null || asNonEmptyString(message.sticker_id)) {
+    return "sticker";
+  }
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  for (const attachment of attachments) {
+    if (!isRecord(attachment)) continue;
+    const type = asNonEmptyString(attachment.type)?.toLowerCase();
+    if (type && INSTAGRAM_ATTACHMENT_KIND[type]) {
+      return INSTAGRAM_ATTACHMENT_KIND[type];
+    }
+    return "attachment";
+  }
+  if (isRecord(message.audio) || isRecord(message.voice)) return "audio";
+  if (isRecord(message.video)) return "video";
+  if (isRecord(message.image)) return "image";
+  if (isRecord(message.share)) return "share";
+  return null;
+}
+
+function sanitizeInstagramFragment(
+  hasId: boolean,
+  kind: string,
+): Record<string, unknown> {
+  return {
+    messaging_product: "instagram",
+    type: kind,
+    hasId,
+    hasAttachments: kind !== "text" && kind !== "interactive",
+  };
+}
+
 function normalizeInstagramMessagingItem(
   item: unknown,
 ): NormalizedMetaInboundText | null {
   if (!isRecord(item)) return null;
+  if (isRecord(item.reaction)) return null;
 
   const message = isRecord(item.message) ? item.message : null;
   if (!message) return null;
   if (message.is_echo === true) return null;
   if (message.is_self === true) return null;
   if (message.is_deleted === true) return null;
-  if (message.is_unsupported === true) return null;
 
   const quickReply = isRecord(message.quick_reply) ? message.quick_reply : null;
   const quickReplyPayload = quickReply
     ? asNonEmptyString(quickReply.payload)
     : null;
   const messageBody = asNonEmptyString(message.text);
-  if (!messageBody && !quickReplyPayload) return null;
+  const attachmentKind = instagramAttachmentKind(message);
+  if (!messageBody && !quickReplyPayload && !attachmentKind) return null;
 
   const sender = isRecord(item.sender) ? item.sender : null;
   const externalContactId = sender ? asNonEmptyString(sender.id) : null;
@@ -253,6 +301,9 @@ function normalizeInstagramMessagingItem(
   const recipient = isRecord(item.recipient) ? item.recipient : null;
   const recipientAccountId = recipient ? asNonEmptyString(recipient.id) : null;
   const senderName = sender ? asNonEmptyString(sender.name) : null;
+  const unsupportedKind =
+    !messageBody && !quickReplyPayload && attachmentKind ? attachmentKind : null;
+  const kind = unsupportedKind ?? (quickReplyPayload ? "interactive" : "text");
 
   return {
     channel: "instagram",
@@ -264,13 +315,14 @@ function normalizeInstagramMessagingItem(
     displayName: senderName,
     senderName,
     senderAddress: externalContactId,
-    messageType: "text",
-    messageBody: messageBody ?? quickReplyPayload ?? "",
+    messageType: unsupportedKind ? "unsupported" : "text",
+    messageBody: messageBody ?? quickReplyPayload ?? `[${unsupportedKind}]`,
     timestamp: parseUnixTimestamp(item.timestamp, "ms"),
     phoneNumberId: null,
     recipientAccountId,
     quickReplyPayload,
-    eventFragment: item,
+    unsupportedKind,
+    eventFragment: sanitizeInstagramFragment(true, kind),
   };
 }
 
@@ -307,7 +359,7 @@ function normalizeInstagramEchoItem(
     timestamp: parseUnixTimestamp(item.timestamp, "ms"),
     isEcho,
     isSelf,
-    eventFragment: item,
+    eventFragment: sanitizeInstagramFragment(true, "echo"),
   };
 }
 

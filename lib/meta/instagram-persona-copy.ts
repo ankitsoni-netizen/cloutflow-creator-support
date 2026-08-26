@@ -106,13 +106,19 @@ export const OTHER_INQUIRY_TEXT =
   "No problem. Tell me what you need in as much detail as you can, and I will make sure it reaches the right person.";
 
 export const OTHER_CONTACT_TEXT =
-  "Thanks. Send me your name, email, and a phone number where we can reach you. One message is fine.";
+  "Thanks. Send me your name, email, and a phone number with country code (for example +91 98765 43210). One message is fine.";
 
 export const AGENCY_SEND_CONFIRMED_TEXT =
-  "All set. I have shared your details with our procurement team. They will reach out over email if there is a fit. Thanks for connecting with Cloutflow.";
+  "All set. I’ve received your details and queued them for our procurement team. They’ll reach out over email if there’s a fit.";
 
 export const OTHER_SEND_CONFIRMED_TEXT =
-  "Thanks, I have passed your inquiry to our team. Someone will get back to you soon.";
+  "Thanks, I’ve received your inquiry and queued it for our team. Someone will get back to you soon.";
+
+export const INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT =
+  "I can currently process text messages only. Please type your answer here so I can continue helping you.";
+
+export const CREATOR_CAMPAIGN_AMBIGUOUS_TEXT =
+  "Please send the campaign name and brand on separate labelled lines, for example:\nCampaign: Summer Drop\nBrand: Acme";
 
 export const AGENCY_INTERNAL_EMAIL_SUBJECT = "New agency details received";
 export const OTHER_INTERNAL_EMAIL_SUBJECT = "New general inquiry received";
@@ -130,6 +136,10 @@ export function withPostCompletionQuestion(body: string): string {
 
 export function creatorTicketRaisedText(ticketCode: string): string {
   return `Done, your ticket is raised. Ticket ID: ${ticketCode}. Our support team has all the details and will follow up with you shortly. Please keep this ticket ID handy for reference.`;
+}
+
+export function activeTicketAttachText(ticketCode: string): string {
+  return `You already have an active support ticket: ${ticketCode}. I’ll add your new details to that ticket so our team has everything in one place.`;
 }
 
 export function creatorConfirmationText(input: {

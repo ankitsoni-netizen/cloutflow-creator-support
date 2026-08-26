@@ -12,11 +12,18 @@ import {
 } from "@/lib/meta/routing-copy";
 import {
   creatorTicketRaisedText,
+  activeTicketAttachText,
   withPostCompletionQuestion,
 } from "@/lib/meta/instagram-persona-copy";
 import { postCompletionQuickReplies } from "@/lib/meta/instagram-persona-machine";
 import { scheduleAfterResponse } from "@/lib/meta/after-response";
-import type { InstagramTimingSession } from "@/lib/meta/timing";
+import { drainInstagramOutbox } from "@/lib/meta/instagram-outbox";
+import { durableInstagramOutboundPayload } from "@/lib/meta/instagram-outbound-payload";
+import { timeInstagramMetric, type InstagramTimingSession } from "@/lib/meta/timing";
+import {
+  finishInstagramAttending,
+  type InstagramAttendingSession,
+} from "@/lib/meta/instagram-sender-actions";
 import {
   sendInstagramQuickReplies,
   sendInstagramText,
@@ -31,7 +38,6 @@ import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import type {
   InstagramIngestStore,
   OutboundReserveInput,
-  ReservedOutboundRow,
 } from "@/lib/meta/instagram-store";
 import {
   instagramOutboundAddressesAreAssigned,
@@ -74,6 +80,7 @@ export type ApplyEffectsOptions = {
   lastMessageAt?: string;
   displayName?: string | null;
   timing?: InstagramTimingSession;
+  attending?: InstagramAttendingSession | null;
 };
 
 export type ApplyEffectsResult = {
@@ -84,17 +91,17 @@ export type ApplyEffectsResult = {
   errorCode?: string;
 };
 
-function prefixFor(channel: ChannelEffectChannel): ChatbotIdempotencyPrefix {
-  return channel === "whatsapp" ? "wa" : "ig";
+function releaseInstagramAttending(
+  attending: InstagramAttendingSession | null | undefined,
+): Promise<void> {
+  if (!attending?.started) return Promise.resolve();
+  return scheduleAfterResponse(async () => {
+    await finishInstagramAttending(attending);
+  });
 }
 
-function shouldSendReserved(row: ReservedOutboundRow): boolean {
-  if (row.claimed) return true;
-  const status = row.deliveryStatus;
-  if (status === "sent" || status === "delivered" || status === "read") {
-    return false;
-  }
-  return status === "failed" || status === "pending";
+function prefixFor(channel: ChannelEffectChannel): ChatbotIdempotencyPrefix {
+  return channel === "whatsapp" ? "wa" : "ig";
 }
 
 async function sendChannelMessage(
@@ -237,6 +244,7 @@ function formatTranscript(
 async function createTicketIfNeeded(options: ApplyEffectsOptions): Promise<{
   ticketId: string | null;
   ticketCode: string | null;
+  created: boolean;
   retryableFailure: boolean;
 }> {
   const channel = options.channel ?? "instagram";
@@ -250,73 +258,43 @@ async function createTicketIfNeeded(options: ApplyEffectsOptions): Promise<{
       sourceChannel: channel,
     });
     if (existing && "errorCode" in existing) {
-      return { ticketId: null, ticketCode: null, retryableFailure: true };
+      return { ticketId: null, ticketCode: null, created: false, retryableFailure: true };
     }
     if (existing) {
       createdId = existing.id;
       createdCode = existing.ticketCode ?? null;
-    } else {
-      const created = await options.deps.store.insertInstagramTicket(
-        mapIntakeToInstagramTicketInsert({
-          collected: options.collected,
-          externalContactId: options.event.externalContactId,
-          externalConversationId: options.event.externalConversationId,
-          sourceChannel: channel,
-        }),
-      );
-      if (created.outcome === "failed") {
-        return { ticketId: null, ticketCode: null, retryableFailure: true };
-      }
-      createdId = created.id;
-      createdCode = created.ticketCode;
+      return {
+        ticketId: createdId,
+        ticketCode: createdCode,
+        created: false,
+        retryableFailure: false,
+      };
     }
-  } else {
-    const linked = await options.deps.store.getTicket(createdId);
-    if (linked && "errorCode" in linked) {
-      return { ticketId: createdId, ticketCode: null, retryableFailure: true };
+    const created = await options.deps.store.insertInstagramTicket(
+      mapIntakeToInstagramTicketInsert({
+        collected: options.collected,
+        externalContactId: options.event.externalContactId,
+        externalConversationId: options.event.externalConversationId,
+        sourceChannel: channel,
+      }),
+    );
+    if (created.outcome === "failed") {
+      return { ticketId: null, ticketCode: null, created: false, retryableFailure: true };
     }
-    createdCode = linked?.ticketCode ?? null;
+    return {
+      ticketId: created.id,
+      ticketCode: created.ticketCode,
+      created: created.outcome === "inserted",
+      retryableFailure: false,
+    };
   }
 
-  return { ticketId: createdId, ticketCode: createdCode, retryableFailure: false };
-}
-
-async function sendReservedEffects(input: {
-  effects: MachineSendEffect[];
-  reserved: ReservedOutboundRow[];
-  deps: InstagramEffectDeps;
-  channel: ChannelEffectChannel;
-  timing?: InstagramTimingSession;
-}): Promise<{ retryableFailure: boolean }> {
-  let sentAny = false;
-  for (let index = 0; index < input.effects.length; index += 1) {
-    const effect = input.effects[index];
-    const reserved = input.reserved[index];
-    if (!effect || !reserved) {
-      return { retryableFailure: true };
-    }
-    if (!shouldSendReserved(reserved)) continue;
-    const result = await sendChannelMessage(effect, input.deps, input.channel);
-    sentAny = true;
-    if (result.ok) {
-      await input.deps.store.markOutboundMessage(reserved.id, {
-        deliveryStatus: "sent",
-        externalMessageId: result.metaMessageId,
-        deliveryErrorCode: null,
-      });
-      continue;
-    }
-    await input.deps.store.markOutboundMessage(reserved.id, {
-      deliveryStatus: "failed",
-      deliveryErrorCode: result.errorCode,
-    });
-    if (sentAny) input.timing?.mark("meta_send_completed");
-    return { retryableFailure: true };
+  const linked = await options.deps.store.getTicket(createdId);
+  if (linked && "errorCode" in linked) {
+    return { ticketId: createdId, ticketCode: null, created: false, retryableFailure: true };
   }
-  if (sentAny || input.effects.length === 0) {
-    input.timing?.mark("meta_send_completed");
-  }
-  return { retryableFailure: false };
+  createdCode = linked?.ticketCode ?? null;
+  return { ticketId: createdId, ticketCode: createdCode, created: false, retryableFailure: false };
 }
 
 async function runInstagramTicketBackground(input: {
@@ -478,8 +456,13 @@ async function applyInstagramCriticalPath(
       continue;
     }
     if (effect.type === "create_ticket") {
-      const created = await createTicketIfNeeded(options);
+      const created = await timeInstagramMetric(
+        options.timing,
+        "instagram_ticket_create_ms",
+        () => createTicketIfNeeded(options),
+      );
       if (created.retryableFailure) {
+        await releaseInstagramAttending(options.attending);
         return {
           ticketId: created.ticketId,
           ticketCode: created.ticketCode,
@@ -489,33 +472,27 @@ async function applyInstagramCriticalPath(
       }
       ticketId = created.ticketId;
       ticketCode = created.ticketCode;
-      createdTicket = Boolean(created.ticketId);
+      createdTicket = created.created && Boolean(created.ticketId);
       if (snapshot && created.ticketId) {
         snapshot = {
           ...snapshot,
           ticketId: created.ticketId,
+          ticketCode: created.ticketCode,
           state: "awaiting_post_completion",
           lastPromptKey: "awaiting_post_completion",
         };
-      }
-      if (created.ticketId) {
-        await deps.store.markMessagesRoutingKind({
-          conversationId: deps.conversationId,
-          fromKind: "unclassified",
-          toKind: "support",
-        });
-        await deps.store.linkSupportMessagesToTicket({
-          conversationId: deps.conversationId,
-          ticketId: created.ticketId,
-        });
       }
       if (created.ticketCode) {
         sendEffects.push({
           type: "send_quick_replies",
           text: withPostCompletionQuestion(
-            creatorTicketRaisedText(created.ticketCode),
+            created.created
+              ? creatorTicketRaisedText(created.ticketCode)
+              : activeTicketAttachText(created.ticketCode),
           ),
-          promptKey: "awaiting_post_completion",
+          promptKey: created.created
+            ? "awaiting_post_completion"
+            : `awaiting_post_completion:reuse:${created.ticketCode}`,
           quickReplies: postCompletionQuickReplies(),
         });
       }
@@ -530,6 +507,7 @@ async function applyInstagramCriticalPath(
         recipientExternalId: deps.recipientId,
       })
     ) {
+      await releaseInstagramAttending(options.attending);
       return {
         ticketId,
         ticketCode,
@@ -538,30 +516,41 @@ async function applyInstagramCriticalPath(
         errorCode: "outbound_address_invalid",
       };
     }
-    const reserved = await deps.store.reserveOutboundAndSnapshot({
-      conversationId: deps.conversationId,
-      snapshot,
-      lastMessageAt,
-      displayName: options.displayName ?? null,
-      expectedLastProcessedExternalMessageId:
-        options.expectedLastProcessedExternalMessageId ?? null,
-      outbounds: sendEffects.map((effect) => ({
-        channel: "instagram" as const,
-        recipientExternalId: deps.recipientId,
-        senderAddress: deps.outboundSenderAddress ?? null,
-        messageBody: effect.text,
-        idempotencyKey: channelOutboundKey(
-          "ig",
-          deps.conversationId,
-          options.intakeSessionVersion,
-          effect.promptKey,
-        ),
-        purpose: effect.promptKey.split(":")[0] ?? "prompt",
-        ticketId,
-        routingKind: "support",
-      } satisfies OutboundReserveInput)),
-    });
+    const reserved = await timeInstagramMetric(
+      options.timing,
+      "instagram_reserve_ms",
+      () =>
+        deps.store.reserveOutboundAndSnapshot({
+          conversationId: deps.conversationId,
+          snapshot,
+          lastMessageAt,
+          displayName: options.displayName ?? null,
+          expectedLastProcessedExternalMessageId:
+            options.expectedLastProcessedExternalMessageId ?? null,
+          outbounds: sendEffects.map((effect) => ({
+            channel: "instagram" as const,
+            recipientExternalId: deps.recipientId,
+            senderAddress: deps.outboundSenderAddress ?? null,
+            messageBody: effect.text,
+            idempotencyKey: channelOutboundKey(
+              "ig",
+              deps.conversationId,
+              options.intakeSessionVersion,
+              effect.promptKey,
+            ),
+            purpose: effect.promptKey.split(":")[0] ?? "prompt",
+            ticketId,
+            routingKind: "support",
+            rawPayload: durableInstagramOutboundPayload({
+              text: effect.text,
+              quickReplies:
+                effect.type === "send_quick_replies" ? effect.quickReplies : undefined,
+            }),
+          } satisfies OutboundReserveInput)),
+        }),
+    );
     if (reserved.outcome === "failed") {
+      await releaseInstagramAttending(options.attending);
       return {
         ticketId,
         ticketCode,
@@ -571,42 +560,62 @@ async function applyInstagramCriticalPath(
       };
     }
     options.timing?.mark("outbound_reserved");
-    const sent = await sendReservedEffects({
-      effects: sendEffects,
-      reserved: reserved.outbounds,
-      deps,
-      channel: "instagram",
-      timing: options.timing,
-    });
-    if (sent.retryableFailure) {
-      return {
-        ticketId,
-        ticketCode,
-        retryableFailure: true,
-        snapshotPersisted: true,
-      };
+    const newlyReserved = reserved.outbounds.filter(
+      (row) =>
+        row.deliveryStatus !== "sent" &&
+        row.deliveryStatus !== "delivered" &&
+        row.deliveryStatus !== "read",
+    );
+    if (newlyReserved.length === 0) {
+      await releaseInstagramAttending(options.attending);
+    } else {
+      options.timing?.record("instagram_after_scheduled", 1);
+      await scheduleAfterResponse(async () => {
+        try {
+          await drainInstagramOutbox({
+            store: deps.store,
+            recipientId: deps.recipientId,
+            conversationId: deps.conversationId,
+            sendDeps: deps.sendDeps,
+            reserved: newlyReserved,
+            effects: sendEffects,
+            attending: options.attending,
+            typingMode: "off_only",
+            timing: options.timing,
+          });
+        } catch {
+          // Reserved pending/failed rows remain recoverable by the outbox.
+        } finally {
+          await finishInstagramAttending(options.attending);
+          options.timing?.mark("meta_send_completed");
+        }
+      });
     }
   } else {
     options.timing?.mark("outbound_reserved");
-    for (const effect of sendEffects) {
-      const sent = await dispatchSend(
-        effect,
-        deps,
-        ticketId,
-        options.intakeSessionVersion,
-        "instagram",
-      );
-      if (sent.retryableFailure) {
+    if (sendEffects.length === 0) {
+      await releaseInstagramAttending(options.attending);
+    } else {
+      options.timing?.record("instagram_after_scheduled", 1);
+      await scheduleAfterResponse(async () => {
+        try {
+          for (const effect of sendEffects) {
+            await dispatchSend(
+              effect,
+              deps,
+              ticketId,
+              options.intakeSessionVersion,
+              "instagram",
+            );
+          }
+        } catch {
+          // Unreserved sends are best-effort after HTTP 200.
+        } finally {
+          await finishInstagramAttending(options.attending);
+        }
         options.timing?.mark("meta_send_completed");
-        return {
-          ticketId,
-          ticketCode,
-          retryableFailure: true,
-          snapshotPersisted: false,
-        };
-      }
+      });
     }
-    options.timing?.mark("meta_send_completed");
   }
 
   await scheduleAfterResponse(async () => {
@@ -819,24 +828,23 @@ export async function retryFailedInstagramOutbounds(
   deps: InstagramEffectDeps,
   channel: ChannelEffectChannel = "instagram",
 ): Promise<{ retryableFailure: boolean }> {
-  const failed =
-    channel === "instagram"
-      ? await deps.store.listRetryableOutbounds(deps.conversationId)
-      : await deps.store.listFailedOutbounds(deps.conversationId);
+  if (channel === "instagram") {
+    await drainInstagramOutbox({
+      store: deps.store,
+      recipientId: deps.recipientId,
+      conversationId: deps.conversationId,
+      sendDeps: deps.sendDeps,
+    });
+    return { retryableFailure: false };
+  }
+  const failed = await deps.store.listFailedOutbounds(deps.conversationId);
   let retryableFailure = false;
   for (const row of failed) {
-    const result =
-      channel === "whatsapp"
-        ? await sendWhatsAppText({
-            recipientId: deps.recipientId,
-            text: row.messageBody,
-            deps: deps.sendDeps,
-          })
-        : await sendInstagramText({
-            recipientId: deps.recipientId,
-            text: row.messageBody,
-            deps: deps.sendDeps,
-          });
+    const result = await sendWhatsAppText({
+      recipientId: deps.recipientId,
+      text: row.messageBody,
+      deps: deps.sendDeps,
+    });
     if (result.ok) {
       await deps.store.markOutboundMessage(row.id, {
         deliveryStatus: "sent",

@@ -5,6 +5,7 @@ import {
   type InstagramPersonaCommand,
 } from "@/lib/meta/instagram-persona-commands";
 import {
+  activeTicketAttachText,
   AGENCY_DETAILS_TEXT,
   AGENCY_EDIT_PAYLOAD,
   AGENCY_EDIT_TITLE,
@@ -39,6 +40,7 @@ import {
   FLOW_CANCEL_PAYLOAD,
   FLOW_CANCEL_TITLE,
   INSTAGRAM_SAFE_MESSAGE_LENGTH,
+  INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
   OTHER_CONTACT_TEXT,
   OTHER_EDIT_PAYLOAD,
   OTHER_EDIT_TITLE,
@@ -334,7 +336,8 @@ export function startInstagramPersonaMenu(
       intakeSessionVersion: options.incrementSession
         ? snapshot.intakeSessionVersion + 1
         : snapshot.intakeSessionVersion,
-      ticketId: hasActiveTicket(snapshot) ? snapshot.ticketId : snapshot.ticketId,
+      ticketId: snapshot.ticketId,
+      ticketCode: snapshot.ticketCode,
     },
     personaWelcomeText(greetingName({ ...snapshot, collected })),
     "awaiting_persona",
@@ -740,6 +743,10 @@ function handleCreatorReason(
       CREATOR_APPLY_TEXT,
     );
   }
+  const issueIntro =
+    hasActiveTicket(snapshot) && snapshot.ticketCode
+      ? `${activeTicketAttachText(snapshot.ticketCode)}\n\n${CREATOR_ISSUE_CATEGORY_TEXT}`
+      : CREATOR_ISSUE_CATEGORY_TEXT;
   return sendQr(
     snapshot,
     signal,
@@ -750,7 +757,7 @@ function handleCreatorReason(
         igCreatorReason: "existing_campaign",
       },
     },
-    CREATOR_ISSUE_CATEGORY_TEXT,
+    issueIntro,
     "awaiting_creator_issue_category",
     creatorIssueCategoryQuickReplies(),
     false,
@@ -1218,6 +1225,18 @@ export function reduceInstagramPersonaConversation(
 ): MachineResult {
   if (snapshot.lastProcessedExternalMessageId === signal.messageId) {
     return alreadyProcessed(snapshot);
+  }
+
+  if (signal.unsupportedKind) {
+    return sendText(
+      snapshot,
+      signal,
+      {},
+      INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
+      snapshot.state || "unclassified",
+      true,
+      snapshot.routingIntent === "creator_support" ? "support" : "unclassified",
+    );
   }
 
   const global = isGlobalMenuOrRestart(signal.text, signal.quickReplyPayload);

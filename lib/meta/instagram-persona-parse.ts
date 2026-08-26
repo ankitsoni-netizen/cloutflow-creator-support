@@ -1,5 +1,8 @@
 import { isValidEmailAddress } from "@/lib/email/html";
 import {
+  CREATOR_CAMPAIGN_AMBIGUOUS_TEXT,
+} from "@/lib/meta/instagram-persona-copy";
+import {
   isFakePlaceholder,
   isUnknownOptionalAnswer,
   parseIntakePhone,
@@ -12,6 +15,7 @@ export type CreatorCampaignFields = {
   brandName: string | null;
   campaignMonth: string | null;
   contactEmail: string | null;
+  campaignBrandAmbiguous?: boolean;
 };
 
 export type AgencyDetailFields = {
@@ -57,6 +61,27 @@ function splitParts(text: string): string[] {
     .split(",")
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+}
+
+function looksLikeCommentary(part: string): boolean {
+  const trimmed = part.trim();
+  if (!trimmed) return false;
+  const words = trimmed.split(/\s+/);
+  if (words.length >= 6) return true;
+  return /^(hey|hi|hello|this|please|so|just)\b/i.test(trimmed);
+}
+
+export function parseInstagramContactPhone(value: string): {
+  display: string;
+  normalized: string;
+} | null {
+  const display = value.trim();
+  if (!display) return null;
+  const compact = display.replace(/[\s\-().]/g, "");
+  if (!compact.startsWith("+") && !display.includes("+")) {
+    return null;
+  }
+  return parseIntakePhone(display);
 }
 
 function requiredTextValue(value: string | null | undefined): string | null {
@@ -161,6 +186,18 @@ export function parseCreatorCampaignBundle(raw: string): CreatorCampaignFields {
         ),
     );
 
+    const commentaryOrExtra =
+      remaining.some((part) => looksLikeCommentary(part)) || remaining.length > 2;
+    if (commentaryOrExtra && (!campaignName || !brandName)) {
+      return {
+        campaignName: requiredTextValue(campaignName),
+        brandName: requiredTextValue(brandName),
+        campaignMonth,
+        contactEmail,
+        campaignBrandAmbiguous: true,
+      };
+    }
+
     if (!campaignName && remaining[0]) {
       campaignName = requiredTextValue(remaining[0]);
     }
@@ -192,12 +229,16 @@ export function mergeCreatorCampaignFields(
     brandName: parsed.brandName ?? current.brandName,
     campaignMonth: parsed.campaignMonth ?? current.campaignMonth,
     contactEmail: parsed.contactEmail ?? current.contactEmail,
+    campaignBrandAmbiguous: parsed.campaignBrandAmbiguous ?? false,
   };
 }
 
 export function missingCreatorCampaignPrompt(
   fields: CreatorCampaignFields,
 ): string | null {
+  if (fields.campaignBrandAmbiguous && (!fields.campaignName || !fields.brandName)) {
+    return CREATOR_CAMPAIGN_AMBIGUOUS_TEXT;
+  }
   const missing: string[] = [];
   if (!fields.campaignName) missing.push("the campaign name");
   if (!fields.brandName) missing.push("the brand name");
@@ -326,7 +367,7 @@ export function parseOtherContactBundle(raw: string): OtherContactFields {
     text,
     /^(phone|mobile|contact(?:\s*(?:number|no\.?)?)?|number)$/i,
   );
-  let phone = labelledPhone ? parseIntakePhone(labelledPhone) : null;
+  let phone = labelledPhone ? parseInstagramContactPhone(labelledPhone) : null;
 
   const labelPrefix =
     /^(name|contact(?:\s*name)?|your\s*name|e-?mail|mail|contact\s*email|phone|mobile|contact(?:\s*(?:number|no\.?)?)?|number)\s*[:\-]\s*/i;
@@ -344,7 +385,7 @@ export function parseOtherContactBundle(raw: string): OtherContactFields {
     }
     if (!phone) {
       for (const part of parts) {
-        const parsed = parseIntakePhone(part);
+        const parsed = parseInstagramContactPhone(part);
         if (parsed) {
           phone = parsed;
           break;
@@ -355,7 +396,7 @@ export function parseOtherContactBundle(raw: string): OtherContactFields {
       (part) =>
         requiredTextValue(part) &&
         !firstValidEmail(part) &&
-        !parseIntakePhone(part),
+        !parseInstagramContactPhone(part),
     );
     if (!contactName && remaining[0]) {
       contactName = requiredTextValue(remaining[0]);
@@ -387,7 +428,9 @@ export function missingOtherContactPrompt(fields: OtherContactFields): string | 
   const missing: string[] = [];
   if (!fields.contactName) missing.push("your name");
   if (!fields.contactEmail) missing.push("a valid email address");
-  if (!fields.contactPhoneNormalized) missing.push("a valid phone number");
+  if (!fields.contactPhoneNormalized) {
+    missing.push("a phone number with country code (for example +91 98765 43210)");
+  }
   return joinMissing(missing);
 }
 

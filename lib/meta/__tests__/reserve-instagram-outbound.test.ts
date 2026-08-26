@@ -387,6 +387,219 @@ describe("reserve Instagram outbound and snapshot", () => {
     )?.[0];
     expect(payload?.sender_address).toBe(ACCOUNT_ID);
     expect(payload?.recipient_external_id).toBe(CREATOR_IGSID);
+    expect(payload?.raw_payload).toBeNull();
+  });
+
+  it("passes sanitized quick replies on reserve and keeps them on recovery", () => {
+    const replies = [
+      { content_type: "text" as const, title: "I'm a creator", payload: "PERSONA_CREATOR" },
+      { content_type: "text" as const, title: "I'm a brand", payload: "PERSONA_BRAND" },
+    ];
+    const result = applyReserveInstagramOutboundAndSnapshot({
+      conversation: {
+        id: "convo-1",
+        lastProcessedExternalMessageId: null,
+      },
+      expectedLastProcessedExternalMessageId: null,
+      snapshot: snapshot(null, "mid.a"),
+      lastMessageAt: "2026-08-25T12:00:00.000Z",
+      displayName: null,
+      outbounds: [
+        outbound({
+          rawPayload: {
+            text: "How can I help?",
+            quick_replies: replies,
+            access_token: "IGQW-should-never-persist",
+            Authorization: "Bearer secret-token",
+          },
+        }),
+      ],
+      existingMessages: [],
+      nextId: () => "out-1",
+    });
+    expect(result.outcome).toBe("reserved");
+    if (result.outcome !== "reserved") return;
+    expect(result.insertedMessages[0]?.rawPayload).toEqual({
+      text: "How can I help?",
+      quick_replies: replies,
+    });
+    expect(JSON.stringify(result.insertedMessages[0]?.rawPayload)).not.toContain(
+      "IGQW",
+    );
+    expect(JSON.stringify(result.insertedMessages[0]?.rawPayload)).not.toContain(
+      "Authorization",
+    );
+    expect(JSON.stringify(result.insertedMessages[0]?.rawPayload)).not.toContain(
+      "Bearer",
+    );
+
+    const recovered = applyReserveInstagramOutboundAndSnapshot({
+      conversation: {
+        id: "convo-1",
+        lastProcessedExternalMessageId: "mid.a",
+      },
+      expectedLastProcessedExternalMessageId: "mid.a",
+      snapshot: snapshot("mid.a", "mid.a"),
+      lastMessageAt: "2026-08-25T12:00:01.000Z",
+      displayName: null,
+      outbounds: [
+        outbound({
+          rawPayload: {
+            text: "How can I help?",
+            quick_replies: replies,
+          },
+        }),
+      ],
+      existingMessages: result.insertedMessages,
+      nextId: () => "out-2",
+    });
+    expect(recovered.outcome).toBe("reserved");
+    if (recovered.outcome !== "reserved") return;
+    expect(recovered.outbounds[0]?.claimed).toBe(false);
+    expect(recovered.insertedMessages).toHaveLength(0);
+    expect(result.insertedMessages[0]?.rawPayload).toEqual({
+      text: "How can I help?",
+      quick_replies: replies,
+    });
+  });
+
+  it("rejects a duplicate idempotency key when quick replies differ", () => {
+    const existing = {
+      id: "out-1",
+      conversationId: "convo-1",
+      channel: "instagram",
+      direction: "outbound" as const,
+      senderName: "Cloutflow",
+      senderAddress: ACCOUNT_ID,
+      recipientExternalId: CREATOR_IGSID,
+      messageBody: "How can I help?",
+      purpose: "awaiting_persona",
+      ticketId: null,
+      idempotencyKey: "ig:convo-1:v0:awaiting_persona",
+      deliveryStatus: "pending",
+      routingKind: "support",
+      rawPayload: {
+        text: "How can I help?",
+        quick_replies: [
+          { content_type: "text", title: "I'm a creator", payload: "PERSONA_CREATOR" },
+        ],
+      },
+    };
+    const result = applyReserveInstagramOutboundAndSnapshot({
+      conversation: {
+        id: "convo-1",
+        lastProcessedExternalMessageId: null,
+      },
+      expectedLastProcessedExternalMessageId: null,
+      snapshot: snapshot(null, "mid.a"),
+      lastMessageAt: "2026-08-25T12:00:00.000Z",
+      displayName: null,
+      outbounds: [
+        outbound({
+          rawPayload: {
+            text: "How can I help?",
+            quick_replies: [
+              { content_type: "text", title: "I'm a brand", payload: "PERSONA_BRAND" },
+            ],
+          },
+        }),
+      ],
+      existingMessages: [existing],
+      nextId: () => "out-2",
+    });
+    expect(result).toEqual({
+      outcome: "failed",
+      errorCode: OUTBOUND_IDEMPOTENCY_CONFLICT,
+    });
+  });
+
+  it("treats a legacy plain-text row as compatible with a later payload", () => {
+    const existing = {
+      id: "out-1",
+      conversationId: "convo-1",
+      channel: "instagram",
+      direction: "outbound" as const,
+      senderName: "Cloutflow",
+      senderAddress: ACCOUNT_ID,
+      recipientExternalId: CREATOR_IGSID,
+      messageBody: "How can I help?",
+      purpose: "awaiting_persona",
+      ticketId: null,
+      idempotencyKey: "ig:convo-1:v0:awaiting_persona",
+      deliveryStatus: "pending",
+      routingKind: "support",
+      rawPayload: null,
+    };
+    const result = applyReserveInstagramOutboundAndSnapshot({
+      conversation: {
+        id: "convo-1",
+        lastProcessedExternalMessageId: null,
+      },
+      expectedLastProcessedExternalMessageId: null,
+      snapshot: snapshot(null, "mid.a"),
+      lastMessageAt: "2026-08-25T12:00:00.000Z",
+      displayName: null,
+      outbounds: [
+        outbound({
+          rawPayload: {
+            text: "How can I help?",
+            quick_replies: [
+              {
+                content_type: "text" as const,
+                title: "I'm a creator",
+                payload: "PERSONA_CREATOR",
+              },
+            ],
+          },
+        }),
+      ],
+      existingMessages: [existing],
+      nextId: () => "out-2",
+    });
+    expect(result.outcome).toBe("reserved");
+    if (result.outcome !== "reserved") return;
+    expect(result.outbounds[0]?.claimed).toBe(false);
+    expect(result.insertedMessages).toHaveLength(0);
+  });
+
+  it("rejects a duplicate idempotency key when sender_address differs", () => {
+    const existing = {
+      id: "out-1",
+      conversationId: "convo-1",
+      channel: "instagram",
+      direction: "outbound" as const,
+      senderName: "Cloutflow",
+      senderAddress: ACCOUNT_ID,
+      recipientExternalId: CREATOR_IGSID,
+      messageBody: "How can I help?",
+      purpose: "awaiting_persona",
+      ticketId: null,
+      idempotencyKey: "ig:convo-1:v0:awaiting_persona",
+      deliveryStatus: "pending",
+      routingKind: "support",
+      rawPayload: null,
+    };
+    const result = applyReserveInstagramOutboundAndSnapshot({
+      conversation: {
+        id: "convo-1",
+        lastProcessedExternalMessageId: null,
+      },
+      expectedLastProcessedExternalMessageId: null,
+      snapshot: snapshot(null, "mid.a"),
+      lastMessageAt: "2026-08-25T12:00:00.000Z",
+      displayName: null,
+      outbounds: [
+        outbound({
+          senderAddress: "99999999999999999",
+        }),
+      ],
+      existingMessages: [existing],
+      nextId: () => "out-2",
+    });
+    expect(result).toEqual({
+      outcome: "failed",
+      errorCode: OUTBOUND_IDEMPOTENCY_CONFLICT,
+    });
   });
 
   it("does not fall through to the js path on a sanitized conversation conflict", async () => {

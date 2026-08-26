@@ -6,10 +6,34 @@ import {
 } from "@/lib/meta/config";
 import type { InstagramQuickReply } from "@/lib/meta/conversation-machine";
 
+export const INSTAGRAM_TERMINAL_SEND_CODES = new Set([
+  "messaging_window_expired",
+  "instagram_send_not_configured",
+  "invalid_recipient",
+  "empty_message",
+  "graph_190",
+  "http_401",
+  "http_403",
+  "outbound_attempts_exhausted",
+]);
+
+export function isInstagramTerminalSendError(errorCode: string | null | undefined): boolean {
+  const code = errorCode?.trim() ?? "";
+  if (!code) return false;
+  if (INSTAGRAM_TERMINAL_SEND_CODES.has(code)) return true;
+  if (code.startsWith("graph_")) {
+    const numeric = Number(code.slice("graph_".length));
+    if (Number.isFinite(numeric) && numeric !== 1 && numeric !== 2 && numeric < 500) {
+      return numeric !== 4;
+    }
+  }
+  return false;
+}
+
 export const INSTAGRAM_GRAPH_BASE = "https://graph.instagram.com";
 export const INSTAGRAM_SEND_TIMEOUT_MS = 10_000;
 export const INSTAGRAM_SEND_MAX_RESPONSE_BYTES = 64 * 1024;
-export const INSTAGRAM_SEND_MAX_ATTEMPTS = 3;
+export const INSTAGRAM_SEND_MAX_ATTEMPTS = 1;
 
 const GRAPH_VERSION_PATTERN = /^v\d+(?:\.\d+)?$/;
 const NUMERIC_ID_PATTERN = /^\d+$/;
@@ -31,6 +55,7 @@ export type InstagramSendFailure = {
   errorCode: string;
   retryable: boolean;
   messagingWindowExpired: boolean;
+  deliveryUnknown: boolean;
   httpStatus: number | null;
 };
 
@@ -41,6 +66,7 @@ export type InstagramSendDeps = {
   fetchImpl?: typeof fetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  graphConfig?: InstagramSendConfig | null;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -62,6 +88,13 @@ export function getInstagramGraphSendConfig(
     accountId: send.accountId,
     graphVersion,
   };
+}
+
+export function resolveInstagramGraphSendConfig(
+  deps: InstagramSendDeps = {},
+): InstagramSendConfig | null {
+  if (deps.graphConfig !== undefined) return deps.graphConfig;
+  return getInstagramGraphSendConfig(deps.env ?? process.env);
 }
 
 export function instagramMessagesUrl(config: InstagramSendConfig): string {
@@ -92,7 +125,9 @@ function classifyGraphError(status: number, body: unknown): InstagramSendFailure
 
   let errorCode = "instagram_send_failed";
   if (messagingWindowExpired) errorCode = "messaging_window_expired";
-  else if (status === 429) errorCode = "http_429";
+  else if (status === 401 || status === 403 || code === 190) {
+    errorCode = status === 401 || status === 403 ? `http_${status}` : "graph_190";
+  } else if (status === 429) errorCode = "http_429";
   else if (status >= 500) errorCode = "http_5xx";
   else if (code !== null) errorCode = `graph_${code}`;
 
@@ -102,6 +137,7 @@ function classifyGraphError(status: number, body: unknown): InstagramSendFailure
     errorCode,
     retryable,
     messagingWindowExpired,
+    deliveryUnknown: false,
     httpStatus: status,
   };
 }
@@ -149,6 +185,7 @@ async function postInstagramMessage(
       errorCode: "invalid_recipient",
       retryable: false,
       messagingWindowExpired: false,
+      deliveryUnknown: false,
       httpStatus: null,
     };
   }
@@ -158,6 +195,7 @@ async function postInstagramMessage(
     errorCode: "instagram_send_failed",
     retryable: true,
     messagingWindowExpired: false,
+    deliveryUnknown: false,
     httpStatus: null,
   };
 
@@ -181,6 +219,7 @@ async function postInstagramMessage(
           errorCode: parsed.errorCode,
           retryable: response.status >= 500 || response.status === 429,
           messagingWindowExpired: false,
+          deliveryUnknown: false,
           httpStatus: response.status,
         };
       } else if (!response.ok) {
@@ -200,12 +239,13 @@ async function postInstagramMessage(
         error instanceof Error && error.name === "AbortError";
       lastFailure = {
         ok: false,
-        errorCode: aborted ? "send_timeout" : "network_error",
-        retryable: true,
+        errorCode: aborted ? "timeout_unknown" : "network_error",
+        retryable: !aborted,
         messagingWindowExpired: false,
+        deliveryUnknown: aborted,
         httpStatus: null,
       };
-      if (attempt === INSTAGRAM_SEND_MAX_ATTEMPTS) return lastFailure;
+      if (aborted || attempt === INSTAGRAM_SEND_MAX_ATTEMPTS) return lastFailure;
     } finally {
       clearTimeout(timer);
     }
@@ -221,14 +261,15 @@ export async function sendInstagramText(options: {
   deps?: InstagramSendDeps;
   config?: InstagramSendConfig | null;
 }): Promise<InstagramSendResult> {
-  const env = options.deps?.env ?? process.env;
-  const config = options.config ?? getInstagramGraphSendConfig(env);
+  const config =
+    options.config ?? resolveInstagramGraphSendConfig(options.deps ?? {});
   if (!config) {
     return {
       ok: false,
       errorCode: "instagram_send_not_configured",
       retryable: false,
       messagingWindowExpired: false,
+      deliveryUnknown: false,
       httpStatus: null,
     };
   }
@@ -239,6 +280,7 @@ export async function sendInstagramText(options: {
       errorCode: "empty_message",
       retryable: false,
       messagingWindowExpired: false,
+      deliveryUnknown: false,
       httpStatus: null,
     };
   }
@@ -259,14 +301,15 @@ export async function sendInstagramQuickReplies(options: {
   deps?: InstagramSendDeps;
   config?: InstagramSendConfig | null;
 }): Promise<InstagramSendResult> {
-  const env = options.deps?.env ?? process.env;
-  const config = options.config ?? getInstagramGraphSendConfig(env);
+  const config =
+    options.config ?? resolveInstagramGraphSendConfig(options.deps ?? {});
   if (!config) {
     return {
       ok: false,
       errorCode: "instagram_send_not_configured",
       retryable: false,
       messagingWindowExpired: false,
+      deliveryUnknown: false,
       httpStatus: null,
     };
   }
@@ -277,6 +320,7 @@ export async function sendInstagramQuickReplies(options: {
       errorCode: "empty_message",
       retryable: false,
       messagingWindowExpired: false,
+      deliveryUnknown: false,
       httpStatus: null,
     };
   }

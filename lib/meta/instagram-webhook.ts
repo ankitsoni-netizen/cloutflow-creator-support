@@ -29,6 +29,13 @@ export type InstagramWebhookDeps = MetaWebhookDeps & {
   instagramStore?: InstagramIngestStore;
 };
 
+function flushInstagramWebhookTiming(
+  timing: ReturnType<typeof createInstagramTimingSession>,
+) {
+  timing.record("instagram_webhook_total_ms", timing.elapsedMs());
+  timing.flush();
+}
+
 function textResponse(body: string, status: number): NextResponse {
   return new NextResponse(body, {
     status,
@@ -47,6 +54,13 @@ export async function handleInstagramWebhookPost(
   request: NextRequest,
   deps: InstagramWebhookDeps = {},
 ): Promise<NextResponse> {
+  /**
+   * Meta delivers Instagram webhooks at-least-once. Duplicates are minimized by
+   * claiming the webhook event id, unique inbound mids, last_processed_external_message_id,
+   * and outbound idempotency keys. Once inbound + reservation are durable this
+   * handler returns HTTP 200. Graph send retries belong to the Instagram outbox,
+   * not Meta's inbound retry loop.
+   */
   const env = deps.env ?? process.env;
   const verified = await readVerifiedMetaWebhookPost(
     request,
@@ -66,6 +80,7 @@ export async function handleInstagramWebhookPost(
   if (events.length === 0) {
     logMetaWebhookNormalizeDiagnostic(diagnoseMetaWebhookPayload(payload));
     if (echoes.length === 0) {
+      flushInstagramWebhookTiming(timing);
       return textResponse(META_WEBHOOK_EVENT_RECEIVED, 200);
     }
   }
@@ -75,6 +90,7 @@ export async function handleInstagramWebhookPost(
     store = deps.instagramStore ?? createAdminInstagramStore();
   } catch {
     logMetaWebhookError("admin_client_missing");
+    flushInstagramWebhookTiming(timing);
     return textResponse("Unable to process event", 500);
   }
 
@@ -87,7 +103,7 @@ export async function handleInstagramWebhookPost(
         event,
         store,
         { webhookPayload: payload },
-        { timing },
+        { timing, sendDeps: { env } },
       );
     } catch {
       result = { outcome: "failed" as const, errorCode: "unexpected_failure" };
@@ -123,8 +139,10 @@ export async function handleInstagramWebhookPost(
   }
 
   if (hadRetryableFailure) {
+    flushInstagramWebhookTiming(timing);
     return textResponse("Unable to process event", 500);
   }
 
+  flushInstagramWebhookTiming(timing);
   return textResponse(META_WEBHOOK_EVENT_RECEIVED, 200);
 }

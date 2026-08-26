@@ -1,15 +1,36 @@
 import "server-only";
 
 import {
-  getInstagramGraphSendConfig,
   INSTAGRAM_GRAPH_BASE,
+  resolveInstagramGraphSendConfig,
   type InstagramSendDeps,
 } from "@/lib/meta/instagram-send";
 
-export const INSTAGRAM_USERNAME_LOOKUP_TIMEOUT_MS = 800;
+export const INSTAGRAM_USERNAME_LOOKUP_TIMEOUT_MS = 400;
 
 const USERNAME_PATTERN = /^[A-Za-z0-9._]{1,64}$/;
 const NUMERIC_ID_PATTERN = /^\d+$/;
+
+export type TrackedUsernameLookup = {
+  settled: boolean;
+  value: string | null | undefined;
+  promise: Promise<string | null>;
+};
+
+export function trackUsernameLookup(
+  promise: Promise<string | null>,
+): TrackedUsernameLookup {
+  const tracked: TrackedUsernameLookup = {
+    settled: false,
+    value: undefined,
+    promise: Promise.resolve(promise).then((value) => {
+      tracked.settled = true;
+      tracked.value = value;
+      return value;
+    }),
+  };
+  return tracked;
+}
 
 /**
  * Best-effort Instagram username lookup. Short timeout, one attempt.
@@ -23,8 +44,7 @@ export async function lookupInstagramUsername(
   const id = igsid.trim();
   if (!id || !NUMERIC_ID_PATTERN.test(id)) return null;
 
-  const env = deps.env ?? process.env;
-  const config = getInstagramGraphSendConfig(env);
+  const config = resolveInstagramGraphSendConfig(deps);
   if (!config) return null;
 
   const fetchImpl = deps.fetchImpl ?? fetch;

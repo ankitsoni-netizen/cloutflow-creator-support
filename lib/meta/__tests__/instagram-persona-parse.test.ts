@@ -69,6 +69,27 @@ describe("instagram persona parsers", () => {
     });
   });
 
+  it("does not treat a bare 10-digit number as an Instagram phone", () => {
+    expect(parseOtherContactBundle("Asha, asha@example.com, 9876543210")).toEqual({
+      contactName: "Asha",
+      contactEmail: "asha@example.com",
+      contactPhoneDisplay: null,
+      contactPhoneNormalized: null,
+    });
+    expect(
+      parseOtherContactBundle("Asha, asha@example.com, +14155552671").contactPhoneNormalized,
+    ).toBe("+14155552671");
+  });
+
+  it("does not infer leading commentary as a campaign name", () => {
+    const parsed = parseCreatorCampaignBundle(
+      "Hey this is about the summer work, Acme, August 2026, riya@example.com",
+    );
+    expect(parsed.campaignBrandAmbiguous).toBe(true);
+    expect(parsed.campaignName).toBeNull();
+    expect(missingCreatorCampaignPrompt(parsed)).toContain("Campaign:");
+  });
+
   it("stores issue details as untrusted plain text", () => {
     expect(parseMeaningfulDetails("<b>Payment delayed</b>\nsecond line")).toBe(
       "Payment delayed\nsecond line",

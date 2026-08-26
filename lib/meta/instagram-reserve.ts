@@ -1,5 +1,9 @@
 import { getMetaInstagramAccountId } from "@/lib/meta/config";
 import type { ConversationSnapshot } from "@/lib/meta/conversation-machine";
+import {
+  durableInstagramOutboundPayload,
+  instagramOutboundPayloadsCompatible,
+} from "@/lib/meta/instagram-outbound-payload";
 
 export const CONVERSATION_STATE_CONFLICT = "conversation_state_conflict";
 export const OUTBOUND_IDEMPOTENCY_CONFLICT = "outbound_idempotency_conflict";
@@ -17,10 +21,12 @@ export type OutboundDuplicateCandidate = {
   conversationId: string | null;
   channel: string | null;
   recipientExternalId: string | null;
+  senderAddress?: string | null;
   purpose: string | null;
   messageBody: string | null;
   routingKind: string | null;
   ticketId: string | null;
+  rawPayload?: unknown;
 };
 
 export function isCompatibleInstagramOutboundDuplicate(
@@ -32,13 +38,15 @@ export function isCompatibleInstagramOutboundDuplicate(
     existing.channel === "instagram" &&
     candidate.channel === "instagram" &&
     isNotDistinctFrom(existing.recipientExternalId, candidate.recipientExternalId) &&
+    isNotDistinctFrom(existing.senderAddress, candidate.senderAddress) &&
     isNotDistinctFrom(existing.purpose, candidate.purpose) &&
     isNotDistinctFrom(existing.messageBody, candidate.messageBody) &&
     isNotDistinctFrom(
       existing.routingKind ?? "support",
       candidate.routingKind ?? "support",
     ) &&
-    isNotDistinctFrom(existing.ticketId, candidate.ticketId)
+    isNotDistinctFrom(existing.ticketId, candidate.ticketId) &&
+    instagramOutboundPayloadsCompatible(existing.rawPayload, candidate.rawPayload)
   );
 }
 
@@ -108,6 +116,7 @@ export type InMemoryReservedMessage = {
   idempotencyKey: string;
   deliveryStatus: string;
   routingKind: string | null;
+  rawPayload?: unknown;
 };
 
 export type InMemoryReserveConversation = {
@@ -134,6 +143,7 @@ export type ReserveOutboundInput = {
   purpose: string;
   ticketId?: string | null;
   routingKind?: string | null;
+  rawPayload?: unknown;
 };
 
 export type ReserveOutboundResult = {
@@ -188,6 +198,10 @@ export function applyReserveInstagramOutboundAndSnapshot(input: {
     ) {
       return { outcome: "failed", errorCode: OUTBOUND_ADDRESS_INVALID };
     }
+    const durablePayload = durableInstagramOutboundPayload({
+      text: outbound.messageBody,
+      rawPayload: outbound.rawPayload,
+    });
     const duplicate = messages.find(
       (row) => row.idempotencyKey === outbound.idempotencyKey,
     );
@@ -198,23 +212,32 @@ export function applyReserveInstagramOutboundAndSnapshot(input: {
             conversationId: duplicate.conversationId,
             channel: duplicate.channel,
             recipientExternalId: duplicate.recipientExternalId,
+            senderAddress: duplicate.senderAddress,
             purpose: duplicate.purpose,
             messageBody: duplicate.messageBody,
             routingKind: duplicate.routingKind,
             ticketId: duplicate.ticketId,
+            rawPayload: duplicate.rawPayload ?? null,
           },
           {
             conversationId: input.conversation.id,
             channel,
             recipientExternalId: outbound.recipientExternalId,
+            senderAddress: outbound.senderAddress?.trim()
+              ? outbound.senderAddress.trim()
+              : null,
             purpose: outbound.purpose,
             messageBody: outbound.messageBody,
             routingKind,
             ticketId,
+            rawPayload: durablePayload,
           },
         )
       ) {
         return { outcome: "failed", errorCode: OUTBOUND_IDEMPOTENCY_CONFLICT };
+      }
+      if (duplicate.rawPayload == null && durablePayload) {
+        duplicate.rawPayload = durablePayload;
       }
       reserved.push({
         id: duplicate.id,
@@ -239,6 +262,7 @@ export function applyReserveInstagramOutboundAndSnapshot(input: {
       idempotencyKey: outbound.idempotencyKey,
       deliveryStatus: "pending",
       routingKind,
+      rawPayload: durablePayload,
     };
     messages.push(row);
     insertedMessages.push(row);

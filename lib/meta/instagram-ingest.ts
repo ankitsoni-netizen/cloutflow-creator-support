@@ -1,18 +1,26 @@
 import "server-only";
 
 import { WEBHOOK_STATUS_FAILED } from "@/lib/meta/constants";
-import { isGlobalMenuOrRestart } from "@/lib/meta/instagram-persona-commands";
 import {
   emptyConversationSnapshot,
+  instagramEffectsProduceReply,
   reduceInstagramConversation,
 } from "@/lib/meta/conversation-machine";
 import { applyInstagramEffects, retryFailedInstagramOutbounds } from "@/lib/meta/instagram-effects";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
-  instagramPromptForState,
-  INSTAGRAM_PERSONA_STATES,
-} from "@/lib/meta/instagram-persona-machine";
-import { lookupInstagramUsername } from "@/lib/meta/instagram-username";
+  lookupInstagramUsername,
+  trackUsernameLookup,
+  type TrackedUsernameLookup,
+} from "@/lib/meta/instagram-username";
+import {
+  startInstagramAttendingIndicators,
+  type InstagramAttendingSession,
+} from "@/lib/meta/instagram-sender-actions";
+import {
+  resolveInstagramGraphSendConfig,
+  type InstagramSendDeps,
+} from "@/lib/meta/instagram-send";
 import {
   snapshotFromConversationRow,
   type InstagramConversationRow,
@@ -24,8 +32,6 @@ import {
 } from "@/lib/meta/instagram-reserve";
 import type { ConversationSnapshot } from "@/lib/meta/conversation-machine";
 import { sha256Hex } from "@/lib/meta/signature";
-import { chatbotOutboundIdempotencyKey } from "@/lib/meta/prompt-keys";
-import type { InstagramSendDeps } from "@/lib/meta/instagram-send";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import type { PersistContext, PersistResult } from "@/lib/meta/store";
 import type { DbTicket } from "@/lib/tickets/types";
@@ -90,13 +96,19 @@ async function ticketStatusFor(
   event: NormalizedMetaInboundText,
   conversationTicketId: string | null,
 ): Promise<
-  | { ticketId: string | null; status: string | null }
+  | { ticketId: string | null; status: string | null; ticketCode: string | null }
   | { errorCode: string }
 > {
   if (conversationTicketId) {
     const linked = await store.getTicket(conversationTicketId);
     if (linked && "errorCode" in linked) return { errorCode: linked.errorCode };
-    if (linked) return { ticketId: linked.id, status: linked.status };
+    if (linked) {
+      return {
+        ticketId: linked.id,
+        status: linked.status,
+        ticketCode: linked.ticketCode ?? null,
+      };
+    }
   }
 
   const found = await store.findActiveInstagramTicket({
@@ -105,9 +117,25 @@ async function ticketStatusFor(
   });
   if (found && "errorCode" in found) return { errorCode: found.errorCode };
   if (found && isActiveTicketStatus(found.status)) {
-    return { ticketId: found.id, status: found.status };
+    return {
+      ticketId: found.id,
+      status: found.status,
+      ticketCode: found.ticketCode ?? null,
+    };
   }
-  return { ticketId: conversationTicketId, status: found?.status ?? null };
+  return {
+    ticketId: conversationTicketId,
+    status: found?.status ?? null,
+    ticketCode: found?.ticketCode ?? null,
+  };
+}
+
+function withResolvedSendDeps(sendDeps?: InstagramSendDeps): InstagramSendDeps {
+  if (sendDeps?.graphConfig !== undefined) return sendDeps;
+  return {
+    ...sendDeps,
+    graphConfig: resolveInstagramGraphSendConfig(sendDeps ?? {}),
+  };
 }
 
 function instagramEffectArgs(
@@ -115,6 +143,7 @@ function instagramEffectArgs(
   store: InstagramIngestStore,
   conversationId: string,
   ingestDeps: InstagramIngestDeps,
+  sendDeps: InstagramSendDeps,
 ) {
   return {
     inboundMessageId: event.externalMessageId,
@@ -129,17 +158,75 @@ function instagramEffectArgs(
       conversationId,
       outboundSenderAddress: instagramOutboundSenderAddress({
         recipientAccountId: event.recipientAccountId,
-        env: ingestDeps.sendDeps?.env,
+        env: sendDeps.env,
       }),
-      sendDeps: ingestDeps.sendDeps,
+      sendDeps,
       loadTicket: ingestDeps.loadTicket,
     },
   };
 }
 
+function cachedConversationUsername(
+  row: InstagramConversationRow,
+  event: NormalizedMetaInboundText,
+): string | null {
+  const fromRow = row.displayName?.trim();
+  if (fromRow) return fromRow;
+  const fromEvent = event.displayName?.trim();
+  if (fromEvent) return fromEvent;
+  const collected = row.collectedData ?? {};
+  const fromCollected =
+    typeof collected.cachedUsername === "string"
+      ? collected.cachedUsername.trim()
+      : "";
+  return fromCollected || null;
+}
+
+function shouldLookupInstagramUsername(
+  row: InstagramConversationRow,
+  event: NormalizedMetaInboundText,
+): boolean {
+  if (cachedConversationUsername(row, event)) return false;
+  const collected = row.collectedData ?? {};
+  return collected.usernameLookupAttempted !== true;
+}
+
+function applySettledUsername(
+  snapshot: ConversationSnapshot,
+  lookup: TrackedUsernameLookup | null,
+): ConversationSnapshot {
+  if (!lookup) return snapshot;
+  snapshot.collected.usernameLookupAttempted = true;
+  if (lookup.settled && lookup.value) {
+    snapshot.collected.cachedUsername = lookup.value;
+    snapshot.suggestedSocialHandle = lookup.value;
+  }
+  return snapshot;
+}
+
+function cacheUsernameLater(
+  store: InstagramIngestStore,
+  conversationId: string,
+  lastMessageAt: string,
+  lookup: TrackedUsernameLookup | null,
+): void {
+  if (!lookup) return;
+  void lookup.promise.then((name) => {
+    if (!name) return;
+    void store.updateConversation(conversationId, {
+      lastMessageAt,
+      displayName: name,
+    });
+  });
+}
+
 function hydrateWorkingSnapshot(
   row: InstagramConversationRow,
-  ticketInfo: { ticketId: string | null; status: string | null },
+  ticketInfo: {
+    ticketId: string | null;
+    status: string | null;
+    ticketCode: string | null;
+  },
   event: NormalizedMetaInboundText,
 ): ConversationSnapshot {
   const snapshot = snapshotFromConversationRow(
@@ -149,6 +236,7 @@ function hydrateWorkingSnapshot(
   );
   snapshot.ticketId = ticketInfo.ticketId;
   snapshot.ticketStatus = ticketInfo.status;
+  snapshot.ticketCode = ticketInfo.ticketCode;
   if (!snapshot.suggestedSocialHandle) {
     snapshot.suggestedSocialHandle = event.displayName;
   }
@@ -173,14 +261,7 @@ async function finishAlreadyProcessedInbound(input: {
     conversationId: input.conversationId,
     sendDeps: input.ingestDeps.sendDeps,
   });
-  if (retried.retryableFailure) {
-    await input.store.markWebhookEvent(
-      input.eventId,
-      WEBHOOK_STATUS_FAILED,
-      "instagram_send_failed",
-    );
-    return { outcome: "failed", errorCode: "instagram_send_failed" };
-  }
+  void retried;
 
   const snapshot = input.snapshot;
   if (
@@ -200,14 +281,15 @@ async function finishAlreadyProcessedInbound(input: {
       lastMessageAt: input.event.timestamp,
       displayName:
         input.event.displayName ?? snapshot.collected.cachedUsername,
-      expectedLastProcessedExternalMessageId:
-        snapshot.lastProcessedExternalMessageId,
-      ...instagramEffectArgs(
-        input.event,
-        input.store,
-        input.conversationId,
-        input.ingestDeps,
-      ),
+        expectedLastProcessedExternalMessageId:
+          snapshot.lastProcessedExternalMessageId,
+        ...instagramEffectArgs(
+          input.event,
+          input.store,
+          input.conversationId,
+          input.ingestDeps,
+          withResolvedSendDeps(input.ingestDeps.sendDeps),
+        ),
     });
     if (applied.ticketId && !applied.snapshotPersisted) {
       await input.store.saveConversationSnapshot(
@@ -232,101 +314,6 @@ async function finishAlreadyProcessedInbound(input: {
 
   await input.store.markWebhookEvent(input.eventId, "completed");
   return { outcome: "duplicate" };
-}
-
-async function recoverMissingIntakePrompt(input: {
-  event: NormalizedMetaInboundText;
-  store: InstagramIngestStore;
-  conversationId: string;
-  snapshot: ReturnType<typeof snapshotFromConversationRow>;
-  ingestDeps: InstagramIngestDeps;
-}): Promise<"ok" | "recovered" | { failed: string }> {
-  if (input.snapshot.lastProcessedExternalMessageId === input.event.externalMessageId) {
-    return "ok";
-  }
-  if (
-    isGlobalMenuOrRestart(
-      input.event.messageBody,
-      input.event.quickReplyPayload ?? null,
-    )
-  ) {
-    return "ok";
-  }
-
-  const personaStates = INSTAGRAM_PERSONA_STATES as readonly string[];
-  if (!personaStates.includes(input.snapshot.state)) return "ok";
-  if (
-    input.snapshot.state === "completed" ||
-    input.snapshot.state === "awaiting_post_completion"
-  ) {
-    return "ok";
-  }
-
-  const prompt = instagramPromptForState(input.snapshot);
-  if (!prompt) return "ok";
-
-  const expectedKey = chatbotOutboundIdempotencyKey(
-    input.conversationId,
-    input.snapshot.intakeSessionVersion,
-    prompt.promptKey,
-  );
-  const existing = await input.store.findOutboundByIdempotencyKey(expectedKey);
-  if (existing && "errorCode" in existing) {
-    return { failed: existing.errorCode };
-  }
-  if (
-    existing &&
-    existing.conversationId === input.conversationId &&
-    (existing.deliveryStatus === "sent" ||
-      existing.deliveryStatus === "delivered" ||
-      existing.deliveryStatus === "pending")
-  ) {
-    return "ok";
-  }
-
-  const applied = await applyInstagramEffects({
-    effects: [prompt],
-    snapshotTicketId: input.snapshot.ticketId,
-    collected: input.snapshot.collected,
-    intakeSessionVersion: input.snapshot.intakeSessionVersion,
-    snapshotToPersist: {
-      ...input.snapshot,
-      lastPromptKey: prompt.promptKey,
-      lastActivityAt: input.event.timestamp,
-      lastProcessedExternalMessageId: input.event.externalMessageId,
-    },
-    lastMessageAt: input.event.timestamp,
-    displayName: input.event.displayName,
-    expectedLastProcessedExternalMessageId:
-      input.snapshot.lastProcessedExternalMessageId,
-    ...instagramEffectArgs(
-      input.event,
-      input.store,
-      input.conversationId,
-      input.ingestDeps,
-    ),
-  });
-  if (applied.retryableFailure) {
-    return { failed: applied.errorCode ?? "instagram_send_failed" };
-  }
-  if (!applied.snapshotPersisted) {
-    const recoveredSnapshot = {
-      ...input.snapshot,
-      lastPromptKey: prompt.promptKey,
-      lastActivityAt: input.event.timestamp,
-      lastProcessedExternalMessageId: input.event.externalMessageId,
-    };
-    const saved = await input.store.saveConversationSnapshot(
-      input.conversationId,
-      recoveredSnapshot,
-      input.event.timestamp,
-      input.event.displayName,
-    );
-    if (saved.outcome === "failed") {
-      return { failed: saved.errorCode };
-    }
-  }
-  return "recovered";
 }
 
 export async function ingestInstagramInboundMessage(
@@ -361,6 +348,7 @@ export async function ingestInstagramInboundMessage(
 
   const eventId = claim.id;
   const timing = ingestDeps.timing;
+  const sendDeps = withResolvedSendDeps(ingestDeps.sendDeps);
   timing?.mark("event_claimed");
 
   try {
@@ -375,8 +363,19 @@ export async function ingestInstagramInboundMessage(
     }
     timing?.mark("conversation_loaded");
 
+    const usernameLookup: TrackedUsernameLookup | null =
+      shouldLookupInstagramUsername(conversation.row, event)
+        ? trackUsernameLookup(
+            lookupInstagramUsername(event.externalContactId, sendDeps),
+          )
+        : null;
+
     const ticketInfo = conversation.created
-      ? { ticketId: null as string | null, status: null as string | null }
+      ? {
+          ticketId: null as string | null,
+          status: null as string | null,
+          ticketCode: null as string | null,
+        }
       : await ticketStatusFor(store, event, conversation.row.ticketId);
     if ("errorCode" in ticketInfo) {
       await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, ticketInfo.errorCode);
@@ -402,12 +401,19 @@ export async function ingestInstagramInboundMessage(
       return { outcome: "failed", errorCode: inbound.errorCode };
     }
     timing?.mark("inbound_stored");
-
-    let snapshot = hydrateWorkingSnapshot(
-      conversation.row,
-      ticketInfo,
-      event,
+    timing?.record(
+      "instagram_durable_ingest_ms",
+      Math.max(
+        0,
+        timing.elapsedMs("inbound_stored") - timing.elapsedMs("event_claimed"),
+      ),
     );
+
+    let snapshot = applySettledUsername(
+      hydrateWorkingSnapshot(conversation.row, ticketInfo, event),
+      usernameLookup,
+    );
+    cacheUsernameLater(store, conversation.row.id, event.timestamp, usernameLookup);
     let conversationRow = conversation.row;
     const inboundAlreadyProcessed =
       inbound.outcome === "duplicate" &&
@@ -428,62 +434,33 @@ export async function ingestInstagramInboundMessage(
       return duplicate;
     }
 
-    const hasActiveTicket = Boolean(
-      ticketInfo.ticketId && isActiveTicketStatus(ticketInfo.status),
-    );
-    if (
-      !hasActiveTicket &&
-      !snapshot.collected.cachedUsername &&
-      !snapshot.collected.usernameLookupAttempted
-    ) {
-      snapshot.collected.usernameLookupAttempted = true;
-      const lookedUp = await lookupInstagramUsername(
-        event.externalContactId,
-        ingestDeps.sendDeps,
-      );
-      if (lookedUp) {
-        snapshot.collected.cachedUsername = lookedUp;
-        snapshot.suggestedSocialHandle = lookedUp;
-      }
-    }
-
-    const recovered = await recoverMissingIntakePrompt({
-      event,
-      store,
-      conversationId: conversationRow.id,
-      snapshot,
-      ingestDeps,
-    });
-    if (recovered !== "ok") {
-      if (recovered === "recovered") {
-        timing?.mark("state_reduced");
-        timing?.mark("outbound_reserved");
-        timing?.mark("meta_send_completed");
-        timing?.mark("critical_path_completed");
-        await store.markWebhookEvent(eventId, "completed");
-        return { outcome: inbound.outcome === "duplicate" ? "duplicate" : "stored" };
-      }
-      await store.markWebhookEvent(
-        eventId,
-        WEBHOOK_STATUS_FAILED,
-        recovered.failed,
-      );
-      return { outcome: "failed", errorCode: recovered.failed };
-    }
-
-    const maxAttempts = 2;
+    const maxAttempts = 5;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const expectedLastProcessed = snapshot.lastProcessedExternalMessageId;
+      const reduceStarted = timing?.now() ?? 0;
       const reduced = reduceInstagramConversation(snapshot, {
         text: event.messageBody,
         quickReplyPayload: event.quickReplyPayload ?? null,
         timestamp: event.timestamp,
         messageId: event.externalMessageId,
+        unsupportedKind: event.unsupportedKind ?? null,
       });
+      if (timing) {
+        timing.record("instagram_reduce_ms", timing.now() - reduceStarted);
+      }
       timing?.mark("state_reduced");
 
       if (reduced.attachTicketId) {
         reduced.snapshot.ticketId = reduced.attachTicketId;
+      }
+
+      let attending: InstagramAttendingSession | null = null;
+      if (instagramEffectsProduceReply(reduced.effects)) {
+        attending = startInstagramAttendingIndicators({
+          recipientId: event.externalContactId,
+          deps: sendDeps,
+          timing,
+        });
       }
 
       const applied = await applyInstagramEffects({
@@ -497,7 +474,14 @@ export async function ingestInstagramInboundMessage(
           event.displayName ?? reduced.snapshot.collected.cachedUsername,
         timing,
         expectedLastProcessedExternalMessageId: expectedLastProcessed,
-        ...instagramEffectArgs(event, store, conversationRow.id, ingestDeps),
+        attending,
+        ...instagramEffectArgs(
+          event,
+          store,
+          conversationRow.id,
+          ingestDeps,
+          sendDeps,
+        ),
       });
 
       if (
@@ -534,7 +518,10 @@ export async function ingestInstagramInboundMessage(
           return { outcome: "failed", errorCode: reloadedTicket.errorCode };
         }
         conversationRow = fresh;
-        snapshot = hydrateWorkingSnapshot(fresh, reloadedTicket, event);
+        snapshot = applySettledUsername(
+          hydrateWorkingSnapshot(fresh, reloadedTicket, event),
+          usernameLookup,
+        );
         continue;
       }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   emptyConversationSnapshot,
+  instagramEffectsProduceReply,
   reduceChannelConversation,
   reduceInstagramConversation,
 } from "@/lib/meta/conversation-machine";
@@ -13,9 +14,11 @@ import {
   BRAND_BOOK_CALL_PAYLOAD,
   BRAND_BOOKING_TEXT,
   CREATOR_APPLY_TEXT,
+  CREATOR_CAMPAIGN_AMBIGUOUS_TEXT,
   CREATOR_CAMPAIGN_DETAILS_TEXT,
   CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
   CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+  CREATOR_ISSUE_CATEGORY_TEXT,
   CREATOR_ISSUE_DETAILS_TEXT,
   CREATOR_NEW_WORK_PAYLOAD,
   CREATOR_PAYMENT_ISSUE_PAYLOAD,
@@ -23,6 +26,7 @@ import {
   CREATOR_TICKET_CONFIRM_PAYLOAD,
   CREATOR_TICKET_EDIT_PAYLOAD,
   FLOW_CANCEL_PAYLOAD,
+  INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
   OTHER_INQUIRY_TEXT,
   OTHER_SEND_CONFIRMED_TEXT,
   OTHER_SEND_PAYLOAD,
@@ -33,6 +37,7 @@ import {
   POST_DONE_PAYLOAD,
   POST_DONE_TEXT,
   POST_MAIN_MENU_PAYLOAD,
+  activeTicketAttachText,
   personaWelcomeText,
   withPostCompletionQuestion,
 } from "@/lib/meta/instagram-persona-copy";
@@ -475,6 +480,15 @@ describe("Instagram persona routing state machine", () => {
     expect(follow.snapshot.state).toBe("ticket_open");
     expect(follow.attachTicketId).toBe("ticket-1");
     expect(follow.effects).toEqual([{ type: "notify_help_inbound" }]);
+    expect(instagramEffectsProduceReply(follow.effects)).toBe(false);
+    expect(
+      instagramEffectsProduceReply([{ type: "create_ticket" }]),
+    ).toBe(true);
+    expect(
+      instagramEffectsProduceReply([
+        { type: "send_text", text: INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT, promptKey: "retry" },
+      ]),
+    ).toBe(true);
 
     const restarted = reduceInstagramConversation(
       follow.snapshot,
@@ -576,6 +590,130 @@ describe("Instagram persona routing state machine", () => {
       }
     },
   );
+
+  it.each(["image", "video", "audio", "sticker", "share", "attachment"] as const)(
+    "keeps intake state for unsupported %s and sends the text-only fallback",
+    (kind) => {
+      const started = toPersona();
+      const result = reduceInstagramConversation(started.snapshot, {
+        text: `[${kind}]`,
+        quickReplyPayload: null,
+        timestamp: "2026-08-25T10:00:00.000Z",
+        messageId: `mid.media.${kind}`,
+        unsupportedKind: kind,
+      });
+      expect(result.snapshot.state).toBe("awaiting_persona");
+      expect(sendTexts(result)).toEqual([INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT]);
+      expect(result.effects.some((effect) => effect.type === "create_ticket")).toBe(
+        false,
+      );
+    },
+  );
+
+  it("does not re-send the unsupported fallback for the same Meta message id", () => {
+    const started = toPersona();
+    const first = reduceInstagramConversation(started.snapshot, {
+      text: "[image]",
+      quickReplyPayload: null,
+      timestamp: "2026-08-25T10:00:00.000Z",
+      messageId: "mid.image.1",
+      unsupportedKind: "image",
+    });
+    const second = reduceInstagramConversation(first.snapshot, {
+      text: "[image]",
+      quickReplyPayload: null,
+      timestamp: "2026-08-25T10:00:01.000Z",
+      messageId: "mid.image.1",
+      unsupportedKind: "image",
+    });
+    expect(second.processed).toBe(false);
+    expect(second.effects).toEqual([]);
+  });
+
+  it("recovers a stuck awaiting_route conversation to the persona menu without consuming the inbound", () => {
+    const result = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        state: "awaiting_route",
+        routingIntent: "unclassified",
+        intakeSessionVersion: 1,
+      }),
+      signal("I'm a creator", {
+        messageId: "mid.legacy.route",
+        payload: PERSONA_CREATOR_PAYLOAD,
+      }),
+    );
+    expect(result.snapshot.state).toBe("awaiting_persona");
+    expect(sendTexts(result)[0]).toBe(personaWelcomeText(null));
+    expect(result.snapshot.collected.igPersona).toBeNull();
+  });
+
+  it("explains an active ticket when existing-campaign support is chosen from the menu", () => {
+    const menu = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        state: "awaiting_post_completion",
+        ticketId: "ticket-1",
+        ticketStatus: "open",
+        ticketCode: "CF-2026-00001",
+      }),
+      signal("menu", { messageId: "mid.menu" }),
+    );
+    expect(menu.snapshot.state).toBe("awaiting_persona");
+    expect(menu.snapshot.ticketId).toBe("ticket-1");
+    expect(menu.snapshot.ticketCode).toBe("CF-2026-00001");
+
+    const creator = reduceInstagramConversation(
+      menu.snapshot,
+      signal("I'm a creator", {
+        messageId: "mid.persona",
+        payload: PERSONA_CREATOR_PAYLOAD,
+      }),
+    );
+    const existing = reduceInstagramConversation(
+      creator.snapshot,
+      signal("Existing campaign", {
+        messageId: "mid.existing",
+        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+      }),
+    );
+    expect(existing.snapshot.state).toBe("awaiting_creator_issue_category");
+    expect(sendTexts(existing)[0]).toContain(
+      activeTicketAttachText("CF-2026-00001"),
+    );
+    expect(sendTexts(existing)[0]).toContain(CREATOR_ISSUE_CATEGORY_TEXT);
+    expect(existing.effects.some((effect) => effect.type === "create_ticket")).toBe(
+      false,
+    );
+  });
+
+  it("asks for labelled campaign and brand when they are ambiguous", () => {
+    const details = play(
+      [
+        { text: "Hello", messageId: "mid.first" },
+        {
+          text: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+          messageId: "mid.persona",
+        },
+        {
+          text: "Existing campaign",
+          payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+          messageId: "mid.existing",
+        },
+        {
+          text: "Campaign issue",
+          payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+          messageId: "mid.issue",
+        },
+        {
+          text: "Hey this is about the summer work, Acme, August 2026, riya@example.com",
+          messageId: "mid.campaign",
+        },
+      ],
+    );
+    expect(details.snapshot.state).toBe("creator_campaign_details");
+    expect(details.snapshot.collected.campaignName).toBeNull();
+    expect(sendTexts(details)[0]).toBe(CREATOR_CAMPAIGN_AMBIGUOUS_TEXT);
+  });
 });
 
 describe("WhatsApp routing copy adapter", () => {

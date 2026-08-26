@@ -80,6 +80,15 @@ export type MachineEffect =
   | { type: "mark_unclassified_as"; routingKind: "collaboration" | "support" }
   | { type: "queue_internal_email"; purpose: "agency" | "other" };
 
+export function instagramEffectsProduceReply(effects: MachineEffect[]): boolean {
+  return effects.some(
+    (effect) =>
+      effect.type === "send_text" ||
+      effect.type === "send_quick_replies" ||
+      effect.type === "create_ticket",
+  );
+}
+
 export type ConversationSnapshot = {
   state: string;
   routingIntent: RoutingIntent;
@@ -90,6 +99,7 @@ export type ConversationSnapshot = {
   lastProcessedExternalMessageId: string | null;
   ticketId: string | null;
   ticketStatus: string | null;
+  ticketCode: string | null;
   suggestedSocialHandle: string | null;
   suggestedPhone: string | null;
   intakeSessionVersion: number;
@@ -100,6 +110,7 @@ export type InboundSignal = {
   quickReplyPayload: string | null;
   timestamp: string;
   messageId: string;
+  unsupportedKind?: string | null;
 };
 
 export type MachineResult = {
@@ -601,6 +612,7 @@ export function emptyConversationSnapshot(
     lastProcessedExternalMessageId: null,
     ticketId: null,
     ticketStatus: null,
+    ticketCode: null,
     suggestedSocialHandle: null,
     suggestedPhone: null,
     intakeSessionVersion: 0,

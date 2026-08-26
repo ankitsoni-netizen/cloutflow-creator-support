@@ -93,7 +93,7 @@ describe("Instagram send client", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("retries retryable 5xx failures", async () => {
+  it("does not retry 5xx at the Graph client; outbox owns retries", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -108,8 +108,53 @@ describe("Instagram send client", () => {
       config,
       deps: { fetchImpl, sleep: async () => {} },
     });
-    expect(result).toMatchObject({ ok: true, metaMessageId: "mid.retry" });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "http_5xx",
+      retryable: true,
+      deliveryUnknown: false,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a 10-second abort as delivery-unknown timeout_unknown", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      throw error;
+    });
+    const result = await sendInstagramText({
+      recipientId: "12334",
+      text: "Hello",
+      config,
+      deps: { fetchImpl, sleep: async () => {} },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "timeout_unknown",
+      retryable: false,
+      deliveryUnknown: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks Graph authentication errors as terminal", async () => {
+    const fetchImpl = mockFetch(
+      new Response(JSON.stringify({ error: { code: 190 } }), { status: 401 }),
+    );
+    const result = await sendInstagramText({
+      recipientId: "12334",
+      text: "Hello",
+      config,
+      deps: { fetchImpl, sleep: async () => {} },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "http_401",
+      retryable: false,
+      deliveryUnknown: false,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("rejects non-numeric recipient ids", async () => {
