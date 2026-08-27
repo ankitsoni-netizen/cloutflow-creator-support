@@ -31,6 +31,7 @@ function baseTrustedFields(
     status: WEBSITE_TICKET_TRUSTED_DEFAULTS.status,
     priority: WEBSITE_TICKET_TRUSTED_DEFAULTS.priority,
     assigned_team: WEBSITE_TICKET_TRUSTED_DEFAULTS.assigned_team,
+    // Executive assignment is applied by the tickets INSERT trigger.
     assigned_executive_id: null,
     assigned_executive_name: null,
     internal_notes: null,

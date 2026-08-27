@@ -135,6 +135,7 @@ export function mapIntakeToInstagramTicketInsert(input: {
     status: "open",
     priority: "normal",
     assigned_team: INSTAGRAM_TICKET_ASSIGNED_TEAM,
+    // Executive assignment is applied by the tickets INSERT trigger.
     assigned_executive_id: null,
     assigned_executive_name: null,
     issue_description: description,

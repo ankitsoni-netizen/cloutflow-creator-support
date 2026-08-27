@@ -755,6 +755,7 @@ export async function reassignTicketAction(
 
   // Single atomic tickets UPDATE. Assignment audit is written by the
   // database trigger in the same transaction (no app-side ticket_events insert).
+  // Manual reassignment does not rewind the Creator Support round-robin cursor.
   const { data: updated, error: updateError } = await context.supabase
     .from("tickets")
     .update(updatePayload)

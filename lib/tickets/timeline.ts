@@ -83,6 +83,13 @@ function describeEvent(event: TicketEvent): TimelineItem {
           : undefined,
       };
     }
+    case "assignment_skipped":
+      return {
+        ...base,
+        kind: "assignment_changed",
+        title: "Automatic assignment skipped",
+        detail: "No eligible executive was available.",
+      };
     case "assignment_changed":
     case "assignment_change": {
       const previousName = readString(

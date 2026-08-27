@@ -300,6 +300,7 @@ export function mapFormToDbInsert(
       status: "open",
       priority: "normal",
       assigned_team: options.assignedTeam?.trim() || "Creator Support",
+      // Null assignedExecutiveId is filled by the tickets INSERT trigger.
       assigned_executive_id: options.assignedExecutiveId,
       assigned_executive_name: emptyToNull(form.assignedExecutive),
       issue_description: emptyToNull(form.issueDescription),
