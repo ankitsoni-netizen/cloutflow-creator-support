@@ -93,6 +93,61 @@ describe("WATI normalize", () => {
     expect(interactive.events[0]?.quickReplyPayload).toBe("yes");
   });
 
+  it("prefers the tapped option over generic payload text", () => {
+    const result = normalizeWatiWebhookPayload(
+      watiTextPayload({
+        text: "ignored generic text",
+        type: "interactive",
+        interactiveButtonReply: { text: "Creator Support" },
+        whatsappMessageId: "wamid.prefer.1",
+      }),
+    );
+    expect(result.events[0]).toMatchObject({
+      messageType: "interactive",
+      messageBody: "Creator Support",
+      quickReplyPayload: null,
+    });
+  });
+
+  it("accepts nested snake_case list replies", () => {
+    const result = normalizeWatiWebhookPayload(
+      watiTextPayload({
+        text: null,
+        type: "interactive",
+        listReply: null,
+        interactiveButtonReply: null,
+        buttonReply: null,
+        interactive: {
+          list_reply: { title: "I'm a creator" },
+        },
+        whatsappMessageId: "wamid.nested.1",
+      }),
+    );
+    expect(result.events[0]).toMatchObject({
+      messageType: "interactive",
+      messageBody: "I'm a creator",
+      quickReplyPayload: null,
+    });
+  });
+
+  it("keeps semantic Instagram payloads when WATI supplies them as ids", () => {
+    const result = normalizeWatiWebhookPayload(
+      watiTextPayload({
+        text: null,
+        type: "button",
+        buttonReply: {
+          id: "ROUTE_CREATOR_SUPPORT",
+          title: "Creator Support",
+        },
+        whatsappMessageId: "wamid.semantic.1",
+      }),
+    );
+    expect(result.events[0]).toMatchObject({
+      messageBody: "Creator Support",
+      quickReplyPayload: "ROUTE_CREATOR_SUPPORT",
+    });
+  });
+
   it("stores media as sanitized placeholders without unsafe URLs", () => {
     for (const type of ["image", "video", "audio", "document", "sticker"] as const) {
       const result = normalizeWatiWebhookPayload(

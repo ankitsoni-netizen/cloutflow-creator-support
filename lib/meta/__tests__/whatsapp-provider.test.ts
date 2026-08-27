@@ -133,12 +133,15 @@ describe("WhatsApp provider adapter", () => {
     }
   });
 
-  it("sends WATI text-only for reply buttons when provider is wati", async () => {
-    const wati = vi.spyOn(watiSend, "sendWatiSessionText").mockResolvedValue({
-      ok: true,
-      metaMessageId: "wamid.wati.qr",
-      recipientId: "16315551181",
-    });
+  it("sends WATI interactive buttons for 1–3 quick replies", async () => {
+    const interactive = vi
+      .spyOn(watiSend, "sendWatiInteractiveMessage")
+      .mockResolvedValue({
+        ok: true,
+        metaMessageId: "wamid.wati.qr",
+        recipientId: "16315551181",
+      });
+    const text = vi.spyOn(watiSend, "sendWatiSessionText");
     const metaButtons = vi.spyOn(metaSend, "sendWhatsAppReplyButtons");
     await sendWhatsAppProviderReplyButtons({
       recipientId: "16315551181",
@@ -152,9 +155,34 @@ describe("WhatsApp provider adapter", () => {
       ],
       deps: { env: { WHATSAPP_PROVIDER: "wati" } },
     });
-    expect(wati).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "Choose" }),
+    expect(interactive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Choose",
+        quickReplies: [
+          expect.objectContaining({ title: "Creator Support" }),
+        ],
+      }),
     );
+    expect(text).not.toHaveBeenCalled();
     expect(metaButtons).not.toHaveBeenCalled();
+  });
+
+  it("sends WATI text when quick replies are empty", async () => {
+    const text = vi.spyOn(watiSend, "sendWatiSessionText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "wamid.wati.text",
+      recipientId: "16315551181",
+    });
+    const interactive = vi.spyOn(watiSend, "sendWatiInteractiveMessage");
+    await sendWhatsAppProviderReplyButtons({
+      recipientId: "16315551181",
+      text: "Thanks",
+      quickReplies: [],
+      deps: { env: { WHATSAPP_PROVIDER: "wati" } },
+    });
+    expect(text).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Thanks" }),
+    );
+    expect(interactive).not.toHaveBeenCalled();
   });
 });

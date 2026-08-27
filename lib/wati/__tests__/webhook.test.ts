@@ -153,6 +153,76 @@ describe("WATI webhook route", () => {
     );
   });
 
+  it("ingests interactiveButtonReply, buttonReply, and listReply as the same choice", async () => {
+    const inbound = vi
+      .spyOn(whatsappIngest, "ingestWhatsAppInboundMessage")
+      .mockResolvedValue({ outcome: "stored" });
+
+    const shapes = [
+      {
+        whatsappMessageId: "wamid.ibr",
+        interactiveButtonReply: { text: "Creator Support" },
+        type: "interactive",
+        text: null,
+      },
+      {
+        whatsappMessageId: "wamid.btn",
+        buttonReply: { title: "Creator Support" },
+        type: "button",
+        text: null,
+      },
+      {
+        whatsappMessageId: "wamid.list",
+        listReply: { title: "Creator Support" },
+        type: "interactive",
+        text: null,
+      },
+    ];
+
+    for (const shape of shapes) {
+      inbound.mockClear();
+      const response = await handleWatiWebhookPost(
+        postRequest(watiTextPayload(shape)),
+        { env: testEnv(), store: {} as never },
+      );
+      expect(response.status).toBe(200);
+      expect(inbound).toHaveBeenCalledTimes(1);
+      expect(inbound.mock.calls[0]?.[0]).toMatchObject({
+        provider: "wati",
+        messageType: "interactive",
+        messageBody: "Creator Support",
+        externalEventId: expect.stringMatching(/^messageReceived:/),
+      });
+    }
+  });
+
+  it("deduplicates a repeated interactive callback", async () => {
+    const inbound = vi
+      .spyOn(whatsappIngest, "ingestWhatsAppInboundMessage")
+      .mockResolvedValueOnce({ outcome: "stored" })
+      .mockResolvedValueOnce({ outcome: "duplicate" });
+    const payload = watiTextPayload({
+      text: null,
+      type: "interactive",
+      interactiveButtonReply: { text: "Creator Support" },
+      whatsappMessageId: "wamid.interactive.dup",
+    });
+    const first = await handleWatiWebhookPost(postRequest(payload), {
+      env: testEnv(),
+      store: {} as never,
+    });
+    const second = await handleWatiWebhookPost(postRequest(payload), {
+      env: testEnv(),
+      store: {} as never,
+    });
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(inbound).toHaveBeenCalledTimes(2);
+    expect(inbound.mock.calls[0]?.[0].externalEventId).toBe(
+      inbound.mock.calls[1]?.[0].externalEventId,
+    );
+  });
+
   it("keeps Meta Instagram and Meta WhatsApp provider values unchanged", () => {
     expect(META_WHATSAPP_PROVIDER).toBe("meta_whatsapp");
     expect(META_INSTAGRAM_PROVIDER).toBe("meta_instagram");

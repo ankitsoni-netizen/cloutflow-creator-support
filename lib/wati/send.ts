@@ -1,5 +1,11 @@
 import "server-only";
 
+import type { InstagramQuickReply } from "@/lib/meta/conversation-machine";
+import type {
+  WhatsAppSendDeps,
+  WhatsAppSendFailure,
+  WhatsAppSendResult,
+} from "@/lib/meta/whatsapp-send";
 import {
   getWatiSendConfig,
   type WatiSendConfig,
@@ -8,12 +14,14 @@ import {
   WATI_SEND_MAX_RESPONSE_BYTES,
   WATI_SEND_TIMEOUT_MS,
 } from "@/lib/wati/constants";
+import {
+  planWatiInteractiveMessage,
+  watiInteractiveRequestBody,
+  WATI_V3_INTERACTIVE_PATH,
+} from "@/lib/wati/interactive";
 import { normalizeWaId } from "@/lib/wati/normalize";
-import type {
-  WhatsAppSendDeps,
-  WhatsAppSendFailure,
-  WhatsAppSendResult,
-} from "@/lib/meta/whatsapp-send";
+
+export { WATI_V3_INTERACTIVE_PATH };
 
 const WA_ID_PATTERN = /^\d{6,20}$/;
 
@@ -58,14 +66,14 @@ export function normalizeWatiApiEndpoint(
 }
 
 /**
- * Build the official v3 text URL from the configured endpoint origin only.
- * Discards any legacy tenant pathname (e.g. /101197) — live WATI v3 is
- * hosted at `{origin}/api/ext/v3/conversations/messages/text`.
+ * Build an official v3 URL from the configured endpoint origin only.
+ * Discards any legacy tenant pathname (e.g. /101197).
  * Never puts message text, recipient, token, tenant id, or localMessageId
  * in the URL or query string.
  */
-export function watiV3TextMessageUrl(
+function watiV3PathUrl(
   config: WatiSendConfig,
+  pathname: string,
   options: { allowHttpInTests?: boolean } = {},
 ): string | null {
   const base = normalizeWatiApiEndpoint(config.apiEndpoint, {
@@ -73,14 +81,27 @@ export function watiV3TextMessageUrl(
   });
   if (!base) return null;
 
-  const url = new URL(WATI_V3_TEXT_PATH, `${base.origin}/`);
+  const url = new URL(pathname, `${base.origin}/`);
   url.search = "";
   url.hash = "";
-  // Ensure the stable path appears exactly once (no accidental doubling).
-  if (url.pathname !== WATI_V3_TEXT_PATH) {
-    url.pathname = WATI_V3_TEXT_PATH;
+  if (url.pathname !== pathname) {
+    url.pathname = pathname;
   }
   return url.toString();
+}
+
+export function watiV3TextMessageUrl(
+  config: WatiSendConfig,
+  options: { allowHttpInTests?: boolean } = {},
+): string | null {
+  return watiV3PathUrl(config, WATI_V3_TEXT_PATH, options);
+}
+
+export function watiV3InteractiveMessageUrl(
+  config: WatiSendConfig,
+  options: { allowHttpInTests?: boolean } = {},
+): string | null {
+  return watiV3PathUrl(config, WATI_V3_INTERACTIVE_PATH, options);
 }
 
 /**
@@ -157,86 +178,76 @@ export function messageIdFromWatiV3Body(body: unknown): string | null {
   );
 }
 
-/**
- * Send a conversation text message via official WATI API v3.
- * HTTP 200 means accepted by WATI, not delivered to the device.
- * Never logs message content, phone numbers, endpoint, or token.
- * Does not submit localMessageId (unsupported on v3 SendTextRequest).
- */
-export async function sendWatiSessionText(options: {
+function notConfiguredResult(): WhatsAppSendFailure {
+  return {
+    ok: false,
+    errorCode: "wati_send_not_configured",
+    retryable: false,
+    messagingWindowExpired: false,
+    httpStatus: null,
+  };
+}
+
+function invalidRecipientResult(): WhatsAppSendFailure {
+  return {
+    ok: false,
+    errorCode: "invalid_recipient",
+    retryable: false,
+    messagingWindowExpired: false,
+    httpStatus: null,
+  };
+}
+
+function prepareWatiSend(options: {
   recipientId: string;
-  text: string;
-  /** Ignored: v3 SendTextRequest has no localMessageId field. */
-  localMessageId?: string | null;
   deps?: WatiSendDeps;
   config?: WatiSendConfig | null;
-}): Promise<WhatsAppSendResult> {
+}):
+  | {
+      ok: true;
+      config: WatiSendConfig;
+      recipientId: string;
+      target: string;
+      allowHttpInTests: boolean;
+    }
+  | WhatsAppSendFailure {
   const env = options.deps?.env ?? process.env;
   const config = options.config ?? getWatiSendConfig(env);
-  if (!config) {
-    return {
-      ok: false,
-      errorCode: "wati_send_not_configured",
-      retryable: false,
-      messagingWindowExpired: false,
-      httpStatus: null,
-    };
-  }
+  if (!config) return notConfiguredResult();
 
   const recipientId = normalizeWaId(options.recipientId);
-  if (!recipientId) {
-    return {
-      ok: false,
-      errorCode: "invalid_recipient",
-      retryable: false,
-      messagingWindowExpired: false,
-      httpStatus: null,
-    };
-  }
-
-  const text = options.text.trim();
-  if (!text) {
-    return {
-      ok: false,
-      errorCode: "empty_message",
-      retryable: false,
-      messagingWindowExpired: false,
-      httpStatus: null,
-    };
-  }
+  if (!recipientId) return invalidRecipientResult();
 
   const target = buildWatiChannelScopedTarget(
     config.channelPhoneNumber,
     recipientId,
   );
-  if (!target) {
-    return {
-      ok: false,
-      errorCode: "invalid_recipient",
-      retryable: false,
-      messagingWindowExpired: false,
-      httpStatus: null,
-    };
-  }
+  if (!target) return invalidRecipientResult();
 
-  const allowHttpInTests = options.deps?.allowHttpInTests === true;
-  const url = watiV3TextMessageUrl(config, { allowHttpInTests });
-  if (!url) {
-    return {
-      ok: false,
-      errorCode: "invalid_wati_endpoint",
-      retryable: false,
-      messagingWindowExpired: false,
-      httpStatus: null,
-    };
-  }
+  return {
+    ok: true,
+    config,
+    recipientId,
+    target,
+    allowHttpInTests: options.deps?.allowHttpInTests === true,
+  };
+}
 
-  const requestBody = JSON.stringify({ target, text });
-
-  // Token must never appear in the URL or body — only Authorization header.
+/**
+ * POST JSON to a WATI v3 path. HTTP 200 means accepted, not delivered.
+ * Never logs message content, options, phone numbers, endpoint, target, or token.
+ */
+async function postWatiJson(options: {
+  url: string;
+  body: Record<string, unknown>;
+  config: WatiSendConfig;
+  recipientId: string;
+  deps?: WatiSendDeps;
+}): Promise<WhatsAppSendResult> {
+  const requestBody = JSON.stringify(options.body);
   if (
-    url.toLowerCase().includes(config.apiToken.toLowerCase()) ||
-    requestBody.toLowerCase().includes(config.apiToken.toLowerCase())
+    options.url.toLowerCase().includes(options.config.apiToken.toLowerCase()) ||
+    requestBody.toLowerCase().includes(options.config.apiToken.toLowerCase())
   ) {
     return {
       ok: false,
@@ -251,10 +262,10 @@ export async function sendWatiSessionText(options: {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WATI_SEND_TIMEOUT_MS);
   try {
-    const response = await fetchImpl(url, {
+    const response = await fetchImpl(options.url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${config.apiToken}`,
+        Authorization: `Bearer ${options.config.apiToken}`,
         Accept: "application/json",
         "Content-Type": "application/json",
       },
@@ -274,11 +285,10 @@ export async function sendWatiSessionText(options: {
     if (!response.ok) {
       return classifyWatiHttpError(response.status);
     }
-    // HTTP 200 = accepted by WATI, not device delivery confirmation.
     return {
       ok: true,
       metaMessageId: messageIdFromWatiV3Body(parsed.value),
-      recipientId,
+      recipientId: options.recipientId,
     };
   } catch (error) {
     const aborted = error instanceof Error && error.name === "AbortError";
@@ -292,4 +302,104 @@ export async function sendWatiSessionText(options: {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Send a conversation text message via official WATI API v3.
+ * HTTP 200 means accepted by WATI, not delivered to the device.
+ * Never logs message content, phone numbers, endpoint, or token.
+ * Does not submit localMessageId (unsupported on v3 SendTextRequest).
+ */
+export async function sendWatiSessionText(options: {
+  recipientId: string;
+  text: string;
+  /** Ignored: v3 SendTextRequest has no localMessageId field. */
+  localMessageId?: string | null;
+  deps?: WatiSendDeps;
+  config?: WatiSendConfig | null;
+}): Promise<WhatsAppSendResult> {
+  const prepared = prepareWatiSend(options);
+  if (!prepared.ok) return prepared;
+
+  const text = options.text.trim();
+  if (!text) {
+    return {
+      ok: false,
+      errorCode: "empty_message",
+      retryable: false,
+      messagingWindowExpired: false,
+      httpStatus: null,
+    };
+  }
+
+  const url = watiV3TextMessageUrl(prepared.config, {
+    allowHttpInTests: prepared.allowHttpInTests,
+  });
+  if (!url) {
+    return {
+      ok: false,
+      errorCode: "invalid_wati_endpoint",
+      retryable: false,
+      messagingWindowExpired: false,
+      httpStatus: null,
+    };
+  }
+
+  return postWatiJson({
+    url,
+    body: { target: prepared.target, text },
+    config: prepared.config,
+    recipientId: prepared.recipientId,
+    deps: options.deps,
+  });
+}
+
+/**
+ * Send conversation-machine quick replies as one native WATI interactive
+ * message (buttons or list). Does not also send a duplicate text prompt.
+ * HTTP 200 means accepted by WATI, not delivered to the device.
+ */
+export async function sendWatiInteractiveMessage(options: {
+  recipientId: string;
+  text: string;
+  quickReplies: InstagramQuickReply[];
+  /** Ignored: v3 interactive request has no localMessageId field. */
+  localMessageId?: string | null;
+  deps?: WatiSendDeps;
+  config?: WatiSendConfig | null;
+}): Promise<WhatsAppSendResult> {
+  const prepared = prepareWatiSend(options);
+  if (!prepared.ok) return prepared;
+
+  const plan = planWatiInteractiveMessage(options.text, options.quickReplies);
+  if (!plan.ok) {
+    return {
+      ok: false,
+      errorCode: plan.errorCode,
+      retryable: false,
+      messagingWindowExpired: false,
+      httpStatus: null,
+    };
+  }
+
+  const url = watiV3InteractiveMessageUrl(prepared.config, {
+    allowHttpInTests: prepared.allowHttpInTests,
+  });
+  if (!url) {
+    return {
+      ok: false,
+      errorCode: "invalid_wati_endpoint",
+      retryable: false,
+      messagingWindowExpired: false,
+      httpStatus: null,
+    };
+  }
+
+  return postWatiJson({
+    url,
+    body: watiInteractiveRequestBody(prepared.target, plan),
+    config: prepared.config,
+    recipientId: prepared.recipientId,
+    deps: options.deps,
+  });
 }

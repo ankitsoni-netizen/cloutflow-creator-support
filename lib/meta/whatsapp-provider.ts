@@ -1,17 +1,21 @@
 import "server-only";
 
-import {
-  resolveWhatsAppProvider,
-  WHATSAPP_PROVIDER_NOT_CONFIGURED,
-} from "@/lib/wati/config";
-import { sendWatiSessionText, type WatiSendDeps } from "@/lib/wati/send";
+import type { InstagramQuickReply } from "@/lib/meta/conversation-machine";
 import {
   sendWhatsAppReplyButtons,
   sendWhatsAppText,
   type WhatsAppSendConfig,
   type WhatsAppSendResult,
 } from "@/lib/meta/whatsapp-send";
-import type { InstagramQuickReply } from "@/lib/meta/conversation-machine";
+import {
+  resolveWhatsAppProvider,
+  WHATSAPP_PROVIDER_NOT_CONFIGURED,
+} from "@/lib/wati/config";
+import {
+  sendWatiInteractiveMessage,
+  sendWatiSessionText,
+  type WatiSendDeps,
+} from "@/lib/wati/send";
 
 export type WhatsAppProviderSendDeps = WatiSendDeps;
 
@@ -61,9 +65,11 @@ export async function sendWhatsAppProviderText(options: {
 }
 
 /**
- * Interactive / list choices are not built for WATI in this phase.
- * When WHATSAPP_PROVIDER=wati, send the prompt text only via WATI (no buttons).
- * Meta interactive buttons remain available only when WHATSAPP_PROVIDER=meta.
+ * Provider adapter for WhatsApp interactive choices.
+ * - WHATSAPP_PROVIDER=wati → one native WATI interactive message (buttons or list)
+ *   when the conversation machine supplied quick replies; otherwise WATI text.
+ * - WHATSAPP_PROVIDER=meta → Meta Cloud API interactive buttons
+ * - missing/blank/invalid → whatsapp_provider_not_configured (zero network calls)
  */
 export async function sendWhatsAppProviderReplyButtons(options: {
   recipientId: string;
@@ -80,9 +86,17 @@ export async function sendWhatsAppProviderReplyButtons(options: {
   }
 
   if (resolved.provider === "wati") {
-    return sendWatiSessionText({
+    if (options.quickReplies.length === 0) {
+      return sendWatiSessionText({
+        recipientId: options.recipientId,
+        text: options.text,
+        deps: options.deps,
+      });
+    }
+    return sendWatiInteractiveMessage({
       recipientId: options.recipientId,
       text: options.text,
+      quickReplies: options.quickReplies,
       deps: options.deps,
     });
   }

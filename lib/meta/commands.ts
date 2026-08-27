@@ -61,6 +61,7 @@ export function detectRoutingCommand(
   if (
     normalized === "campaign collaboration" ||
     normalized === "campaign / collaboration" ||
+    normalized === "campaign / collab" ||
     normalized === "campaign collab" ||
     normalized === "collaboration" ||
     normalized === "collab" ||

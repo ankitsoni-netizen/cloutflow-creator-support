@@ -3,10 +3,23 @@ import {
   buildWatiChannelScopedTarget,
   messageIdFromWatiV3Body,
   normalizeWatiApiEndpoint,
+  sendWatiInteractiveMessage,
   sendWatiSessionText,
+  WATI_V3_INTERACTIVE_PATH,
   WATI_V3_TEXT_PATH,
+  watiV3InteractiveMessageUrl,
   watiV3TextMessageUrl,
 } from "@/lib/wati/send";
+import {
+  PERSONA_AGENCY_PAYLOAD,
+  PERSONA_BRAND_PAYLOAD,
+  PERSONA_CREATOR_PAYLOAD,
+  PERSONA_OTHER_PAYLOAD,
+} from "@/lib/meta/instagram-persona-copy";
+import {
+  ROUTE_COLLABORATION_PAYLOAD,
+  ROUTE_CREATOR_SUPPORT_PAYLOAD,
+} from "@/lib/meta/routing-copy";
 
 const config = {
   apiEndpoint: "https://live-mt-server.wati.io/101197",
@@ -235,5 +248,198 @@ describe("WATI v3 send client", () => {
       }),
     ).toBe("507f1f77bcf86cd799439011");
     expect(messageIdFromWatiV3Body({ message: {} })).toBeNull();
+  });
+});
+
+describe("WATI v3 interactive send", () => {
+  function jsonResponse(status = 200) {
+    return new Response(
+      JSON.stringify({
+        message: { whatsappMessageId: "wamid.interactive.1" },
+      }),
+      { status },
+    );
+  }
+
+  it("posts buttons to the origin-only interactive URL without a duplicate text send", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse());
+    const result = await sendWatiInteractiveMessage({
+      recipientId: "8618719149214",
+      text: "Please choose one of the options below so we can route your message correctly.",
+      quickReplies: [
+        {
+          content_type: "text",
+          title: "Campaign / Collab",
+          payload: ROUTE_COLLABORATION_PAYLOAD,
+        },
+        {
+          content_type: "text",
+          title: "Creator Support",
+          payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+        },
+      ],
+      config,
+      deps: { fetchImpl },
+    });
+    expect(result).toEqual({
+      ok: true,
+      metaMessageId: "wamid.interactive.1",
+      recipientId: "8618719149214",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const url = String(fetchImpl.mock.calls[0]?.[0]);
+    const init = fetchImpl.mock.calls[0]?.[1];
+    expect(url).toBe(`https://live-mt-server.wati.io${WATI_V3_INTERACTIVE_PATH}`);
+    expect(url).not.toContain(WATI_V3_TEXT_PATH);
+    expect(url).not.toContain("101197");
+    expect(url).not.toContain("?");
+    expect(url).not.toContain("8618719149214");
+    expect(url.toLowerCase()).not.toContain("wati-secret-token-value");
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toMatchObject({
+      Authorization: "Bearer wati-secret-token-value",
+      "Content-Type": "application/json",
+    });
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({
+      target: "17435002445:8618719149214",
+      type: "buttons",
+      button_message: {
+        body: "Please choose one of the options below so we can route your message correctly.",
+        buttons: [{ text: "Campaign / Collab" }, { text: "Creator Support" }],
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("wati-secret-token-value");
+  });
+
+  it("posts a list for 4 Instagram persona options", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse());
+    const result = await sendWatiInteractiveMessage({
+      recipientId: "8618719149214",
+      text: "Tell me a bit about yourself so I can point you to the right place.",
+      quickReplies: [
+        {
+          content_type: "text",
+          title: "I'm a creator",
+          payload: PERSONA_CREATOR_PAYLOAD,
+        },
+        {
+          content_type: "text",
+          title: "I'm a brand",
+          payload: PERSONA_BRAND_PAYLOAD,
+        },
+        {
+          content_type: "text",
+          title: "I'm an agency",
+          payload: PERSONA_AGENCY_PAYLOAD,
+        },
+        {
+          content_type: "text",
+          title: "Something else",
+          payload: PERSONA_OTHER_PAYLOAD,
+        },
+      ],
+      config,
+      deps: { fetchImpl },
+    });
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const url = String(fetchImpl.mock.calls[0]?.[0]);
+    expect(url).toBe(`https://live-mt-server.wati.io${WATI_V3_INTERACTIVE_PATH}`);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({
+      target: "17435002445:8618719149214",
+      type: "list",
+      list_message: {
+        body: "Tell me a bit about yourself so I can point you to the right place.",
+        button_text: "Choose an option",
+        sections: [
+          {
+            title: "Options",
+            rows: [
+              { title: "I'm a creator" },
+              { title: "I'm a brand" },
+              { title: "I'm an agency" },
+              { title: "Something else" },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("discards the legacy tenant path for the interactive URL", () => {
+    expect(
+      watiV3InteractiveMessageUrl({
+        ...config,
+        apiEndpoint: "https://live-mt-server.wati.io/101197/",
+      }),
+    ).toBe(`https://live-mt-server.wati.io${WATI_V3_INTERACTIVE_PATH}`);
+    expect(watiV3InteractiveMessageUrl(config)).not.toContain("101197");
+  });
+
+  it("maps 401/timeout to sanitized failures without logging secrets", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const unauthorized = await sendWatiInteractiveMessage({
+      recipientId: "8618719149214",
+      text: "Choose",
+      quickReplies: [
+        {
+          content_type: "text",
+          title: "Creator Support",
+          payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+        },
+      ],
+      config,
+      deps: { fetchImpl: async () => new Response("{}", { status: 401 }) },
+    });
+    expect(unauthorized).toMatchObject({ ok: false, errorCode: "http_401" });
+
+    const timed = await sendWatiInteractiveMessage({
+      recipientId: "8618719149214",
+      text: "Choose",
+      quickReplies: [
+        {
+          content_type: "text",
+          title: "Creator Support",
+          payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+        },
+      ],
+      config,
+      deps: {
+        fetchImpl: async () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          throw error;
+        },
+      },
+    });
+    expect(timed).toMatchObject({ ok: false, errorCode: "send_timeout" });
+    const logged = errorSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).not.toContain("wati-secret-token-value");
+    expect(logged).not.toContain("8618719149214");
+    expect(logged).not.toContain("Creator Support");
+  });
+
+  it("rejects an unrepresentable option set without calling WATI", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const result = await sendWatiInteractiveMessage({
+      recipientId: "8618719149214",
+      text: "Choose",
+      quickReplies: [
+        {
+          content_type: "text",
+          title: "this title is far too long for whatsapp lists",
+          payload: "TOO_LONG",
+        },
+      ],
+      config,
+      deps: { fetchImpl },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "wati_interactive_option_too_long",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

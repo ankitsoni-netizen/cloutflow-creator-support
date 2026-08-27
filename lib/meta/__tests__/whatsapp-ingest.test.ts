@@ -25,6 +25,7 @@ import {
 } from "@/lib/meta/prompt-keys";
 import type { NormalizedMetaInboundText, NormalizedWhatsAppStatus } from "@/lib/meta/types";
 import * as whatsappSend from "@/lib/meta/whatsapp-send";
+import * as watiSend from "@/lib/wati/send";
 
 const WA_ID = "16315551181";
 const PHONE_NUMBER_ID = "123456123";
@@ -1622,5 +1623,110 @@ describe("mapIntakeToWhatsAppTicketInsert", () => {
     expect(insert.issue_description).toBe("Need help with a campaign");
     expect(insert.creator_email).toBe("riya@example.com");
     expect(JSON.stringify(insert)).not.toMatch(/Not applicable|Unknown Creator|N\/A|placeholder/i);
+  });
+});
+
+describe("WATI interactive ingest parity", () => {
+  it("sends native WATI buttons on the first routing prompt and does not also send text", async () => {
+    process.env.WHATSAPP_PROVIDER = "wati";
+    const interactive = vi
+      .spyOn(watiSend, "sendWatiInteractiveMessage")
+      .mockResolvedValue({
+        ok: true,
+        metaMessageId: "wamid.wati.route",
+        recipientId: WA_ID,
+      });
+    const text = vi.spyOn(watiSend, "sendWatiSessionText");
+    const metaButtons = vi.spyOn(whatsappSend, "sendWhatsAppReplyButtons");
+    const store = createMemoryInstagramStore();
+    const result = await ingestWhatsAppInboundMessage(
+      sampleWhatsAppEvent({
+        provider: "wati",
+        externalEventId: "messageReceived:wamid.first",
+      }),
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("stored");
+    expect(store.conversations[0]?.state).toBe("awaiting_route");
+    expect(interactive).toHaveBeenCalledTimes(1);
+    expect(interactive.mock.calls[0]?.[0]).toMatchObject({
+      text: WHATSAPP_ROUTING_QUESTION_TEXT,
+      quickReplies: expect.arrayContaining([
+        expect.objectContaining({ title: "Campaign / Collab" }),
+        expect.objectContaining({ title: "Creator Support" }),
+      ]),
+    });
+    expect(text).not.toHaveBeenCalled();
+    expect(metaButtons).not.toHaveBeenCalled();
+  });
+
+  it("advances Creator Support from a WATI interactive title with no Instagram payload", async () => {
+    process.env.WHATSAPP_PROVIDER = "wati";
+    vi.spyOn(watiSend, "sendWatiInteractiveMessage").mockResolvedValue({
+      ok: true,
+      metaMessageId: "wamid.wati.qr",
+      recipientId: WA_ID,
+    });
+    vi.spyOn(watiSend, "sendWatiSessionText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "wamid.wati.text",
+      recipientId: WA_ID,
+    });
+    const store = createMemoryInstagramStore();
+    await ingestWhatsAppInboundMessage(
+      sampleWhatsAppEvent({
+        provider: "wati",
+        externalEventId: "messageReceived:wamid.first",
+      }),
+      store,
+      context,
+    );
+    const routed = await ingestWhatsAppInboundMessage(
+      sampleWhatsAppEvent({
+        provider: "wati",
+        externalEventId: "messageReceived:wamid.btn",
+        externalMessageId: "wamid.btn",
+        messageType: "interactive",
+        messageBody: "Creator Support",
+        quickReplyPayload: null,
+      }),
+      store,
+      context,
+    );
+    expect(routed.outcome).toBe("stored");
+    expect(store.conversations[0]?.state).toBe("support_intake");
+    expect(store.conversations[0]?.currentIntakeField).toBe("creator_details");
+    expect(store.tickets).toHaveLength(0);
+  });
+
+  it("correlates a WATI status callback for an interactive outbound WAMID", async () => {
+    const { WATI_WHATSAPP_PROVIDER } = await import("@/lib/wati/constants");
+    const store = createMemoryInstagramStore();
+    store.messages.push({
+      id: "out-interactive",
+      conversationId: "convo-1",
+      direction: "outbound",
+      externalMessageId: "wamid.wati.interactive",
+      deliveryStatus: "sent",
+      messageBody: WHATSAPP_ROUTING_QUESTION_TEXT,
+    });
+    const result = await ingestWhatsAppStatus(
+      {
+        channel: "whatsapp",
+        provider: WATI_WHATSAPP_PROVIDER,
+        externalEventId: "sentMessageDELIVERED_v2:wamid.wati.interactive",
+        metaMessageId: "wamid.wati.interactive",
+        status: "delivered",
+        timestamp: "2020-10-18T22:13:27.000Z",
+        phoneNumberId: null,
+        errorCode: null,
+      },
+      store,
+      context,
+    );
+    expect(result.outcome).toBe("stored");
+    expect(store.messages[0]?.deliveryStatus).toBe("delivered");
+    expect(store.messages[0]?.externalMessageId).toBe("wamid.wati.interactive");
   });
 });

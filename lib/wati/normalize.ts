@@ -128,28 +128,60 @@ const MEDIA_PLACEHOLDERS: Record<string, string> = {
   sticker: "[sticker]",
 };
 
+function replyField(record: Record<string, unknown>, key: string): unknown {
+  return record[key];
+}
+
+function interactiveCandidateFromRecord(
+  record: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const keys = [
+    "listReply",
+    "list_reply",
+    "interactiveButtonReply",
+    "interactive_button_reply",
+    "buttonReply",
+    "button_reply",
+  ];
+  for (const key of keys) {
+    const candidate = replyField(record, key);
+    if (isRecord(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Known conversation-machine payloads look like ROUTE_CREATOR_SUPPORT.
+ * Button labels such as "Creator Support" are not payloads.
+ */
+function isSemanticQuickReplyPayload(value: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9_]{1,255}$/.test(value);
+}
+
 function interactiveReply(record: Record<string, unknown>): {
   payload: string | null;
   title: string | null;
 } {
-  const candidates = [
-    record.listReply,
-    record.interactiveButtonReply,
-    record.buttonReply,
-  ];
-  for (const candidate of candidates) {
-    if (!isRecord(candidate)) continue;
-    const payload =
-      asNonEmptyString(candidate.id) ??
-      asNonEmptyString(candidate.payload) ??
-      asNonEmptyString(candidate.postbackText);
-    const title =
-      asNonEmptyString(candidate.title) ??
-      asNonEmptyString(candidate.text) ??
-      asNonEmptyString(candidate.description);
-    if (payload || title) {
-      return { payload, title };
-    }
+  const direct = interactiveCandidateFromRecord(record);
+  const nested = isRecord(record.interactive)
+    ? interactiveCandidateFromRecord(record.interactive)
+    : null;
+  const candidate = direct ?? nested;
+  if (!candidate) return { payload: null, title: null };
+
+  const title =
+    asNonEmptyString(candidate.title) ??
+    asNonEmptyString(candidate.text) ??
+    asNonEmptyString(candidate.description);
+  const rawPayload =
+    asNonEmptyString(candidate.id) ??
+    asNonEmptyString(candidate.payload) ??
+    asNonEmptyString(candidate.postbackText) ??
+    asNonEmptyString(candidate.postback_text);
+  const payload =
+    rawPayload && isSemanticQuickReplyPayload(rawPayload) ? rawPayload : null;
+  if (payload || title) {
+    return { payload, title: title ?? rawPayload };
   }
   return { payload: null, title: null };
 }
@@ -203,8 +235,12 @@ function looksLikeWatiMessageRecord(value: unknown): value is Record<string, unk
     asNonEmptyString(value.type) !== null &&
     (asNonEmptyString(value.text) !== null ||
       isRecord(value.listReply) ||
+      isRecord(value.list_reply) ||
       isRecord(value.interactiveButtonReply) ||
+      isRecord(value.interactive_button_reply) ||
       isRecord(value.buttonReply) ||
+      isRecord(value.button_reply) ||
+      isRecord(value.interactive) ||
       asNonEmptyString(value.id) !== null)
   );
 }
@@ -370,7 +406,7 @@ function normalizeInboundRecord(
 
   let messageType: NormalizedMetaInboundText["messageType"] = "text";
   let messageBody: string | null = textBody;
-  let quickReplyPayload: string | null = interactive.payload;
+  let quickReplyPayload: string | null = null;
   let unsupportedKind: string | null = null;
 
   if (
@@ -380,7 +416,9 @@ function normalizeInboundRecord(
     interactive.title
   ) {
     messageType = "interactive";
-    messageBody = textBody ?? interactive.title ?? interactive.payload;
+    // Prefer the tapped option over generic payload text.
+    messageBody = interactive.title ?? interactive.payload ?? textBody;
+    quickReplyPayload = interactive.payload;
   } else if (typeRaw !== "text") {
     const placeholder = MEDIA_PLACEHOLDERS[typeRaw];
     messageType = "unsupported";
