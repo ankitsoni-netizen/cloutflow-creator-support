@@ -9,7 +9,7 @@ import {
 } from "@/lib/wati/send";
 
 const config = {
-  apiEndpoint: "https://live-mt-server.wati.io/tenant123",
+  apiEndpoint: "https://live-mt-server.wati.io/101197",
   apiToken: "wati-secret-token-value",
   channelPhoneNumber: "17435002445",
 };
@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("WATI v3 send client", () => {
-  it("posts to the exact v3 URL with channel-scoped JSON body", async () => {
+  it("posts to the origin-only v3 URL with channel-scoped JSON body", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       new Response(
         JSON.stringify({
@@ -51,9 +51,10 @@ describe("WATI v3 send client", () => {
     const url = String(fetchImpl.mock.calls[0]?.[0]);
     const init = fetchImpl.mock.calls[0]?.[1];
     expect(url).toBe(
-      `https://live-mt-server.wati.io/tenant123${WATI_V3_TEXT_PATH}`,
+      `https://live-mt-server.wati.io${WATI_V3_TEXT_PATH}`,
     );
     expect(url).not.toContain("?");
+    expect(url).not.toContain("101197");
     expect(url).not.toContain("messageText");
     expect(url).not.toContain("8618719149214");
     expect(url).not.toContain("Hello");
@@ -69,8 +70,54 @@ describe("WATI v3 send client", () => {
       target: "17435002445:8618719149214",
       text: "Hello from CRM",
     });
+    expect(Object.keys(body).sort()).toEqual(["target", "text"]);
     expect(body).not.toHaveProperty("localMessageId");
     expect(JSON.stringify(body)).not.toContain("wati-secret-token-value");
+  });
+
+  it("discards tenant path and trailing slash from the configured endpoint", () => {
+    expect(
+      watiV3TextMessageUrl({
+        ...config,
+        apiEndpoint: "https://live-mt-server.wati.io/101197/",
+      }),
+    ).toBe(`https://live-mt-server.wati.io${WATI_V3_TEXT_PATH}`);
+    expect(
+      watiV3TextMessageUrl({
+        ...config,
+        apiEndpoint: "https://live-mt-server.wati.io/101197",
+      }),
+    ).toBe(`https://live-mt-server.wati.io${WATI_V3_TEXT_PATH}`);
+  });
+
+  it("preserves dedicated hostnames while discarding legacy path segments", () => {
+    const url = watiV3TextMessageUrl({
+      ...config,
+      apiEndpoint: "https://live-mt-server-example.wati.io/some-legacy-path",
+    });
+    expect(url).toBe(
+      `https://live-mt-server-example.wati.io${WATI_V3_TEXT_PATH}`,
+    );
+    expect(url).not.toContain("some-legacy-path");
+  });
+
+  it("uses the stable v3 path exactly once with no query string", () => {
+    const url = watiV3TextMessageUrl(config)!;
+    expect(url.endsWith(WATI_V3_TEXT_PATH)).toBe(true);
+    expect(url.split(WATI_V3_TEXT_PATH).length - 1).toBe(1);
+    expect(url).not.toContain("?");
+    expect(new URL(url).search).toBe("");
+  });
+
+  it("never puts message, recipient, token, localMessageId or tenant id in the URL", () => {
+    const url = watiV3TextMessageUrl(config)!;
+    expect(url).not.toContain("101197");
+    expect(url).not.toContain("Hello");
+    expect(url).not.toContain("8618719149214");
+    expect(url).not.toContain("localMessageId");
+    expect(url).not.toContain("wati-secret-token-value");
+    expect(url).not.toContain("Bearer");
+    expect(url).not.toContain("messageText");
   });
 
   it("treats HTTP 200 as accepted and stores documented identifiers", async () => {
@@ -167,16 +214,6 @@ describe("WATI v3 send client", () => {
         allowHttpInTests: true,
       }),
     ).not.toBeNull();
-  });
-
-  it("builds a stable v3 URL without recipient or token", () => {
-    const url = watiV3TextMessageUrl(config);
-    expect(url).toBe(
-      `https://live-mt-server.wati.io/tenant123${WATI_V3_TEXT_PATH}`,
-    );
-    expect(url).not.toContain("wati-secret-token-value");
-    expect(url).not.toContain("Bearer");
-    expect(url).not.toContain("8618719149214");
   });
 
   it("builds digits-only channel-scoped targets", () => {

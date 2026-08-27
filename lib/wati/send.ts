@@ -58,8 +58,11 @@ export function normalizeWatiApiEndpoint(
 }
 
 /**
- * Build the official v3 text URL: only the configured base + stable path.
- * Never puts message text, recipient, token, or localMessageId in the URL.
+ * Build the official v3 text URL from the configured endpoint origin only.
+ * Discards any legacy tenant pathname (e.g. /101197) — live WATI v3 is
+ * hosted at `{origin}/api/ext/v3/conversations/messages/text`.
+ * Never puts message text, recipient, token, tenant id, or localMessageId
+ * in the URL or query string.
  */
 export function watiV3TextMessageUrl(
   config: WatiSendConfig,
@@ -70,15 +73,13 @@ export function watiV3TextMessageUrl(
   });
   if (!base) return null;
 
-  const basePath = base.pathname.replace(/\/+$/, "");
-  const path =
-    basePath && basePath !== "/"
-      ? `${basePath}${WATI_V3_TEXT_PATH}`
-      : WATI_V3_TEXT_PATH;
-
-  const url = new URL(path, `${base.origin}/`);
-  // Stable path only — no query string.
+  const url = new URL(WATI_V3_TEXT_PATH, `${base.origin}/`);
   url.search = "";
+  url.hash = "";
+  // Ensure the stable path appears exactly once (no accidental doubling).
+  if (url.pathname !== WATI_V3_TEXT_PATH) {
+    url.pathname = WATI_V3_TEXT_PATH;
+  }
   return url.toString();
 }
 
