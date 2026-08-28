@@ -16,6 +16,12 @@ import {
   getWatiChannelPhoneNumber,
   resolveWhatsAppProvider,
 } from "@/lib/wati/config";
+import {
+  IDENTITY_AMBIGUOUS,
+  allowOutboundReply,
+  boundOutboundRecipient,
+  recipientAccountIdFromConversationKey,
+} from "@/lib/meta/conversation-identity";
 
 export type WhatsAppStaffReplyResult =
   | {
@@ -27,12 +33,6 @@ export type WhatsAppStaffReplyResult =
       alreadySent?: boolean;
     }
   | { ok: false; error: string; errorCode: string };
-
-function recipientFromTicket(ticket: DbTicket): string | null {
-  const waId = ticket.external_contact_id?.trim() ?? "";
-  if (/^\d{6,20}$/.test(waId)) return waId;
-  return null;
-}
 
 export function isWhatsAppTicket(ticket: DbTicket): boolean {
   return ticket.source_channel?.trim().toLowerCase() === "whatsapp";
@@ -70,13 +70,17 @@ export async function sendStaffWhatsAppReply(input: {
       errorCode: "ticket_not_active",
     };
   }
-
-  const recipientId = recipientFromTicket(input.ticket);
-  if (!recipientId) {
+  if (
+    !allowOutboundReply({
+      identityStatus: input.ticket.identity_status,
+      ticketContactId: input.ticket.external_contact_id,
+      ticketConversationId: input.ticket.external_conversation_id,
+    })
+  ) {
     return {
       ok: false,
-      error: "This ticket is missing a valid WhatsApp recipient.",
-      errorCode: "invalid_recipient",
+      error: "This ticket's conversation identity is not verified for outbound replies.",
+      errorCode: IDENTITY_AMBIGUOUS,
     };
   }
 
@@ -102,7 +106,17 @@ export async function sendStaffWhatsAppReply(input: {
 
   const conversation =
     input.ticket.external_conversation_id
-      ? await store.getConversation("whatsapp", input.ticket.external_conversation_id)
+      ? await store.getConversation(
+          "whatsapp",
+          input.ticket.external_conversation_id,
+          {
+            externalContactId: input.ticket.external_contact_id,
+            recipientAccountId: recipientAccountIdFromConversationKey(
+              input.ticket.external_conversation_id,
+              input.ticket.external_contact_id,
+            ),
+          },
+        )
       : null;
   if (conversation && "errorCode" in conversation) {
     return {
@@ -118,6 +132,47 @@ export async function sendStaffWhatsAppReply(input: {
       ok: false,
       error: "Unable to find the WhatsApp conversation for this ticket.",
       errorCode: "conversation_missing",
+    };
+  }
+  if (
+    !allowOutboundReply({
+      identityStatus:
+        conversation.identityStatus ?? input.ticket.identity_status,
+      ticketContactId: input.ticket.external_contact_id,
+      ticketConversationId: input.ticket.external_conversation_id,
+      conversationContactId: conversation.externalContactId,
+      conversationId: conversation.externalConversationId,
+    })
+  ) {
+    return {
+      ok: false,
+      error: "This ticket's conversation identity is not verified for outbound replies.",
+      errorCode: IDENTITY_AMBIGUOUS,
+    };
+  }
+
+  const boundRecipient = boundOutboundRecipient(
+    conversation.externalContactId,
+    input.ticket.external_contact_id,
+  );
+  if (
+    conversation.externalContactId?.trim() &&
+    input.ticket.external_contact_id?.trim() &&
+    conversation.externalContactId.trim() !== input.ticket.external_contact_id.trim()
+  ) {
+    return {
+      ok: false,
+      error: "WhatsApp recipient does not match this conversation.",
+      errorCode: "recipient_mismatch",
+    };
+  }
+  const recipientId =
+    boundRecipient && /^\d{6,20}$/.test(boundRecipient) ? boundRecipient : null;
+  if (!recipientId) {
+    return {
+      ok: false,
+      error: "This ticket is missing a valid WhatsApp recipient.",
+      errorCode: "invalid_recipient",
     };
   }
 
@@ -159,14 +214,6 @@ export async function sendStaffWhatsAppReply(input: {
       whatsapp: "sent",
       email,
       alreadySent: true,
-    };
-  }
-
-  if (conversation.externalContactId && conversation.externalContactId !== recipientId) {
-    return {
-      ok: false,
-      error: "WhatsApp recipient does not match this conversation.",
-      errorCode: "recipient_mismatch",
     };
   }
 

@@ -3,7 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
-import { TICKET_SELECT } from "@/lib/tickets/select";
+import { ticketSelect } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import {
   COMMENT_SELECT,
@@ -58,7 +58,7 @@ export async function markTicketCustomerNotified(
     .from("tickets")
     .update(patch)
     .eq("id", ticket.id)
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .single();
 
   if (error || !data) {
@@ -81,7 +81,7 @@ export async function loadTicketById(
 ): Promise<{ data: DbTicket } | { error: string }> {
   const { data, error } = await supabase
     .from("tickets")
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .eq("id", ticketId)
     .single();
 

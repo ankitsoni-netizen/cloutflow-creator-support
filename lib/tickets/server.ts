@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
-import { TICKET_SELECT } from "@/lib/tickets/select";
+import { ticketSelect } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import type { Ticket } from "@/lib/types";
 
@@ -11,7 +11,7 @@ export async function fetchTicketsForStaff(): Promise<
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("tickets")
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .order("created_at", { ascending: false });
 
   if (error) {

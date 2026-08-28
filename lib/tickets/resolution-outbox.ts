@@ -18,7 +18,7 @@ import {
   isWhatsAppTicket,
   sendStaffWhatsAppReply,
 } from "@/lib/tickets/whatsapp-reply";
-import { TICKET_SELECT } from "@/lib/tickets/select";
+import { ticketSelect } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import {
   verifyTicketResolutionOutboxDrainAuth,
@@ -36,7 +36,9 @@ const TERMINAL_CHANNEL_CODES = new Set([
   "invalid_recipient",
   "not_instagram",
   "not_whatsapp",
-  "no_email_recipient",
+  "identity_ambiguous",
+  "identity_missing",
+  "recipient_mismatch",
 ]);
 
 export type ResolutionChannelState = "pending" | "sent" | "failed" | "skipped";
@@ -128,7 +130,7 @@ async function loadTicketById(
 ): Promise<DbTicket | null> {
   const { data, error } = await supabase
     .from("tickets")
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .eq("id", ticketId)
     .maybeSingle();
   if (error || !data) return null;
@@ -403,6 +405,9 @@ async function sendTranscriptIfNeeded(input: {
   const conversation = await store.getConversation(
     channel,
     input.ticket.external_conversation_id,
+    {
+      externalContactId: input.ticket.external_contact_id,
+    },
   );
   if (!conversation) return "skipped";
   if ("errorCode" in conversation) return "failed";

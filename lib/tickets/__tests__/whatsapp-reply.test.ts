@@ -11,6 +11,7 @@ import * as watiSend from "@/lib/wati/send";
 import * as metaSend from "@/lib/meta/whatsapp-send";
 import * as instagramTicketMail from "@/lib/email/instagram-ticket-mail";
 import { WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
+import { runWithIdentitySchemaPhaseAsync } from "@/lib/meta/identity-schema-phase";
 
 const WA_ID = "16315551181";
 const CONVO_EXTERNAL_ID = "123456123:16315551181";
@@ -207,7 +208,7 @@ describe("CRM WhatsApp replies", () => {
         },
       }),
     });
-    expect(result).toMatchObject({ ok: false, errorCode: "recipient_mismatch" });
+    expect(result).toMatchObject({ ok: false, errorCode: "identity_ambiguous" });
     expect(send).not.toHaveBeenCalled();
     send.mockRestore();
   });
@@ -242,6 +243,22 @@ describe("CRM WhatsApp replies", () => {
     if (retry.ok) expect(retry.alreadySent).toBe(true);
     expect(send).not.toHaveBeenCalled();
     send.mockRestore();
+  });
+
+  it("refuses replies when the ticket identity is quarantined or ambiguous", async () => {
+    await runWithIdentitySchemaPhaseAsync("c", async () => {
+      const send = vi.spyOn(whatsappProvider, "sendWhatsAppProviderText");
+      for (const identity_status of ["quarantined", "ambiguous"] as const) {
+        const result = await sendStaffWhatsAppReply({
+          ticket: ticket({ identity_status }),
+          commentId: `comment-${identity_status}`,
+          commentText: "Should not send.",
+          store: store(),
+        });
+        expect(result).toMatchObject({ ok: false, errorCode: "identity_ambiguous" });
+      }
+      expect(send).not.toHaveBeenCalled();
+    });
   });
 
   it("marks outside-window failures without sending a template", async () => {

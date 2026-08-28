@@ -6,6 +6,18 @@ import {
   WEBHOOK_STATUS_PROCESSING,
 } from "@/lib/meta/constants";
 import { sha256Hex } from "@/lib/meta/signature";
+import {
+  IDENTITY_MISSING,
+  channelIdentityFromInbound,
+  conversationIdentityFromLookup,
+  conversationLookupIds,
+  findConversationForIdentity,
+  type ConversationLookupIdentity,
+} from "@/lib/meta/conversation-identity";
+import {
+  IDENTITY_SCHEMA_UNAVAILABLE,
+  isIdentitySchemaPhaseC,
+} from "@/lib/meta/identity-schema-phase";
 import type {
   ChannelWebhookProvider,
   MetaChannel,
@@ -31,6 +43,7 @@ type ConversationRow = {
   id: string;
   displayName: string | null;
   ticketId: string | null;
+  externalContactId?: string | null;
 };
 
 export type MetaInboundStore = {
@@ -52,6 +65,7 @@ export type MetaInboundStore = {
   getConversation(
     channel: MetaChannel,
     externalConversationId: string,
+    lookup?: ConversationLookupIdentity,
   ): Promise<ConversationRow | null | { errorCode: string }>;
   insertConversation(input: {
     channel: MetaChannel;
@@ -59,6 +73,8 @@ export type MetaInboundStore = {
     externalContactId: string;
     displayName: string | null;
     lastMessageAt: string;
+    provider?: string | null;
+    recipientAccountId?: string | null;
   }): Promise<
     | { outcome: "inserted"; id: string }
     | { outcome: "duplicate" }
@@ -126,11 +142,21 @@ export async function persistNormalizedInboundMessage(
   }
 
   const eventId = claim.id;
+  const identity = channelIdentityFromInbound(event);
+  if (!identity) {
+    await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, IDENTITY_MISSING);
+    return { outcome: "failed", errorCode: IDENTITY_MISSING };
+  }
 
   try {
     const existing = await store.getConversation(
-      event.channel,
-      event.externalConversationId,
+      identity.channel,
+      identity.externalConversationId,
+      {
+        externalContactId: identity.externalContactId,
+        provider: identity.provider,
+        recipientAccountId: identity.recipientAccountId,
+      },
     );
     if (existing && "errorCode" in existing) {
       await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, existing.errorCode);
@@ -154,11 +180,13 @@ export async function persistNormalizedInboundMessage(
       conversationId = existing.id;
     } else {
       const inserted = await store.insertConversation({
-        channel: event.channel,
-        externalConversationId: event.externalConversationId,
-        externalContactId: event.externalContactId,
+        channel: identity.channel,
+        externalConversationId: identity.externalConversationId,
+        externalContactId: identity.externalContactId,
         displayName: event.displayName,
         lastMessageAt: event.timestamp,
+        provider: identity.provider,
+        recipientAccountId: identity.recipientAccountId,
       });
       if (inserted.outcome === "failed") {
         await store.markWebhookEvent(
@@ -170,8 +198,13 @@ export async function persistNormalizedInboundMessage(
       }
       if (inserted.outcome === "duplicate") {
         const raced = await store.getConversation(
-          event.channel,
-          event.externalConversationId,
+          identity.channel,
+          identity.externalConversationId,
+          {
+            externalContactId: identity.externalContactId,
+            provider: identity.provider,
+            recipientAccountId: identity.recipientAccountId,
+          },
         );
         if (!raced || "errorCode" in raced) {
           await store.markWebhookEvent(
@@ -303,42 +336,95 @@ export function createSupabaseMetaStore(
         .eq("id", id);
     },
 
-    async getConversation(channel, externalConversationId) {
-      const { data, error } = await supabase
-        .from("channel_conversations")
-        .select("id, display_name, ticket_id")
-        .eq("channel", channel)
-        .eq("external_conversation_id", externalConversationId)
-        .maybeSingle();
-
-      if (error) {
-        return { errorCode: "conversation_lookup_failed" };
+    async getConversation(channel, externalConversationId, lookup) {
+      const identity = conversationIdentityFromLookup({
+        channel,
+        externalConversationId,
+        externalContactId: lookup?.externalContactId,
+        provider: lookup?.provider,
+        recipientAccountId: lookup?.recipientAccountId,
+      });
+      if (!identity) {
+        return { errorCode: IDENTITY_MISSING };
       }
-      if (!data?.id) return null;
+      const ids = conversationLookupIds(identity);
+      const collected: Array<
+        ConversationRow & { externalConversationId: string | null }
+      > = [];
+      for (const conversationId of ids) {
+        const { data, error } = await supabase
+          .from("channel_conversations")
+          .select(
+            "id, display_name, ticket_id, external_contact_id, external_conversation_id",
+          )
+          .eq("channel", channel)
+          .eq("external_conversation_id", conversationId)
+          .maybeSingle();
+
+        if (error) {
+          return { errorCode: "conversation_lookup_failed" };
+        }
+        if (!data?.id) continue;
+        collected.push({
+          id: data.id as string,
+          displayName: (data.display_name as string | null) ?? null,
+          ticketId: (data.ticket_id as string | null) ?? null,
+          externalContactId: (data.external_contact_id as string | null) ?? null,
+          externalConversationId:
+            (data.external_conversation_id as string | null) ?? conversationId,
+        });
+      }
+      const matched = findConversationForIdentity(
+        collected.map((row) => ({
+          ...row,
+          channel,
+          external_contact_id: row.externalContactId,
+          external_conversation_id: row.externalConversationId,
+        })),
+        identity,
+      );
+      if (matched && "errorCode" in matched) return matched;
+      if (!matched) return null;
+      const found = collected.find((row) => row.id === matched.id);
+      if (!found) return null;
       return {
-        id: data.id as string,
-        displayName: (data.display_name as string | null) ?? null,
-        ticketId: (data.ticket_id as string | null) ?? null,
+        id: found.id,
+        displayName: found.displayName,
+        ticketId: found.ticketId,
+        externalContactId: found.externalContactId,
       };
     },
 
     async insertConversation(input) {
+      if (!input.externalContactId.trim() || !input.externalConversationId.trim()) {
+        return { outcome: "failed", errorCode: IDENTITY_MISSING };
+      }
+      const insertRow: Record<string, unknown> = {
+        channel: input.channel,
+        external_conversation_id: input.externalConversationId,
+        external_contact_id: input.externalContactId,
+        display_name: input.displayName,
+        state: "new",
+        collected_data: {},
+        last_message_at: input.lastMessageAt,
+      };
+      if (isIdentitySchemaPhaseC()) {
+        if (input.provider?.trim()) insertRow.provider = input.provider.trim();
+        if (input.recipientAccountId?.trim()) {
+          insertRow.recipient_account_id = input.recipientAccountId.trim();
+        }
+      }
       const { data, error } = await supabase
         .from("channel_conversations")
-        .insert({
-          channel: input.channel,
-          external_conversation_id: input.externalConversationId,
-          external_contact_id: input.externalContactId,
-          display_name: input.displayName,
-          state: "new",
-          collected_data: {},
-          last_message_at: input.lastMessageAt,
-        })
+        .insert(insertRow)
         .select("id")
         .single();
 
       if (!error && data?.id) {
         return { outcome: "inserted", id: data.id as string };
+      }
+      if (error?.code === "42703" && isIdentitySchemaPhaseC()) {
+        return { outcome: "failed", errorCode: IDENTITY_SCHEMA_UNAVAILABLE };
       }
       if (isUniqueViolation(error)) {
         return { outcome: "duplicate" };

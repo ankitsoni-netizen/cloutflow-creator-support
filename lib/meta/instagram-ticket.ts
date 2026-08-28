@@ -88,6 +88,7 @@ export function mapIntakeToInstagramTicketInsert(input: {
   externalContactId: string;
   externalConversationId: string;
   sourceChannel?: "instagram" | "whatsapp";
+  recipientAccountId?: string | null;
 }): InstagramTicketInsert {
   const collected = input.collected;
   const description = ticketDescription(collected);
@@ -161,6 +162,7 @@ export function mapIntakeToInstagramTicketInsert(input: {
       incompleteFields,
       externalContactId: input.externalContactId,
       externalConversationId: input.externalConversationId,
+      recipientAccountId: input.recipientAccountId ?? null,
       igPersona: collected.igPersona,
       igIssueCategory: collected.igIssueCategory,
       route,

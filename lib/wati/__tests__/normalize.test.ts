@@ -35,7 +35,7 @@ describe("WATI normalize", () => {
       externalMessageId: WAMID,
       externalEventId: `messageReceived:${WAMID}`,
       externalContactId: WA_ID,
-      externalConversationId: "68c8d56157578adb12ada249",
+      externalConversationId: `${CHANNEL}:${WA_ID}`,
       senderAddress: WA_ID,
       senderName: "coubbb",
       messageType: "text",
@@ -191,7 +191,7 @@ describe("WATI normalize", () => {
     );
   });
 
-  it("falls back to waId for conversation id and WATI id for message id", () => {
+  it("scopes conversation id by channel number and waId, not WATI conversationId", () => {
     const result = normalizeWatiWebhookPayload(
       watiTextPayload({
         conversationId: null,
@@ -199,7 +199,7 @@ describe("WATI normalize", () => {
         id: "wati-internal-1",
       }),
     );
-    expect(result.events[0]?.externalConversationId).toBe(WA_ID);
+    expect(result.events[0]?.externalConversationId).toBe(`${CHANNEL}:${WA_ID}`);
     expect(result.events[0]?.externalMessageId).toBe("wati-internal-1");
     expect(result.events[0]?.externalEventId).toBe(
       "messageReceived:wati-internal-1",

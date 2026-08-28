@@ -6,6 +6,7 @@ import {
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import type { DbTicket } from "@/lib/tickets/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
+import { runWithIdentitySchemaPhaseAsync } from "@/lib/meta/identity-schema-phase";
 
 function ticket(overrides: Partial<DbTicket> = {}): DbTicket {
   return {
@@ -179,7 +180,7 @@ describe("CRM Instagram replies", () => {
         },
       }),
     });
-    expect(result).toMatchObject({ ok: false, errorCode: "recipient_mismatch" });
+    expect(result).toMatchObject({ ok: false, errorCode: "identity_ambiguous" });
     expect(send).not.toHaveBeenCalled();
     send.mockRestore();
   });
@@ -293,5 +294,42 @@ describe("CRM Instagram replies", () => {
     }
     expect(send).not.toHaveBeenCalled();
     send.mockRestore();
+  });
+
+  it("refuses Phase A replies when the conversation key is page-only", async () => {
+    const send = vi.spyOn(instagramSend, "sendInstagramText");
+    const result = await sendStaffInstagramReply({
+      ticket: ticket({
+        external_contact_id: "12334",
+        external_conversation_id: "17841400008460000",
+      }),
+      commentId: "comment-page-only",
+      commentText: "Should not send.",
+      store: store(),
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: "identity_ambiguous" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("refuses replies when the ticket identity is quarantined or ambiguous", async () => {
+    await runWithIdentitySchemaPhaseAsync("c", async () => {
+      const send = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+        ok: true,
+        metaMessageId: "mid.should-not-send",
+        recipientId: "12334",
+      });
+      for (const identity_status of ["quarantined", "ambiguous"] as const) {
+        const result = await sendStaffInstagramReply({
+          ticket: ticket({ status: "resolved", identity_status }),
+          commentId: `comment-${identity_status}`,
+          commentText: "Should not send.",
+          store: store(),
+          allowResolvedTicket: true,
+        });
+        expect(result).toMatchObject({ ok: false, errorCode: "identity_ambiguous" });
+      }
+      expect(send).not.toHaveBeenCalled();
+      send.mockRestore();
+    });
   });
 });

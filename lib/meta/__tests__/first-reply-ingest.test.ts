@@ -22,9 +22,9 @@ import * as whatsappSend from "@/lib/meta/whatsapp-send";
 import {
   instagramPostbackPayload,
   instagramTextPayload,
-  whatsappTextPayload,
 } from "@/lib/meta/__tests__/fixtures";
 import {
+  identityLookupFromEvent,
   reloadConversationSnapshot,
   withDurableConversationPersistence,
 } from "@/lib/meta/__tests__/durable-conversation";
@@ -100,6 +100,8 @@ function sampleInstagramEvent(
   };
 }
 
+const SAMPLE_WA_LOOKUP = identityLookupFromEvent(sampleWhatsAppEvent());
+
 describe("first-reply DM ingest persistence", () => {
   async function sendWhatsAppOnce(
     store: ReturnType<typeof createMemoryChatbotStore>,
@@ -114,6 +116,7 @@ describe("first-reply DM ingest persistence", () => {
       store,
       "whatsapp",
       event.externalConversationId,
+      identityLookupFromEvent(event),
     );
     expect(snapshot.lastProcessedExternalMessageId).toBe(event.externalMessageId);
     const webhook = store.events.find(
@@ -251,6 +254,7 @@ describe("first-reply DM ingest persistence", () => {
       store,
       "whatsapp",
       CONVO_EXTERNAL_ID,
+      SAMPLE_WA_LOOKUP,
     );
     expect(snapshot.state).toBe("awaiting_route");
     expect(
@@ -268,6 +272,7 @@ describe("first-reply DM ingest persistence", () => {
       store,
       "whatsapp",
       CONVO_EXTERNAL_ID,
+      SAMPLE_WA_LOOKUP,
     );
     const status = await ingestWhatsAppStatus(
       {
@@ -288,6 +293,7 @@ describe("first-reply DM ingest persistence", () => {
       store,
       "whatsapp",
       CONVO_EXTERNAL_ID,
+      SAMPLE_WA_LOOKUP,
     );
     expect(after.state).toBe(before.state);
     expect(after.lastProcessedExternalMessageId).toBe(
@@ -343,6 +349,7 @@ describe("first-reply DM ingest persistence", () => {
         store,
         "whatsapp",
         event.externalConversationId,
+        identityLookupFromEvent(event),
       );
       expect(snapshot.lastProcessedExternalMessageId).toBe(event.externalMessageId);
       return snapshot;
@@ -418,7 +425,12 @@ describe("first-reply DM ingest persistence", () => {
     );
     expect(hi.outcome).toBe("stored");
     expect(
-      (await reloadConversationSnapshot(store, "instagram", "12334")).state,
+      (await reloadConversationSnapshot(
+        store,
+        "instagram",
+        "12334",
+        identityLookupFromEvent(sampleInstagramEvent()),
+      )).state,
     ).toBe("awaiting_persona");
 
     const events = normalizeMetaWebhookPayload(
@@ -435,7 +447,12 @@ describe("first-reply DM ingest persistence", () => {
       igContext,
     );
     expect(persona.outcome).toBe("stored");
-    const snapshot = await reloadConversationSnapshot(store, "instagram", "12334");
+    const snapshot = await reloadConversationSnapshot(
+        store,
+        "instagram",
+        "12334",
+        identityLookupFromEvent(sampleInstagramEvent()),
+      );
     expect(snapshot.state).toBe("awaiting_creator_reason");
     expect(snapshot.collected.igPersona).toBe("creator");
     expect(snapshot.lastProcessedExternalMessageId).toBe("mid.persona.postback");
@@ -462,6 +479,7 @@ describe("first-reply DM ingest persistence", () => {
     const events = normalizeMetaWebhookPayload(
       instagramTextPayload({
         senderId: "12334",
+        recipientId: "17841400008460000",
         mid: "mid.persona.qr",
         text: PERSONA_CREATOR_TITLE,
         quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
@@ -474,7 +492,12 @@ describe("first-reply DM ingest persistence", () => {
       igContext,
     );
     expect(persona.outcome).toBe("stored");
-    const snapshot = await reloadConversationSnapshot(store, "instagram", "12334");
+    const snapshot = await reloadConversationSnapshot(
+        store,
+        "instagram",
+        "12334",
+        identityLookupFromEvent(sampleInstagramEvent()),
+      );
     expect(snapshot.state).toBe("awaiting_creator_reason");
     expect(snapshot.collected.igPersona).toBe("creator");
   });
@@ -493,7 +516,12 @@ describe("first-reply DM ingest persistence", () => {
       store,
       igContext,
     );
-    const before = await reloadConversationSnapshot(store, "instagram", "12334");
+    const before = await reloadConversationSnapshot(
+        store,
+        "instagram",
+        "12334",
+        identityLookupFromEvent(sampleInstagramEvent()),
+      );
     await ingestInstagramEcho(
       {
         channel: "instagram",
@@ -512,7 +540,12 @@ describe("first-reply DM ingest persistence", () => {
       store,
       igContext,
     );
-    const after = await reloadConversationSnapshot(store, "instagram", "12334");
+    const after = await reloadConversationSnapshot(
+        store,
+        "instagram",
+        "12334",
+        identityLookupFromEvent(sampleInstagramEvent()),
+      );
     expect(after.state).toBe(before.state);
     expect(after.lastProcessedExternalMessageId).toBe(
       before.lastProcessedExternalMessageId,

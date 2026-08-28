@@ -94,22 +94,24 @@ export function whatsappStatusPayload(overrides: {
 
 export function instagramTextPayload(overrides: {
   senderId?: string;
+  recipientId?: string;
   mid?: string;
   text?: string;
   isEcho?: boolean;
   timestamp?: number;
   quickReplyPayload?: string;
 } = {}) {
+  const recipientId = overrides.recipientId ?? "INSTAGRAM_ACCOUNT_ID";
   return {
     object: "instagram",
     entry: [
       {
-        id: "INSTAGRAM_ACCOUNT_ID",
+        id: recipientId,
         time: 1603059206000,
         messaging: [
           {
             sender: { id: overrides.senderId ?? "IGSID123" },
-            recipient: { id: "INSTAGRAM_ACCOUNT_ID" },
+            recipient: { id: recipientId },
             timestamp: overrides.timestamp ?? 1603059206000,
             message: {
               mid: overrides.mid ?? "mid.instagram.abc",

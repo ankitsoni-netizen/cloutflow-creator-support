@@ -1,9 +1,25 @@
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { applyReserveInstagramOutboundAndSnapshot } from "@/lib/meta/instagram-reserve";
 import { instagramMemoryOutbox, instagramMemoryEmailOutbox } from "@/lib/meta/__tests__/instagram-memory-outbox";
+import {
+  IDENTITY_MISSING,
+  conversationIdentityFromLookup,
+  findActiveTicketForIdentity,
+  findConversationForIdentity,
+  outboundIdentityAllowsReply,
+  resolvedRecipientAccountId,
+  type ConversationIdentity,
+} from "@/lib/meta/conversation-identity";
+import {
+  IDENTITY_SCHEMA_UNAVAILABLE,
+  isIdentitySchemaPhaseC,
+} from "@/lib/meta/identity-schema-phase";
+
+export type MemoryIdentitySchema = "current" | "expanded";
 
 export function createMemoryChatbotStore(
   ticketChannel: "instagram" | "whatsapp" = "instagram",
+  options: { identitySchema?: MemoryIdentitySchema } = {},
 ): InstagramIngestStore & {
   events: Array<Record<string, unknown>>;
   conversations: Array<Record<string, unknown>>;
@@ -13,6 +29,13 @@ export function createMemoryChatbotStore(
   getConversationCalls: number;
   findActiveCalls: number;
 } {
+  const identitySchema = options.identitySchema ?? "current";
+  const requireExpandedSchema = () => {
+    if (isIdentitySchemaPhaseC() && identitySchema !== "expanded") {
+      return { errorCode: IDENTITY_SCHEMA_UNAVAILABLE };
+    }
+    return null;
+  };
   const events: Array<Record<string, unknown>> = [];
   const conversations: Array<Record<string, unknown>> = [];
   const messages: Array<Record<string, unknown>> = [];
@@ -21,6 +44,29 @@ export function createMemoryChatbotStore(
   let ids = 0;
   const nextId = () => `id-${++ids}`;
   let ticketInsertChain = Promise.resolve();
+
+  function mappedConversation(row: Record<string, unknown>) {
+    return {
+      id: row.id as string,
+      displayName: (row.displayName as string | null) ?? null,
+      ticketId: (row.ticketId as string | null) ?? null,
+      state: String(row.state ?? "unclassified"),
+      routingIntent: (row.routingIntent as string | null) ?? null,
+      currentIntakeField: (row.currentIntakeField as string | null) ?? null,
+      lastPromptKey: (row.lastPromptKey as string | null) ?? null,
+      lastActivityAt: (row.lastActivityAt as string | null) ?? null,
+      lastProcessedExternalMessageId:
+        (row.lastProcessedExternalMessageId as string | null) ?? null,
+      collectedData: (row.collectedData as Record<string, unknown>) ?? {},
+      externalContactId: (row.externalContactId as string | null) ?? null,
+      intakeSessionVersion: Number(row.intakeSessionVersion ?? 0) || 0,
+      provider: (row.provider as string | null) ?? null,
+      recipientAccountId: (row.recipientAccountId as string | null) ?? null,
+      externalConversationId:
+        (row.externalConversationId as string | null) ?? null,
+      identityStatus: (row.identityStatus as string | null) ?? null,
+    };
+  }
 
   const store = {
     events,
@@ -69,31 +115,71 @@ export function createMemoryChatbotStore(
     },
     getConversationCalls: 0,
     findActiveCalls: 0,
-    async getConversation(channel: string, externalConversationId: string) {
+    async getConversation(
+      channel: string,
+      externalConversationId: string,
+      lookup?: {
+        externalContactId?: string | null;
+        provider?: string | null;
+        recipientAccountId?: string | null;
+      },
+    ) {
       store.getConversationCalls += 1;
-      const row = conversations.find(
-        (conversation) =>
-          conversation.channel === channel &&
-          conversation.externalConversationId === externalConversationId,
-      );
-      if (!row) return null;
-      return {
-        id: row.id as string,
-        displayName: (row.displayName as string | null) ?? null,
-        ticketId: (row.ticketId as string | null) ?? null,
-        state: String(row.state ?? "unclassified"),
-        routingIntent: (row.routingIntent as string | null) ?? null,
-        currentIntakeField: (row.currentIntakeField as string | null) ?? null,
-        lastPromptKey: (row.lastPromptKey as string | null) ?? null,
-        lastActivityAt: (row.lastActivityAt as string | null) ?? null,
-        lastProcessedExternalMessageId:
-          (row.lastProcessedExternalMessageId as string | null) ?? null,
-        collectedData: (row.collectedData as Record<string, unknown>) ?? {},
-        externalContactId: (row.externalContactId as string | null) ?? null,
-        intakeSessionVersion: Number(row.intakeSessionVersion ?? 0) || 0,
-      };
+      const schemaError = requireExpandedSchema();
+      if (schemaError) return schemaError;
+      const identity = conversationIdentityFromLookup({
+        channel: channel as ConversationIdentity["channel"],
+        externalConversationId,
+        externalContactId: lookup?.externalContactId,
+        provider: lookup?.provider,
+        recipientAccountId: lookup?.recipientAccountId,
+      });
+      if (!identity) {
+        return { errorCode: IDENTITY_MISSING };
+      }
+      const matched = findConversationForIdentity(conversations, identity);
+      if (matched && "errorCode" in matched) return matched;
+      if (!matched) return null;
+      if (
+        isIdentitySchemaPhaseC() &&
+        !outboundIdentityAllowsReply(matched.identityStatus as string | null)
+      ) {
+        return null;
+      }
+      return mappedConversation(matched);
     },
     async insertConversation(input: Record<string, unknown>) {
+      const schemaError = requireExpandedSchema();
+      if (schemaError) {
+        return { outcome: "failed" as const, errorCode: schemaError.errorCode };
+      }
+      const contactId = String(input.externalContactId ?? "").trim();
+      const conversationId = String(input.externalConversationId ?? "").trim();
+      if (!contactId || !conversationId) {
+        return { outcome: "failed" as const, errorCode: IDENTITY_MISSING };
+      }
+      const incomingRecipient = String(input.recipientAccountId ?? "").trim();
+      const duplicate = conversations.find((conversation) => {
+        if (conversation.channel !== input.channel) return false;
+        if (conversation.externalConversationId === conversationId) return true;
+        if (conversation.externalContactId !== contactId) return false;
+        if (
+          isIdentitySchemaPhaseC() &&
+          !outboundIdentityAllowsReply(
+            conversation.identityStatus as string | null | undefined,
+          )
+        ) {
+          return false;
+        }
+        const existingRecipient = String(
+          conversation.recipientAccountId ?? "",
+        ).trim();
+        if (incomingRecipient && existingRecipient) {
+          return incomingRecipient === existingRecipient;
+        }
+        return !incomingRecipient && !existingRecipient;
+      });
+      if (duplicate) return { outcome: "duplicate" as const };
       const id = nextId();
       const row = {
         id,
@@ -103,6 +189,14 @@ export function createMemoryChatbotStore(
         ticketId: null,
         routingIntent: "unclassified",
         intakeSessionVersion: 0,
+        identityStatus:
+          identitySchema === "expanded" && isIdentitySchemaPhaseC()
+            ? (input.identityStatus as string | null | undefined) ??
+              (String(input.provider ?? "").trim() &&
+              String(input.recipientAccountId ?? "").trim()
+                ? "unambiguous"
+                : null)
+            : null,
       };
       conversations.push(row);
       return {
@@ -121,6 +215,7 @@ export function createMemoryChatbotStore(
           collectedData: {},
           externalContactId: (input.externalContactId as string | null) ?? null,
           intakeSessionVersion: 0,
+          identityStatus: (row.identityStatus as string | null) ?? null,
         },
       };
     },
@@ -181,34 +276,101 @@ export function createMemoryChatbotStore(
       externalConversationId: string;
       externalContactId: string;
       sourceChannel?: "instagram" | "whatsapp";
+      provider?: string | null;
+      recipientAccountId?: string | null;
     }) {
       store.findActiveCalls += 1;
+      const schemaError = requireExpandedSchema();
+      if (schemaError) return schemaError;
       const channel = input.sourceChannel ?? ticketChannel;
-      const row = tickets.find(
+      const contactId = input.externalContactId.trim();
+      const conversationId = input.externalConversationId.trim();
+      if (!contactId || !conversationId) {
+        return { errorCode: IDENTITY_MISSING };
+      }
+      const identity = conversationIdentityFromLookup({
+        channel,
+        externalConversationId: conversationId,
+        externalContactId: contactId,
+        provider: input.provider,
+        recipientAccountId: input.recipientAccountId,
+      });
+      if (!identity) {
+        return { errorCode: IDENTITY_MISSING };
+      }
+      const matched = findActiveTicketForIdentity(
+        tickets,
+        identity,
+        channel,
         (ticket) =>
-          (ticket.sourceChannel === channel ||
-            ticket.source_channel === channel) &&
-          (ticket.externalConversationId === input.externalConversationId ||
-            ticket.external_conversation_id === input.externalConversationId ||
-            ticket.externalContactId === input.externalContactId ||
-            ticket.external_contact_id === input.externalContactId) &&
-          ["open", "in_progress", "waiting"].includes(String(ticket.status)),
+          ["open", "in_progress", "waiting"].includes(String(ticket.status)) &&
+          (!isIdentitySchemaPhaseC() ||
+            outboundIdentityAllowsReply(
+              (ticket.identity_status as string | null | undefined) ??
+                (ticket.identityStatus as string | null | undefined),
+            )),
       );
-      if (!row) return null;
-      return { id: row.id as string, status: String(row.status), ticketCode: row.ticketCode as string };
+      if (matched && "errorCode" in matched) return matched;
+      if (!matched) return null;
+      return {
+        id: matched.id as string,
+        status: String(matched.status),
+        ticketCode: matched.ticketCode as string,
+      };
     },
     async insertInstagramTicket(row: Record<string, unknown>) {
       const run = ticketInsertChain.then(() => {
-        const existing = tickets.find(
+        const schemaError = requireExpandedSchema();
+        if (schemaError) {
+          return { outcome: "failed" as const, errorCode: schemaError.errorCode };
+        }
+        const channel =
+          row.source_channel === "whatsapp" ? "whatsapp" : ticketChannel;
+        const contactId = String(row.external_contact_id ?? "").trim();
+        const conversationId = String(row.external_conversation_id ?? "").trim();
+        if (!contactId || !conversationId) {
+          return {
+            outcome: "failed" as const,
+            errorCode: IDENTITY_MISSING,
+          };
+        }
+        const metadata =
+          row.metadata && typeof row.metadata === "object"
+            ? (row.metadata as { recipientAccountId?: unknown })
+            : null;
+        const identity = conversationIdentityFromLookup({
+          channel,
+          externalConversationId: conversationId,
+          externalContactId: contactId,
+          recipientAccountId: resolvedRecipientAccountId(
+            typeof metadata?.recipientAccountId === "string"
+              ? metadata.recipientAccountId
+              : String(row.recipient_account_id ?? ""),
+            conversationId,
+            contactId,
+          ),
+        });
+        if (!identity) {
+          return {
+            outcome: "failed" as const,
+            errorCode: IDENTITY_MISSING,
+          };
+        }
+        const existing = findActiveTicketForIdentity(
+          tickets,
+          identity,
+          channel,
           (ticket) =>
-            (ticket.sourceChannel === ticketChannel ||
-              ticket.source_channel === ticketChannel) &&
-            (ticket.externalConversationId === row.external_conversation_id ||
-              ticket.external_conversation_id === row.external_conversation_id ||
-              ticket.externalContactId === row.external_contact_id ||
-              ticket.external_contact_id === row.external_contact_id) &&
-            ["open", "in_progress", "waiting"].includes(String(ticket.status)),
+            ["open", "in_progress", "waiting"].includes(String(ticket.status)) &&
+            (!isIdentitySchemaPhaseC() ||
+              outboundIdentityAllowsReply(
+                (ticket.identity_status as string | null | undefined) ??
+                  (ticket.identityStatus as string | null | undefined),
+              )),
         );
+        if (existing && "errorCode" in existing) {
+          return { outcome: "failed" as const, errorCode: existing.errorCode };
+        }
         if (existing) {
           return {
             outcome: "duplicate" as const,

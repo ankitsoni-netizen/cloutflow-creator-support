@@ -35,6 +35,7 @@ import {
   type WhatsAppProviderSendDeps,
 } from "@/lib/meta/whatsapp-provider";
 import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
+import { conversationIdentityFromLookup } from "@/lib/meta/conversation-identity";
 import type {
   InstagramIngestStore,
   OutboundReserveInput,
@@ -73,6 +74,8 @@ export type ApplyEffectsOptions = {
   event: {
     externalContactId: string;
     externalConversationId: string;
+    recipientAccountId?: string | null;
+    provider?: string | null;
   };
   deps: InstagramEffectDeps;
   snapshotToPersist?: ConversationSnapshot;
@@ -217,11 +220,11 @@ async function loadCreatedTicket(
   if (loadTicket) return loadTicket(ticketId);
   try {
     const { createAdminClient } = await import("@/lib/supabase/admin");
-    const { TICKET_SELECT } = await import("@/lib/tickets/select");
+    const { ticketSelect } = await import("@/lib/tickets/select");
     const supabase = createAdminClient();
     const { data } = await supabase
       .from("tickets")
-      .select(TICKET_SELECT)
+      .select(ticketSelect())
       .eq("id", ticketId)
       .maybeSingle();
     return data ? (data as DbTicket) : null;
@@ -252,10 +255,27 @@ async function createTicketIfNeeded(options: ApplyEffectsOptions): Promise<{
   let createdCode: string | null = null;
 
   if (!createdId) {
-    const existing = await options.deps.store.findActiveInstagramTicket({
+    const identity = conversationIdentityFromLookup({
+      channel,
       externalConversationId: options.event.externalConversationId,
       externalContactId: options.event.externalContactId,
+      provider: options.event.provider,
+      recipientAccountId: options.event.recipientAccountId,
+    });
+    if (!identity) {
+      return {
+        ticketId: null,
+        ticketCode: null,
+        created: false,
+        retryableFailure: true,
+      };
+    }
+    const existing = await options.deps.store.findActiveInstagramTicket({
+      externalConversationId: identity.externalConversationId,
+      externalContactId: identity.externalContactId,
       sourceChannel: channel,
+      provider: identity.provider,
+      recipientAccountId: identity.recipientAccountId,
     });
     if (existing && "errorCode" in existing) {
       return { ticketId: null, ticketCode: null, created: false, retryableFailure: true };
@@ -273,9 +293,10 @@ async function createTicketIfNeeded(options: ApplyEffectsOptions): Promise<{
     const created = await options.deps.store.insertInstagramTicket(
       mapIntakeToInstagramTicketInsert({
         collected: options.collected,
-        externalContactId: options.event.externalContactId,
-        externalConversationId: options.event.externalConversationId,
+        externalContactId: identity.externalContactId,
+        externalConversationId: identity.externalConversationId,
         sourceChannel: channel,
+        recipientAccountId: identity.recipientAccountId || null,
       }),
     );
     if (created.outcome === "failed") {

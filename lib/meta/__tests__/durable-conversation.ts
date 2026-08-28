@@ -13,6 +13,11 @@ type ConversationPersistence = {
   getConversation: (
     channel: "instagram" | "whatsapp",
     externalConversationId: string,
+    lookup?: {
+      externalContactId?: string | null;
+      provider?: string | null;
+      recipientAccountId?: string | null;
+    },
   ) => Promise<unknown>;
   saveConversationSnapshot: (
     id: string,
@@ -61,8 +66,8 @@ export function withDurableConversationPersistence<T extends ConversationPersist
   };
 
   const get = store.getConversation.bind(store);
-  store.getConversation = async (channel, externalConversationId) => {
-    const row = await get(channel, externalConversationId);
+  store.getConversation = async (channel, externalConversationId, lookup) => {
+    const row = await get(channel, externalConversationId, lookup);
     if (!row || typeof row !== "object" || "errorCode" in row) {
       return row;
     }
@@ -89,12 +94,34 @@ export function withDurableConversationPersistence<T extends ConversationPersist
   return store;
 }
 
+export function identityLookupFromEvent(event: {
+  externalContactId?: string | null;
+  recipientAccountId?: string | null;
+  phoneNumberId?: string | null;
+  provider?: string | null;
+}) {
+  return {
+    externalContactId: event.externalContactId,
+    provider: event.provider,
+    recipientAccountId: event.recipientAccountId ?? event.phoneNumberId,
+  };
+}
+
 export async function reloadConversationSnapshot(
   store: ConversationPersistence,
   channel: "instagram" | "whatsapp",
   externalConversationId: string,
+  lookup?: {
+    externalContactId?: string | null;
+    provider?: string | null;
+    recipientAccountId?: string | null;
+  },
 ): Promise<ConversationSnapshot> {
-  const row = await store.getConversation(channel, externalConversationId);
+  const row = await store.getConversation(
+    channel,
+    externalConversationId,
+    lookup,
+  );
   if (!row || typeof row !== "object" || "errorCode" in row) {
     throw new Error("conversation_reload_failed");
   }

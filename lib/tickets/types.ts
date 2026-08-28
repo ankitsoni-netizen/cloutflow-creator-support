@@ -56,6 +56,7 @@ export interface DbTicket {
   metadata: Record<string, unknown> | null;
   external_contact_id?: string | null;
   external_conversation_id?: string | null;
+  identity_status?: string | null;
   created_at: string;
   updated_at: string;
 }

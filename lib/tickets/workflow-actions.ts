@@ -27,7 +27,7 @@ import {
   toResolveTicketActionResult,
 } from "@/lib/tickets/resolve-ticket";
 import { scheduleResolutionJobDrain } from "@/lib/tickets/resolution-outbox";
-import { TICKET_SELECT } from "@/lib/tickets/select";
+import { ticketSelect } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import {
   COMMENT_SELECT,
@@ -372,7 +372,7 @@ export async function updateTicketStatusAction(
     .from("tickets")
     .update({ status: uiStatusToDb(input.status) })
     .eq("id", input.ticketId)
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .single();
 
   if (error || !data) {
@@ -452,7 +452,7 @@ export async function reassignTicketAction(
     if (current.assigned_executive_id === null) {
       const { data: unchanged, error: unchangedError } = await context.supabase
         .from("tickets")
-        .select(TICKET_SELECT)
+        .select(ticketSelect())
         .eq("id", input.ticketId)
         .single();
       if (unchangedError || !unchanged) {
@@ -491,7 +491,7 @@ export async function reassignTicketAction(
     if (current.assigned_executive_id === staffOption.userId) {
       const { data: unchanged, error: unchangedError } = await context.supabase
         .from("tickets")
-        .select(TICKET_SELECT)
+        .select(ticketSelect())
         .eq("id", input.ticketId)
         .single();
       if (unchangedError || !unchanged) {
@@ -518,7 +518,7 @@ export async function reassignTicketAction(
     .from("tickets")
     .update(updatePayload)
     .eq("id", input.ticketId)
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .single();
 
   if (updateError || !updated) {

@@ -5,6 +5,9 @@ import type {
   NormalizedMetaInboundText,
   NormalizedWhatsAppStatus,
 } from "@/lib/meta/types";
+import {
+  instagramExternalConversationId,
+} from "@/lib/meta/conversation-identity";
 import { whatsappExternalConversationId } from "@/lib/meta/whatsapp-ids";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -153,15 +156,13 @@ function normalizeWhatsAppValue(
     if (messageType === "text" && !messageBody) continue;
 
     const displayName = namesByWaId.get(from) ?? null;
-    const conversationId = phoneNumberId
-      ? whatsappExternalConversationId(phoneNumberId, from)
-      : from;
+    if (!phoneNumberId) continue;
     events.push({
       channel: "whatsapp",
       provider: webhookProviderForChannel("whatsapp"),
       externalEventId: externalMessageId,
       externalMessageId,
-      externalConversationId: conversationId,
+      externalConversationId: whatsappExternalConversationId(phoneNumberId, from),
       externalContactId: from,
       displayName,
       senderName: displayName,
@@ -170,7 +171,7 @@ function normalizeWhatsAppValue(
       messageBody: messageBody ?? quickReplyPayload ?? "",
       timestamp: parseUnixTimestamp(message.timestamp, "s"),
       phoneNumberId,
-      recipientAccountId: null,
+      recipientAccountId: phoneNumberId,
       quickReplyPayload,
       unsupportedKind,
       eventFragment: sanitizeWhatsAppFragment(message, type),
@@ -305,6 +306,8 @@ function normalizeInstagramMessagingItem(
 
   const recipient = isRecord(item.recipient) ? item.recipient : null;
   const recipientAccountId = recipient ? asNonEmptyString(recipient.id) : null;
+  if (!recipientAccountId) return null;
+  if (recipientAccountId === externalContactId) return null;
   const senderName = sender ? asNonEmptyString(sender.name) : null;
   const unsupportedKind =
     !messageBody && !quickReplyPayload && attachmentKind ? attachmentKind : null;
@@ -315,7 +318,10 @@ function normalizeInstagramMessagingItem(
     provider: webhookProviderForChannel("instagram"),
     externalEventId: externalMessageId,
     externalMessageId,
-    externalConversationId: externalContactId,
+    externalConversationId: instagramExternalConversationId(
+      recipientAccountId,
+      externalContactId,
+    ),
     externalContactId,
     displayName: senderName,
     senderName,
@@ -351,13 +357,14 @@ function normalizeInstagramEchoItem(
   const senderId = sender ? asNonEmptyString(sender.id) : null;
   const recipientId = recipient ? asNonEmptyString(recipient.id) : null;
   if (!senderId || !recipientId) return null;
+  if (senderId === recipientId) return null;
 
   return {
     channel: "instagram",
     provider: webhookProviderForChannel("instagram"),
     externalEventId: `echo:${externalMessageId}`,
     externalMessageId,
-    externalConversationId: recipientId,
+    externalConversationId: instagramExternalConversationId(senderId, recipientId),
     recipientId,
     senderId,
     messageBody,

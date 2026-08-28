@@ -9,7 +9,7 @@ import type { ValidatedWebsiteTicketInput } from "@/lib/public-intake/validate";
 import { mapWebsiteFormToDbInsert } from "@/lib/public-intake/map";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { logSupabaseError } from "@/lib/tickets/errors";
-import { TICKET_SELECT } from "@/lib/tickets/select";
+import { ticketSelect } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -98,7 +98,7 @@ export async function createWebsiteTicketFromValidatedInput(
   const { data, error } = await supabase
     .from("tickets")
     .insert(mapped.insert)
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .single();
 
   if (error || !data) {

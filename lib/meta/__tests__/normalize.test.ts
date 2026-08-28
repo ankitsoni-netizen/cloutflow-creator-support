@@ -33,7 +33,7 @@ describe("normalizeMetaWebhookPayload", () => {
       messageType: "text",
       messageBody: "Payment is delayed",
       phoneNumberId: "123456123",
-      recipientAccountId: null,
+      recipientAccountId: "123456123",
     });
     expect(events[0]?.timestamp).toBe("2020-10-18T22:13:26.000Z");
     expect(events[0]?.eventFragment).toMatchObject({
@@ -191,7 +191,7 @@ describe("normalizeMetaWebhookPayload", () => {
       provider: META_INSTAGRAM_PROVIDER,
       externalEventId: "mid.instagram.abc",
       externalMessageId: "mid.instagram.abc",
-      externalConversationId: "IGSID123",
+      externalConversationId: "INSTAGRAM_ACCOUNT_ID:IGSID123",
       externalContactId: "IGSID123",
       displayName: null,
       senderName: null,

@@ -73,11 +73,11 @@ function lastInboundPreview(
 async function defaultLoadTicket(ticketId: string): Promise<DbTicket | null> {
   try {
     const { createAdminClient } = await import("@/lib/supabase/admin");
-    const { TICKET_SELECT } = await import("@/lib/tickets/select");
+    const { ticketSelect } = await import("@/lib/tickets/select");
     const supabase = createAdminClient();
     const { data } = await supabase
       .from("tickets")
-      .select(TICKET_SELECT)
+      .select(ticketSelect())
       .eq("id", ticketId)
       .maybeSingle();
     return data ? (data as DbTicket) : null;

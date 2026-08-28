@@ -5,6 +5,19 @@ import { collectedFromRecord, collectedToRecord, parseIntakeField, parseRoutingI
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
 import type { InstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import {
+  IDENTITY_MISSING,
+  conversationLookupIds,
+  conversationIdentityFromLookup,
+  findActiveTicketForIdentity,
+  findConversationForIdentity,
+  outboundIdentityAllowsReply,
+  type ConversationLookupIdentity,
+} from "@/lib/meta/conversation-identity";
+import {
+  IDENTITY_SCHEMA_UNAVAILABLE,
+  isIdentitySchemaPhaseC,
+} from "@/lib/meta/identity-schema-phase";
+import {
   isCompatibleInstagramOutboundDuplicate,
   instagramOutboundAddressesAreAssigned,
   parseReserveRpcError,
@@ -43,6 +56,10 @@ export type InstagramConversationRow = {
   collectedData: Record<string, unknown>;
   externalContactId: string | null;
   intakeSessionVersion: number;
+  provider?: string | null;
+  recipientAccountId?: string | null;
+  externalConversationId?: string | null;
+  identityStatus?: string | null;
 };
 
 export type OutboundMessageRow = {
@@ -86,8 +103,16 @@ export type OutboundReserveInput = {
   rawPayload?: SanitizedInstagramOutboundPayload | Record<string, unknown> | null;
 };
 
-const CONVERSATION_SELECT =
-  "id, display_name, ticket_id, state, routing_intent, current_intake_field, last_prompt_key, last_activity_at, last_processed_external_message_id, collected_data, external_contact_id, intake_session_version";
+const CONVERSATION_SELECT_PHASE_A =
+  "id, display_name, ticket_id, state, routing_intent, current_intake_field, last_prompt_key, last_activity_at, last_processed_external_message_id, collected_data, external_contact_id, external_conversation_id, intake_session_version";
+
+const CONVERSATION_SELECT_PHASE_C = `${CONVERSATION_SELECT_PHASE_A}, provider, recipient_account_id, identity_status`;
+
+function conversationSelect(): typeof CONVERSATION_SELECT_PHASE_A {
+  return (isIdentitySchemaPhaseC()
+    ? CONVERSATION_SELECT_PHASE_C
+    : CONVERSATION_SELECT_PHASE_A) as typeof CONVERSATION_SELECT_PHASE_A;
+}
 
 export type DueInstagramEmailDeliveryRow = {
   id: string;
@@ -120,6 +145,7 @@ export type InstagramIngestStore = Omit<
   getConversation(
     channel: "instagram" | "whatsapp",
     externalConversationId: string,
+    lookup?: ConversationLookupIdentity,
   ): Promise<InstagramConversationRow | null | { errorCode: string }>;
   insertConversation(input: {
     channel: "instagram" | "whatsapp";
@@ -128,6 +154,8 @@ export type InstagramIngestStore = Omit<
     displayName: string | null;
     lastMessageAt: string;
     state?: string;
+    provider?: string | null;
+    recipientAccountId?: string | null;
   }): Promise<
     | { outcome: "inserted"; id: string; row: InstagramConversationRow }
     | { outcome: "duplicate" }
@@ -155,6 +183,8 @@ export type InstagramIngestStore = Omit<
     externalConversationId: string;
     externalContactId: string;
     sourceChannel?: "instagram" | "whatsapp";
+    provider?: string | null;
+    recipientAccountId?: string | null;
   }): Promise<InstagramTicketRow | null | { errorCode: string }>;
   insertInstagramTicket(
     row: InstagramTicketInsert,
@@ -355,6 +385,11 @@ function mapConversationRow(
       typeof data.intake_session_version === "number"
         ? data.intake_session_version
         : Number(data.intake_session_version ?? 0) || 0,
+    provider: (data.provider as string | null) ?? null,
+    recipientAccountId: (data.recipient_account_id as string | null) ?? null,
+    externalConversationId:
+      (data.external_conversation_id as string | null) ?? null,
+    identityStatus: (data.identity_status as string | null) ?? null,
   };
 }
 
@@ -481,32 +516,143 @@ export function createSupabaseInstagramStore(
   const base = createSupabaseMetaStore(supabase);
   return {
     ...base,
-    async getConversation(channel, externalConversationId) {
-      const { data, error } = await supabase
+    async getConversation(channel, externalConversationId, lookup) {
+      const identity = conversationIdentityFromLookup({
+        channel,
+        externalConversationId,
+        externalContactId: lookup?.externalContactId,
+        provider: lookup?.provider,
+        recipientAccountId: lookup?.recipientAccountId,
+      });
+      if (!identity) {
+        return { errorCode: IDENTITY_MISSING };
+      }
+      const ids = conversationLookupIds(identity);
+
+      const collected: InstagramConversationRow[] = [];
+      for (const conversationId of ids) {
+        const { data, error } = await supabase
+          .from("channel_conversations")
+          .select(conversationSelect())
+          .eq("channel", channel)
+          .eq("external_conversation_id", conversationId)
+          .maybeSingle();
+        if (error) {
+          if (error.code === "42703" && isIdentitySchemaPhaseC()) {
+            return { errorCode: IDENTITY_SCHEMA_UNAVAILABLE };
+          }
+          return { errorCode: "conversation_lookup_failed" };
+        }
+        if (!data?.id) continue;
+        collected.push(mapConversationRow(data as Record<string, unknown>));
+      }
+
+      const matched = findConversationForIdentity(
+        collected.map((row) => ({
+          ...row,
+          channel,
+          external_contact_id: row.externalContactId,
+          external_conversation_id: row.externalConversationId,
+          recipient_account_id: row.recipientAccountId,
+          provider: row.provider,
+        })),
+        identity,
+      );
+      if (matched && "errorCode" in matched) return matched;
+      if (matched) {
+        const row = collected.find((item) => item.id === matched.id) ?? null;
+        if (
+          row &&
+          isIdentitySchemaPhaseC() &&
+          !outboundIdentityAllowsReply(row.identityStatus)
+        ) {
+          return null;
+        }
+        return row;
+      }
+
+      const byContact = await supabase
         .from("channel_conversations")
-        .select(CONVERSATION_SELECT)
+        .select(conversationSelect())
         .eq("channel", channel)
-        .eq("external_conversation_id", externalConversationId)
-        .maybeSingle();
-      if (error) return { errorCode: "conversation_lookup_failed" };
-      if (!data?.id) return null;
-      return mapConversationRow(data as Record<string, unknown>);
+        .eq("external_contact_id", identity.externalContactId)
+        .limit(5);
+      if (byContact.error) {
+        if (byContact.error.code === "42703" && isIdentitySchemaPhaseC()) {
+          return { errorCode: IDENTITY_SCHEMA_UNAVAILABLE };
+        }
+        return { errorCode: "conversation_lookup_failed" };
+      }
+      const contactRows = (byContact.data ?? []).map((row) =>
+        mapConversationRow(row as Record<string, unknown>),
+      );
+      const contactMatched = findConversationForIdentity(
+        contactRows.map((row) => ({
+          ...row,
+          channel,
+          external_contact_id: row.externalContactId,
+          external_conversation_id: row.externalConversationId,
+          recipient_account_id: row.recipientAccountId,
+          provider: row.provider,
+        })),
+        identity,
+      );
+      if (contactMatched && "errorCode" in contactMatched) return contactMatched;
+      if (!contactMatched) return null;
+      const contactRow =
+        contactRows.find((row) => row.id === contactMatched.id) ?? null;
+      if (contactRow &&
+        isIdentitySchemaPhaseC() &&
+        !outboundIdentityAllowsReply(contactRow.identityStatus)
+      ) {
+        return null;
+      }
+      return contactRow;
     },
     async insertConversation(input) {
+      if (!input.externalContactId.trim() || !input.externalConversationId.trim()) {
+        return { outcome: "failed", errorCode: IDENTITY_MISSING };
+      }
+      if (isIdentitySchemaPhaseC()) {
+        if (!input.provider?.trim() || !input.recipientAccountId?.trim()) {
+          return { outcome: "failed", errorCode: IDENTITY_MISSING };
+        }
+        const rpc = await supabase.rpc("upsert_channel_conversation_identity", {
+          p_provider: input.provider.trim(),
+          p_channel: input.channel,
+          p_recipient_account_id: input.recipientAccountId.trim(),
+          p_external_contact_id: input.externalContactId.trim(),
+          p_external_conversation_id: input.externalConversationId.trim(),
+          p_display_name: input.displayName,
+          p_last_message_at: input.lastMessageAt,
+          p_state: input.state ?? "unclassified",
+        });
+        if (rpc.error?.code === "42883" || rpc.error?.code === "42703") {
+          return { outcome: "failed", errorCode: IDENTITY_SCHEMA_UNAVAILABLE };
+        }
+        if (!rpc.error && rpc.data) {
+          const row = mapConversationRow(rpc.data as Record<string, unknown>);
+          return { outcome: "inserted", id: row.id, row };
+        }
+        if (isUniqueViolation(rpc.error)) return { outcome: "duplicate" };
+        return { outcome: "failed", errorCode: "conversation_insert_failed" };
+      }
+
+      const insertRow: Record<string, unknown> = {
+        channel: input.channel,
+        external_conversation_id: input.externalConversationId,
+        external_contact_id: input.externalContactId,
+        display_name: input.displayName,
+        state: input.state ?? "unclassified",
+        routing_intent: "unclassified",
+        collected_data: collectedToRecord(emptyIntakeCollected()),
+        last_message_at: input.lastMessageAt,
+        last_activity_at: input.lastMessageAt,
+      };
       const { data, error } = await supabase
         .from("channel_conversations")
-        .insert({
-          channel: input.channel,
-          external_conversation_id: input.externalConversationId,
-          external_contact_id: input.externalContactId,
-          display_name: input.displayName,
-          state: input.state ?? "unclassified",
-          routing_intent: "unclassified",
-          collected_data: collectedToRecord(emptyIntakeCollected()),
-          last_message_at: input.lastMessageAt,
-          last_activity_at: input.lastMessageAt,
-        })
-        .select(CONVERSATION_SELECT)
+        .insert(insertRow)
+        .select(conversationSelect())
         .single();
       if (!error && data?.id) {
         const row = mapConversationRow(data as Record<string, unknown>);
@@ -738,37 +884,57 @@ export function createSupabaseInstagramStore(
     },
     async findActiveInstagramTicket(input) {
       const sourceChannel = input.sourceChannel ?? "instagram";
-      const select = "id, status, ticket_code";
+      const identity = conversationIdentityFromLookup({
+        channel: sourceChannel,
+        externalConversationId: input.externalConversationId,
+        externalContactId: input.externalContactId,
+        provider: input.provider,
+        recipientAccountId: input.recipientAccountId,
+      });
+      if (!identity) {
+        return { errorCode: IDENTITY_MISSING };
+      }
+      const select =
+        "id, status, ticket_code, external_contact_id, external_conversation_id" as const;
       const statuses = ["open", "in_progress", "waiting"] as const;
-      const [byConversation, byContact] = await Promise.all([
-        supabase
-          .from("tickets")
-          .select(select)
-          .eq("source_channel", sourceChannel)
-          .eq("external_conversation_id", input.externalConversationId)
-          .in("status", [...statuses])
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        supabase
-          .from("tickets")
-          .select(select)
-          .eq("source_channel", sourceChannel)
-          .eq("external_contact_id", input.externalContactId)
-          .in("status", [...statuses])
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-      ]);
-      if (byConversation.error || byContact.error) {
+      const { data, error } = await supabase
+        .from("tickets")
+        .select(
+          isIdentitySchemaPhaseC()
+            ? (`${select}, identity_status` as typeof select)
+            : select,
+        )
+        .eq("source_channel", sourceChannel)
+        .eq("external_contact_id", identity.externalContactId)
+        .in("status", [...statuses])
+        .order("created_at", { ascending: false })
+        .limit(5);
+      if (error) {
+        if (error.code === "42703" && isIdentitySchemaPhaseC()) {
+          return { errorCode: IDENTITY_SCHEMA_UNAVAILABLE };
+        }
         return { errorCode: "ticket_lookup_failed" };
       }
-      const row = byConversation.data?.id ? byConversation.data : byContact.data;
-      if (!row?.id) return null;
+
+      const matched = findActiveTicketForIdentity(
+        (data ?? []) as Array<Record<string, unknown>>,
+        identity,
+        sourceChannel,
+        (row) =>
+          ["open", "in_progress", "waiting"].includes(String(row.status ?? "")) &&
+          (!isIdentitySchemaPhaseC() ||
+            outboundIdentityAllowsReply(
+              (row.identity_status as string | null | undefined) ?? null,
+            )),
+      );
+      if (matched && "errorCode" in matched) {
+        return { errorCode: String(matched.errorCode) };
+      }
+      if (!matched) return null;
       return {
-        id: row.id as string,
-        status: String(row.status ?? ""),
-        ticketCode: (row.ticket_code as string | null) ?? null,
+        id: String(matched.id ?? ""),
+        status: String(matched.status ?? ""),
+        ticketCode: (matched.ticket_code as string | null) ?? null,
       };
     },
     async insertInstagramTicket(row) {
@@ -789,6 +955,15 @@ export function createSupabaseInstagramStore(
           externalConversationId: row.external_conversation_id,
           externalContactId: row.external_contact_id,
           sourceChannel: row.source_channel === "whatsapp" ? "whatsapp" : "instagram",
+          recipientAccountId:
+            typeof row.metadata === "object" &&
+            row.metadata &&
+            "recipientAccountId" in row.metadata
+              ? String(
+                  (row.metadata as { recipientAccountId?: unknown })
+                    .recipientAccountId ?? "",
+                ) || null
+              : null,
         });
         if (existing && "errorCode" in existing) {
           return { outcome: "failed", errorCode: existing.errorCode };

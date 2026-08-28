@@ -6,6 +6,7 @@ import type {
   NormalizedMetaInboundText,
   NormalizedWhatsAppStatus,
 } from "@/lib/meta/types";
+import { whatsappExternalConversationId } from "@/lib/meta/whatsapp-ids";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -397,8 +398,17 @@ function normalizeInboundRecord(
   // channel_messages.external_message_id prefers WhatsApp message id.
   const externalMessageId = whatsappMessageId ?? watiCallbackId!;
 
-  const conversationId =
-    asNonEmptyString(record.conversationId) ?? waId;
+  const receivingAccountId =
+    normalizeWaId(channelPhone) ??
+    normalizeWaId(options.expectedChannelPhoneNumber);
+  if (!receivingAccountId) {
+    return { ok: false, reason: "missing_channel" };
+  }
+
+  const conversationId = whatsappExternalConversationId(
+    receivingAccountId,
+    waId,
+  );
 
   const typeRaw = (asNonEmptyString(record.type) ?? "text").toLowerCase();
   const interactive = interactiveReply(record);
@@ -451,12 +461,8 @@ function normalizeInboundRecord(
       messageType,
       messageBody: messageBody ?? quickReplyPayload ?? "",
       timestamp: parseWatiTimestamp(record.timestamp, record.created),
-      phoneNumberId: channelPhone ? normalizeWaId(channelPhone) : null,
-      recipientAccountId: options.expectedChannelPhoneNumber
-        ? normalizeWaId(options.expectedChannelPhoneNumber)
-        : channelPhone
-          ? normalizeWaId(channelPhone)
-          : null,
+      phoneNumberId: receivingAccountId,
+      recipientAccountId: receivingAccountId,
       quickReplyPayload,
       unsupportedKind,
       eventFragment: sanitizeWatiEventFragment(record),

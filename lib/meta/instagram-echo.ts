@@ -5,6 +5,10 @@ import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { sha256Hex } from "@/lib/meta/signature";
 import type { NormalizedInstagramEcho } from "@/lib/meta/types";
 import type { PersistContext, PersistResult } from "@/lib/meta/store";
+import {
+  IDENTITY_MISSING,
+  instagramEchoIdentity,
+} from "@/lib/meta/conversation-identity";
 
 /**
  * Correlate Instagram echo / is_self webhooks with stored outbound messages.
@@ -59,9 +63,20 @@ export async function ingestInstagramEcho(
       return { outcome: "duplicate" };
     }
 
+    const identity = instagramEchoIdentity(echo);
+    if (!identity) {
+      await store.markWebhookEvent(claim.id, WEBHOOK_STATUS_FAILED, IDENTITY_MISSING);
+      return { outcome: "failed", errorCode: IDENTITY_MISSING };
+    }
+
     const conversation = await store.getConversation(
       "instagram",
-      echo.recipientId,
+      identity.externalConversationId,
+      {
+        externalContactId: identity.externalContactId,
+        provider: identity.provider,
+        recipientAccountId: identity.recipientAccountId,
+      },
     );
     if (conversation && "errorCode" in conversation) {
       await store.markWebhookEvent(
@@ -104,8 +119,8 @@ export async function ingestInstagramEcho(
       conversationId: conversation.id,
       ticketId: conversation.ticketId,
       externalMessageId: echo.externalMessageId,
-      recipientExternalId: echo.recipientId,
-      senderAddress: echo.senderId,
+      recipientExternalId: identity.externalContactId,
+      senderAddress: identity.recipientAccountId,
       messageBody: echo.messageBody,
       eventFragment: echo.eventFragment,
     });

@@ -89,11 +89,16 @@ function createMemoryStore(): MetaInboundStore & {
       row.errorCode = status === WEBHOOK_STATUS_FAILED ? errorCode : null;
       row.errorMessage = status === WEBHOOK_STATUS_FAILED ? errorCode : null;
     },
-    async getConversation(channel, externalConversationId) {
+    async getConversation(channel, externalConversationId, lookup) {
+      const contactId = lookup?.externalContactId?.trim() ?? "";
+      const ids = contactId
+        ? [externalConversationId, contactId]
+        : [externalConversationId];
       const row = conversations.find(
         (conversation) =>
           conversation.channel === channel &&
-          conversation.externalConversationId === externalConversationId,
+          ids.includes(String(conversation.externalConversationId)) &&
+          (!contactId || conversation.externalContactId === contactId),
       );
       if (!row) return null;
       return {

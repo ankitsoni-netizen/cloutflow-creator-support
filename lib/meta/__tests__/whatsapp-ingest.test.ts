@@ -214,13 +214,21 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
     async findActiveInstagramTicket(input: {
       externalConversationId: string;
       externalContactId: string;
+      sourceChannel?: "instagram" | "whatsapp";
     }) {
+      const contactId = input.externalContactId.trim();
+      const conversationId = input.externalConversationId.trim();
+      if (!contactId || !conversationId) return { errorCode: "identity_missing" };
       const row = tickets.find(
         (ticket) =>
           (ticket.sourceChannel === "whatsapp" ||
             ticket.source_channel === "whatsapp") &&
-          (ticket.externalConversationId === input.externalConversationId ||
-            ticket.externalContactId === input.externalContactId) &&
+          (ticket.externalContactId === contactId ||
+            ticket.external_contact_id === contactId) &&
+          (ticket.externalConversationId === conversationId ||
+            ticket.external_conversation_id === conversationId ||
+            ticket.externalConversationId === contactId ||
+            ticket.external_conversation_id === contactId) &&
           ["open", "in_progress", "waiting"].includes(String(ticket.status)),
       );
       if (!row) return null;

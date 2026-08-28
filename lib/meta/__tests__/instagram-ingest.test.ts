@@ -19,6 +19,12 @@ import {
   personaWelcomeText,
   withPostCompletionQuestion,
 } from "@/lib/meta/instagram-persona-copy";
+import {
+  IDENTITY_MISSING,
+  conversationLookupIds,
+  findActiveTicketForIdentity,
+  type ConversationIdentity,
+} from "@/lib/meta/conversation-identity";
 import { chatbotOutboundIdempotencyKey } from "@/lib/meta/prompt-keys";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
@@ -121,12 +127,31 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
     },
     getConversationCalls: 0,
     findActiveCalls: 0,
-    async getConversation(channel: string, externalConversationId: string) {
+    async getConversation(
+      channel: string,
+      externalConversationId: string,
+      lookup?: {
+        externalContactId?: string | null;
+        provider?: string | null;
+        recipientAccountId?: string | null;
+      },
+    ) {
       store.getConversationCalls += 1;
+      const contactId = lookup?.externalContactId?.trim() ?? "";
+      const ids = contactId
+        ? conversationLookupIds({
+            provider: "meta_instagram",
+            channel: "instagram",
+            recipientAccountId: lookup?.recipientAccountId?.trim() || contactId,
+            externalContactId: contactId,
+            externalConversationId,
+          })
+        : [externalConversationId];
       const row = conversations.find(
         (conversation) =>
           conversation.channel === channel &&
-          conversation.externalConversationId === externalConversationId,
+          ids.includes(String(conversation.externalConversationId)) &&
+          (!contactId || conversation.externalContactId === contactId),
       );
       if (!row) return null;
       return {
@@ -232,20 +257,33 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
     async findActiveInstagramTicket(input: {
       externalConversationId: string;
       externalContactId: string;
+      sourceChannel?: "instagram" | "whatsapp";
+      provider?: string | null;
+      recipientAccountId?: string | null;
     }) {
       store.findActiveCalls += 1;
-      const row = tickets.find(
+      const contactId = input.externalContactId.trim();
+      const conversationId = input.externalConversationId.trim();
+      if (!contactId || !conversationId) {
+        return { errorCode: IDENTITY_MISSING };
+      }
+      const identity: ConversationIdentity = {
+        provider: "meta_instagram",
+        channel: "instagram",
+        recipientAccountId: input.recipientAccountId?.trim() || contactId,
+        externalContactId: contactId,
+        externalConversationId: conversationId,
+      };
+      const matched = findActiveTicketForIdentity(
+        tickets,
+        identity,
+        "instagram",
         (ticket) =>
-          (ticket.sourceChannel === "instagram" ||
-            ticket.source_channel === "instagram") &&
-          (ticket.externalConversationId === input.externalConversationId ||
-            ticket.external_conversation_id === input.externalConversationId ||
-            ticket.externalContactId === input.externalContactId ||
-            ticket.external_contact_id === input.externalContactId) &&
           ["open", "in_progress", "waiting"].includes(String(ticket.status)),
       );
-      if (!row) return null;
-      return { id: row.id as string, status: String(row.status), ticketCode: row.ticketCode as string };
+      if (matched && "errorCode" in matched) return matched;
+      if (!matched) return null;
+      return { id: matched.id as string, status: String(matched.status), ticketCode: matched.ticketCode as string };
     },
     async insertInstagramTicket(row: Record<string, unknown>) {
       const run = ticketInsertChain.then(() => {
@@ -253,10 +291,12 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
           (ticket) =>
             (ticket.sourceChannel === "instagram" ||
               ticket.source_channel === "instagram") &&
+            (ticket.externalContactId === row.external_contact_id ||
+              ticket.external_contact_id === row.external_contact_id) &&
             (ticket.externalConversationId === row.external_conversation_id ||
               ticket.external_conversation_id === row.external_conversation_id ||
-              ticket.externalContactId === row.external_contact_id ||
-              ticket.external_contact_id === row.external_contact_id) &&
+              ticket.externalConversationId === row.external_contact_id ||
+              ticket.external_conversation_id === row.external_contact_id) &&
             ["open", "in_progress", "waiting"].includes(String(ticket.status)),
         );
         if (existing) {

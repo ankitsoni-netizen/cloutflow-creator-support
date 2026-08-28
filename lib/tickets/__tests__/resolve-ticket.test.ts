@@ -592,4 +592,65 @@ describe("resolution outbox drain", () => {
       customer_notified: true,
     });
   });
+
+  it("does not retry resolution Instagram when identity is ambiguous", async () => {
+    const db: MemoryDb = {
+      ticket: dbTicket({
+        source_channel: "instagram",
+        status: "resolved",
+        resolution_summary: "Paid today",
+        resolved_at: "2026-08-27T12:00:09.000Z",
+        external_contact_id: "12334",
+        external_conversation_id: "17841400008460000",
+      }),
+      events: [],
+      comments: [
+        {
+          id: "comment-1",
+          ticket_id: "ticket-1",
+          author_user_id: "staff-1",
+          author_name: "Priya",
+          visibility: "creator",
+          comment_text: "Paid today",
+          send_to_creator: true,
+          delivery_status: "pending",
+          created_at: "2026-08-27T12:00:09.000Z",
+        },
+      ],
+      jobs: [
+        {
+          id: "job-1",
+          ticket_id: "ticket-1",
+          comment_id: "comment-1",
+          idempotency_key: "ticket-resolution:ticket-1",
+          delivery_status: "pending",
+          delivery_attempt_count: 0,
+          payload: {
+            resolution_summary: "Paid today",
+            source_channel: "instagram",
+            instagram: "pending",
+            email: "pending",
+            transcript: "pending",
+          },
+        },
+      ],
+      rpcEnabled: true,
+      rpcCalls: 0,
+      emailSends: 0,
+    };
+    const sendStaffInstagramReply = vi.fn(async () => ({
+      ok: false as const,
+      error: "This ticket's conversation identity is not verified for outbound replies.",
+      errorCode: "identity_ambiguous",
+    }));
+
+    const counts = await drainResolutionJobs({
+      supabase: createMemorySupabase(db),
+      sendStaffInstagramReply,
+    });
+    expect(counts.claimed).toBe(1);
+    expect(counts.retryable).toBe(0);
+    expect(counts.terminal + counts.skipped).toBeGreaterThan(0);
+    expect(sendStaffInstagramReply).toHaveBeenCalledTimes(1);
+  });
 });

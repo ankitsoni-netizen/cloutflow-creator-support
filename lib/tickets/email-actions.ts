@@ -14,7 +14,7 @@ import { logSupabaseError, toSafeTicketErrorMessage } from "@/lib/tickets/errors
 import { isInstagramTicket, sendStaffInstagramReply } from "@/lib/tickets/instagram-reply";
 import { isWhatsAppTicket, sendStaffWhatsAppReply } from "@/lib/tickets/whatsapp-reply";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
-import { TICKET_SELECT } from "@/lib/tickets/select";
+import { ticketSelect } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import { COMMENT_SELECT, mapDbComment } from "@/lib/tickets/workflow-map";
 import type { Ticket } from "@/lib/types";
@@ -78,7 +78,7 @@ export async function retryAcknowledgementEmailAction(input: {
     .from("tickets")
     .update({ acknowledgement_email_sent_at: sentAt })
     .eq("id", ticket.id)
-    .select(TICKET_SELECT)
+    .select(ticketSelect())
     .single();
 
   if (error || !updated) {

@@ -8,6 +8,11 @@ import {
 } from "@/lib/meta/instagram-effects";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
+  IDENTITY_MISSING,
+  channelIdentityFromInbound,
+  type ConversationIdentity,
+} from "@/lib/meta/conversation-identity";
+import {
   snapshotFromConversationRow,
   type InstagramConversationRow,
   type InstagramIngestStore,
@@ -38,13 +43,20 @@ function suggestedPhoneFromWaId(waId: string): string | null {
 async function upsertConversation(
   store: InstagramIngestStore,
   event: NormalizedMetaInboundText,
+  identity: ConversationIdentity,
 ): Promise<
   | { outcome: "ok"; row: InstagramConversationRow }
   | { outcome: "failed"; errorCode: string }
 > {
+  const lookup = {
+    externalContactId: identity.externalContactId,
+    provider: identity.provider,
+    recipientAccountId: identity.recipientAccountId,
+  };
   const existing = await store.getConversation(
-    event.channel,
-    event.externalConversationId,
+    identity.channel,
+    identity.externalConversationId,
+    lookup,
   );
   if (existing && "errorCode" in existing) {
     return { outcome: "failed", errorCode: existing.errorCode };
@@ -52,19 +64,22 @@ async function upsertConversation(
   if (existing) return { outcome: "ok", row: existing };
 
   const inserted = await store.insertConversation({
-    channel: event.channel,
-    externalConversationId: event.externalConversationId,
-    externalContactId: event.externalContactId,
+    channel: identity.channel,
+    externalConversationId: identity.externalConversationId,
+    externalContactId: identity.externalContactId,
     displayName: event.displayName,
     lastMessageAt: event.timestamp,
     state: "unclassified",
+    provider: identity.provider,
+    recipientAccountId: identity.recipientAccountId,
   });
   if (inserted.outcome === "failed") {
     return { outcome: "failed", errorCode: inserted.errorCode };
   }
   const lookedUp = await store.getConversation(
-    event.channel,
-    event.externalConversationId,
+    identity.channel,
+    identity.externalConversationId,
+    lookup,
   );
   if (!lookedUp || "errorCode" in lookedUp) {
     return { outcome: "failed", errorCode: "conversation_lookup_failed" };
@@ -74,27 +89,35 @@ async function upsertConversation(
 
 async function ticketStatusFor(
   store: InstagramIngestStore,
-  event: NormalizedMetaInboundText,
+  identity: ConversationIdentity,
   conversationTicketId: string | null,
 ): Promise<
   | { ticketId: string | null; status: string | null }
   | { errorCode: string }
 > {
+  const found = await store.findActiveInstagramTicket({
+    externalConversationId: identity.externalConversationId,
+    externalContactId: identity.externalContactId,
+    sourceChannel: "whatsapp",
+    provider: identity.provider,
+    recipientAccountId: identity.recipientAccountId,
+  });
+  if (found && "errorCode" in found) return { errorCode: found.errorCode };
+
   if (conversationTicketId) {
     const linked = await store.getTicket(conversationTicketId);
     if (linked && "errorCode" in linked) return { errorCode: linked.errorCode };
-    if (linked) return { ticketId: linked.id, status: linked.status };
+    if (linked && isActiveTicketStatus(linked.status)) {
+      if (found && found.id === linked.id) {
+        return { ticketId: linked.id, status: linked.status };
+      }
+      if (!found) return { ticketId: null, status: null };
+    }
   }
-  const found = await store.findActiveInstagramTicket({
-    externalConversationId: event.externalConversationId,
-    externalContactId: event.externalContactId,
-    sourceChannel: "whatsapp",
-  });
-  if (found && "errorCode" in found) return { errorCode: found.errorCode };
   if (found && isActiveTicketStatus(found.status)) {
     return { ticketId: found.id, status: found.status };
   }
-  return { ticketId: conversationTicketId, status: found?.status ?? null };
+  return { ticketId: null, status: found?.status ?? null };
 }
 
 function whatsappEffectArgs(
@@ -103,16 +126,21 @@ function whatsappEffectArgs(
   conversationId: string,
   ingestDeps: WhatsAppIngestDeps,
 ) {
+  const identity = channelIdentityFromInbound(event);
+  const contactId = identity?.externalContactId ?? event.externalContactId;
   return {
     inboundMessageId: event.externalMessageId,
     inboundText: event.messageBody,
     event: {
-      externalContactId: event.externalContactId,
-      externalConversationId: event.externalConversationId,
+      externalContactId: contactId,
+      externalConversationId:
+        identity?.externalConversationId ?? event.externalConversationId,
+      recipientAccountId: identity?.recipientAccountId ?? event.recipientAccountId,
+      provider: identity?.provider ?? event.provider,
     },
     deps: {
       store,
-      recipientId: event.externalContactId,
+      recipientId: contactId,
       conversationId,
       sendDeps: ingestDeps.sendDeps,
       loadTicket: ingestDeps.loadTicket,
@@ -272,9 +300,14 @@ export async function ingestWhatsAppInboundMessage(
   }
 
   const eventId = claim.id;
+  const identity = channelIdentityFromInbound(event);
+  if (!identity) {
+    await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, IDENTITY_MISSING);
+    return { outcome: "failed", errorCode: IDENTITY_MISSING };
+  }
 
   try {
-    const conversation = await upsertConversation(store, event);
+    const conversation = await upsertConversation(store, event, identity);
     if (conversation.outcome === "failed") {
       await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, conversation.errorCode);
       return { outcome: "failed", errorCode: conversation.errorCode };
@@ -282,7 +315,7 @@ export async function ingestWhatsAppInboundMessage(
 
     const ticketInfo = await ticketStatusFor(
       store,
-      event,
+      identity,
       conversation.row.ticketId,
     );
     if ("errorCode" in ticketInfo) {
