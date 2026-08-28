@@ -206,6 +206,7 @@ Exact matches only. No `*`. Localhost allowed only outside production.
 | `WEBSITE_INTAKE_ALLOWED_ORIGINS` | Yes | Exact browser origins |
 | Existing Brevo SMTP vars | Yes for email | Acknowledgement and internal notification delivery |
 | `SUPPORT_INBOX_EMAIL` | Yes for inbox notify | Internal Brevo notification To for new website tickets (e.g. `help@cloutflow.com`) |
+| `TICKET_RESOLUTION_OUTBOX_DRAIN_SECRET` | Yes for resolution drain | Bearer token for `POST /api/internal/tickets/resolution-outbox/drain` (no value in repo; see `docs/ticket-resolution-outbox.md`) |
 
 Brevo sender notes:
 

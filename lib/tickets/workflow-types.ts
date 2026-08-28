@@ -91,9 +91,10 @@ export type CreatorReplyActionResult =
 export type ResolveTicketActionResult =
   | {
       data: Ticket;
-      resolutionEmail: "sent" | "failed" | "skipped";
+      resolutionEmail: "sent" | "failed" | "skipped" | "queued";
       resolutionEmailMessage?: string;
       comment?: TicketComment;
+      alreadyResolved?: boolean;
     }
   | { error: string };
 
@@ -105,6 +106,7 @@ export interface StatusUpdateInput {
 export interface ResolveTicketInput {
   ticketId: string;
   resolutionSummary: string;
+  idempotencyKey?: string;
 }
 
 export interface AssignmentInput {

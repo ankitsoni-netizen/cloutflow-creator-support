@@ -31,6 +31,8 @@ export default function StatusControl({
       <select
         value={isResolved ? "Resolved" : status}
         disabled={saving || isResolved}
+        aria-busy={saving}
+        aria-disabled={saving || isResolved}
         onChange={(e) => {
           onChange(e.target.value as Exclude<TicketStatus, "Resolved">);
         }}

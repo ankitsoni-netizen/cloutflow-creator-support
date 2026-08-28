@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AssignmentControl from "@/components/ticket/AssignmentControl";
 import CloutflowCopilot from "@/components/ticket/CloutflowCopilot";
 import ConversationTimeline from "@/components/ticket/ConversationTimeline";
@@ -27,11 +27,13 @@ import {
   addInternalNoteAction,
   queueCreatorReplyAction,
   reassignTicketAction,
-  resolveTicketAction,
   updateTicketStatusAction,
 } from "@/lib/tickets/workflow-actions";
 import { fetchTicketTimeline } from "@/lib/tickets/workflow-api";
 import type { Ticket, TicketStatus } from "@/lib/types";
+import {
+  resolveActionA11y,
+} from "@/lib/tickets/resolve-cache";
 import {
   formatDateTime,
   getInitials,
@@ -43,7 +45,11 @@ interface TicketWorkspaceProps {
   ticket: Ticket | null;
   staffOptions: StaffOption[];
   onTicketUpdated: (ticket: Ticket) => void;
-  onTicketResolved: (ticket: Ticket) => void;
+  onResolveTicket: (ticket: Ticket, resolutionSummary: string) => void;
+  resolvePending?: boolean;
+  resolveChecking?: boolean;
+  resolveError?: string | null;
+  onRetryResolve?: () => void;
   onClose?: () => void;
   showClose?: boolean;
   pendingReplyIds?: Set<string>;
@@ -56,7 +62,11 @@ export default function TicketWorkspace({
   ticket,
   staffOptions,
   onTicketUpdated,
-  onTicketResolved,
+  onResolveTicket,
+  resolvePending = false,
+  resolveChecking = false,
+  resolveError = null,
+  onRetryResolve,
   onClose,
   showClose = false,
   pendingReplyIds,
@@ -79,7 +89,11 @@ export default function TicketWorkspace({
       ticket={ticket}
       staffOptions={staffOptions}
       onTicketUpdated={onTicketUpdated}
-      onTicketResolved={onTicketResolved}
+      onResolveTicket={onResolveTicket}
+      resolvePending={resolvePending}
+      resolveChecking={resolveChecking}
+      resolveError={resolveError}
+      onRetryResolve={onRetryResolve}
       onClose={onClose}
       showClose={showClose}
       hasPendingCreatorReply={pendingReplyIds?.has(ticket.id) ?? false}
@@ -92,7 +106,11 @@ function TicketWorkspaceActive({
   ticket,
   staffOptions,
   onTicketUpdated,
-  onTicketResolved,
+  onResolveTicket,
+  resolvePending,
+  resolveChecking,
+  resolveError,
+  onRetryResolve,
   onClose,
   showClose,
   hasPendingCreatorReply,
@@ -101,7 +119,11 @@ function TicketWorkspaceActive({
   ticket: Ticket;
   staffOptions: StaffOption[];
   onTicketUpdated: (ticket: Ticket) => void;
-  onTicketResolved: (ticket: Ticket) => void;
+  onResolveTicket: (ticket: Ticket, resolutionSummary: string) => void;
+  resolvePending: boolean;
+  resolveChecking: boolean;
+  resolveError: string | null;
+  onRetryResolve?: () => void;
   onClose?: () => void;
   showClose: boolean;
   hasPendingCreatorReply: boolean;
@@ -118,9 +140,7 @@ function TicketWorkspaceActive({
   const [assignError, setAssignError] = useState<string | null>(null);
 
   const [resolveOpen, setResolveOpen] = useState(false);
-  const [resolveSaving, setResolveSaving] = useState(false);
-  const [resolveError, setResolveError] = useState<string | null>(null);
-  const [resolveNotice, setResolveNotice] = useState<string | null>(null);
+  const resolveSubmitRef = useRef(false);
 
   const [ackRetrying, setAckRetrying] = useState(false);
   const [ackMessage, setAckMessage] = useState<string | null>(null);
@@ -136,6 +156,10 @@ function TicketWorkspaceActive({
   const [propertiesWidth, setPropertiesWidth] = useState(300);
   const [copilotWidth, setCopilotWidth] = useState(280);
   const [composerHeight, setComposerHeight] = useState(220);
+
+  useEffect(() => {
+    if (!resolvePending && !resolveChecking) resolveSubmitRef.current = false;
+  }, [resolvePending, resolveChecking]);
 
   function enrichTimeline(
     comments: Parameters<typeof buildTimeline>[1],
@@ -344,32 +368,13 @@ function TicketWorkspaceActive({
     return { ok: true as const };
   }
 
-  async function handleResolve(summary: string) {
-    if (resolveSaving) return;
-    setResolveSaving(true);
-    setResolveError(null);
-    setResolveNotice(null);
-    const result = await resolveTicketAction({
-      ticketId: ticket.id,
-      resolutionSummary: summary,
-    });
-    setResolveSaving(false);
-    if ("error" in result) {
-      setResolveError(result.error);
+  function handleResolve(summary: string) {
+    if (resolveSubmitRef.current || resolvePending || resolveChecking || ticket.status === "Resolved") {
       return;
     }
+    resolveSubmitRef.current = true;
     setResolveOpen(false);
-    if (result.resolutionEmail === "failed") {
-      setResolveNotice(
-        result.resolutionEmailMessage ||
-          "Ticket resolved, but the resolution email could not be sent.",
-      );
-    } else {
-      setResolveNotice(result.resolutionEmailMessage || null);
-    }
-    onTicketResolved(result.data);
-    void loadTimeline();
-    onConversationMutated?.();
+    onResolveTicket(ticket, summary);
   }
 
   async function handleRetryEmail(commentId: string) {
@@ -422,6 +427,12 @@ function TicketWorkspaceActive({
     !ticket.acknowledgementEmailSentAt;
 
   const isResolved = ticket.status === "Resolved";
+  const resolveA11y = resolveActionA11y({
+    status: ticket.status,
+    pending: resolvePending,
+    checking: resolveChecking,
+    failed: Boolean(resolveError),
+  });
   const assigneeInitials = getInitials(ticket.assignedExecutive || "?");
 
   return (
@@ -502,13 +513,15 @@ function TicketWorkspaceActive({
             <button
               type="button"
               onClick={() => {
-                setResolveError(null);
                 setResolveOpen(true);
               }}
-              disabled={isResolved}
+              disabled={resolveA11y.disabled}
+              aria-busy={resolveA11y.ariaBusy}
+              aria-disabled={resolveA11y.ariaDisabled}
+              aria-label={resolveA11y.label}
               className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
             >
-              {isResolved ? "Resolved" : "Mark as Resolved"}
+              {resolveA11y.label}
             </button>
             {showClose && onClose ? (
               <button
@@ -543,24 +556,39 @@ function TicketWorkspaceActive({
             }}
           />
         </div>
-        {ackMessage || resolveNotice ? (
+        {ackMessage || resolveA11y.statusMessage || resolveError ? (
           <div className="mt-3 space-y-1">
             {ackMessage ? (
               <p className="text-xs text-muted" role="status">
                 {ackMessage}
               </p>
             ) : null}
-            {resolveNotice ? (
+            {resolveA11y.statusMessage && !resolveError ? (
               <p
                 className={`text-xs ${
-                  resolveNotice.includes("could not be sent")
-                    ? "text-[var(--danger)]"
-                    : "text-[var(--success)]"
+                  ticket.status === "Resolved" && !resolvePending && !resolveChecking
+                    ? "text-[var(--success)]"
+                    : "text-muted"
                 }`}
                 role="status"
+                aria-live="polite"
               >
-                {resolveNotice}
+                {resolveA11y.statusMessage}
               </p>
+            ) : null}
+            {resolveError ? (
+              <div className="flex flex-wrap items-center gap-2" role="alert">
+                <p className="text-xs text-[var(--danger)]">{resolveError}</p>
+                {onRetryResolve ? (
+                  <button
+                    type="button"
+                    onClick={onRetryResolve}
+                    className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground hover:bg-surface-muted"
+                  >
+                    Retry
+                  </button>
+                ) : null}
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -708,10 +736,10 @@ function TicketWorkspaceActive({
         open={resolveOpen}
         ticketCode={ticket.ticketNumber}
         creatorName={ticket.creatorName}
-        submitting={resolveSaving}
+        submitting={resolvePending || resolveChecking}
         error={resolveError}
         onClose={() => {
-          if (!resolveSaving) setResolveOpen(false);
+          if (!resolvePending && !resolveChecking) setResolveOpen(false);
         }}
         onConfirm={handleResolve}
       />

@@ -5,6 +5,24 @@ import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import type { Ticket } from "@/lib/types";
 
+export async function fetchTicketById(
+  ticketId: string,
+): Promise<{ ticket: Ticket } | { error: string }> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from("tickets")
+    .select(TICKET_SELECT)
+    .eq("id", ticketId)
+    .maybeSingle();
+
+  if (error) {
+    logSupabaseError("ticket fetch by id failed", error);
+    return { error: toSafeTicketErrorMessage(error) };
+  }
+  if (!data) return { error: "Unable to load the ticket." };
+  return { ticket: mapDbTicketToTicket(data as DbTicket) };
+}
+
 export async function fetchTickets(): Promise<
   { tickets: Ticket[] } | { error: string }
 > {

@@ -53,11 +53,17 @@ export async function sendStaffWhatsAppReply(input: {
   commentId: string;
   commentText: string;
   store?: InstagramIngestStore;
+  allowResolvedTicket?: boolean;
+  skipWhatsAppDelivery?: boolean;
 }): Promise<WhatsAppStaffReplyResult> {
   if (!isWhatsAppTicket(input.ticket)) {
     return { ok: false, error: "This ticket is not a WhatsApp ticket.", errorCode: "not_whatsapp" };
   }
-  if (!isActiveTicketStatus(input.ticket.status)) {
+  const statusAllowed =
+    isActiveTicketStatus(input.ticket.status) ||
+    (input.allowResolvedTicket === true &&
+      input.ticket.status.trim().toLowerCase() === "resolved");
+  if (!statusAllowed) {
     return {
       ok: false,
       error: "Replies can only be sent on an active WhatsApp ticket.",
@@ -112,6 +118,47 @@ export async function sendStaffWhatsAppReply(input: {
       ok: false,
       error: "Unable to find the WhatsApp conversation for this ticket.",
       errorCode: "conversation_missing",
+    };
+  }
+
+  if (input.skipWhatsAppDelivery === true) {
+    const emailClaim = await store.claimEmailDelivery({
+      ticketId: input.ticket.id,
+      conversationId,
+      commentId: input.commentId,
+      purpose: "whatsapp-staff-reply",
+      idempotencyKey: `email:wa-crm:${input.commentId}`,
+    });
+    let email: "sent" | "failed" | "skipped" = "skipped";
+    if (emailClaim.outcome === "claimed") {
+      const mailed = await sendInstagramCreatorReplyEmail({
+        ticket: input.ticket,
+        commentText: text,
+      });
+      email =
+        mailed.outcome === "sent"
+          ? "sent"
+          : mailed.outcome === "skipped"
+            ? "skipped"
+            : "failed";
+      await store.markEmailDelivery(emailClaim.id, {
+        deliveryStatus:
+          mailed.outcome === "sent"
+            ? "sent"
+            : mailed.outcome === "skipped"
+              ? "skipped"
+              : "failed",
+        brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
+        errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
+      });
+    } else if (emailClaim.outcome === "duplicate" && emailClaim.deliveryStatus === "sent") {
+      email = "sent";
+    }
+    return {
+      ok: true,
+      whatsapp: "sent",
+      email,
+      alreadySent: true,
     };
   }
 

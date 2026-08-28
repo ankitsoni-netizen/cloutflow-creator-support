@@ -242,4 +242,56 @@ describe("CRM Instagram replies", () => {
     expect(isInstagramTicket(ticket())).toBe(true);
     expect(isInstagramTicket(ticket({ source_channel: "website" }))).toBe(false);
   });
+
+  it("rejects ordinary replies on resolved tickets", async () => {
+    const result = await sendStaffInstagramReply({
+      ticket: ticket({ status: "resolved" }),
+      commentId: "comment-resolved",
+      commentText: "Too late",
+      store: store(),
+    });
+    expect(result).toMatchObject({ ok: false, errorCode: "ticket_not_active" });
+  });
+
+  it("allows resolution notifications on resolved tickets", async () => {
+    const send = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.resolve",
+      recipientId: "12334",
+    });
+    const result = await sendStaffInstagramReply({
+      ticket: ticket({ status: "resolved" }),
+      commentId: "comment-resolve",
+      commentText: "Resolved on our side.",
+      store: store(),
+      allowResolvedTicket: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.instagram).toBe("sent");
+    expect(send).toHaveBeenCalled();
+    send.mockRestore();
+  });
+
+  it("skips Graph send when Instagram was already delivered", async () => {
+    const send = vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.should-not-send",
+      recipientId: "12334",
+    });
+    const result = await sendStaffInstagramReply({
+      ticket: ticket({ status: "resolved" }),
+      commentId: "comment-email-only",
+      commentText: "Resolved on our side.",
+      store: store(),
+      allowResolvedTicket: true,
+      skipInstagramDelivery: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.instagram).toBe("sent");
+      expect(result.alreadySent).toBe(true);
+    }
+    expect(send).not.toHaveBeenCalled();
+    send.mockRestore();
+  });
 });

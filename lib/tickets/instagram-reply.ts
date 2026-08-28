@@ -49,11 +49,17 @@ export async function sendStaffInstagramReply(input: {
   commentId: string;
   commentText: string;
   store?: InstagramIngestStore;
+  allowResolvedTicket?: boolean;
+  skipInstagramDelivery?: boolean;
 }): Promise<InstagramStaffReplyResult> {
   if (!isInstagramTicket(input.ticket)) {
     return { ok: false, error: "This ticket is not an Instagram ticket.", errorCode: "not_instagram" };
   }
-  if (!isActiveTicketStatus(input.ticket.status)) {
+  const statusAllowed =
+    isActiveTicketStatus(input.ticket.status) ||
+    (input.allowResolvedTicket === true &&
+      input.ticket.status.trim().toLowerCase() === "resolved");
+  if (!statusAllowed) {
     return {
       ok: false,
       error: "Replies can only be sent on an active Instagram ticket.",
@@ -108,6 +114,47 @@ export async function sendStaffInstagramReply(input: {
       ok: false,
       error: "Unable to find the Instagram conversation for this ticket.",
       errorCode: "conversation_missing",
+    };
+  }
+
+  if (input.skipInstagramDelivery === true) {
+    const emailClaim = await store.claimEmailDelivery({
+      ticketId: input.ticket.id,
+      conversationId,
+      commentId: input.commentId,
+      purpose: "instagram-staff-reply",
+      idempotencyKey: `email:ig-crm:${input.commentId}`,
+    });
+    let email: "sent" | "failed" | "skipped" = "skipped";
+    if (emailClaim.outcome === "claimed") {
+      const mailed = await sendInstagramCreatorReplyEmail({
+        ticket: input.ticket,
+        commentText: text,
+      });
+      email =
+        mailed.outcome === "sent"
+          ? "sent"
+          : mailed.outcome === "skipped"
+            ? "skipped"
+            : "failed";
+      await store.markEmailDelivery(emailClaim.id, {
+        deliveryStatus:
+          mailed.outcome === "sent"
+            ? "sent"
+            : mailed.outcome === "skipped"
+              ? "skipped"
+              : "failed",
+        brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
+        errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
+      });
+    } else if (emailClaim.outcome === "duplicate" && emailClaim.deliveryStatus === "sent") {
+      email = "sent";
+    }
+    return {
+      ok: true,
+      instagram: "sent",
+      email,
+      alreadySent: true,
     };
   }
 

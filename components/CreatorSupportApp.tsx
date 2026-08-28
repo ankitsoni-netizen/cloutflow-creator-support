@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useTransition,
   type CSSProperties,
@@ -28,7 +29,7 @@ import TicketWorkspace from "@/components/ticket/TicketWorkspace";
 import ResizeHandle, { clampSize } from "@/components/ui/ResizeHandle";
 import type { StaffProfile } from "@/lib/auth";
 import { createTicketAction } from "@/lib/tickets/actions";
-import { fetchTickets } from "@/lib/tickets/api";
+import { fetchTicketById, fetchTickets } from "@/lib/tickets/api";
 import { getEmailChannelStatusAction } from "@/lib/tickets/email-actions";
 import {
   fetchPendingReplyTicketIds,
@@ -36,6 +37,22 @@ import {
 } from "@/lib/tickets/ops-api";
 import { fetchActiveStaffOptions } from "@/lib/tickets/workflow-api";
 import type { StaffOption } from "@/lib/tickets/workflow-types";
+import { resolveTicketAction } from "@/lib/tickets/workflow-actions";
+import {
+  RESOLVE_FAILURE_MESSAGE,
+  RESOLVE_SUCCESS_NOTICE,
+  beginOptimisticResolve,
+  classifyCanonicalVerification,
+  classifyResolveActionResult,
+  completeOptimisticResolveFailure,
+  completeOptimisticResolveSuccess,
+  createOptimisticResolveController,
+  mergeCanonicalTicket,
+  resolveTicketIdempotencyKey,
+  shouldApplyCanonicalTicket,
+  type ResolveFailureState,
+  type TicketsCacheSnapshot,
+} from "@/lib/tickets/resolve-cache";
 import type {
   InboxView,
   NavItem,
@@ -127,6 +144,23 @@ export default function CreatorSupportApp({
   const [pendingReplyIds, setPendingReplyIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [resolveFailure, setResolveFailure] =
+    useState<ResolveFailureState | null>(null);
+  const [pendingResolveIds, setPendingResolveIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [checkingTicketIds, setCheckingTicketIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const resolveControllerRef = useRef(createOptimisticResolveController());
+  const resolveRetryRef = useRef<{
+    ticket: Ticket;
+    summary: string;
+  } | null>(null);
+  const ticketsRef = useRef(tickets);
+  const selectedIdRef = useRef(selectedId);
+  const pendingReplyIdsRef = useRef(pendingReplyIds);
+  const checkingTicketIdsRef = useRef(checkingTicketIds);
   const [staffDirectory, setStaffDirectory] = useState<StaffDirectoryMember[]>(
     [],
   );
@@ -140,10 +174,23 @@ export default function CreatorSupportApp({
   const staffName = staffProfile.full_name?.trim() ?? "";
   const staffUserId = staffProfile.user_id;
 
+  useEffect(() => {
+    ticketsRef.current = tickets;
+    selectedIdRef.current = selectedId;
+    pendingReplyIdsRef.current = pendingReplyIds;
+    checkingTicketIdsRef.current = checkingTicketIds;
+  }, [tickets, selectedId, pendingReplyIds, checkingTicketIds]);
+
   const refreshPendingReplies = useCallback(async () => {
     const result = await fetchPendingReplyTicketIds();
     if ("error" in result) return;
-    setPendingReplyIds(new Set(result.ticketIds));
+    setPendingReplyIds(() => {
+      const next = new Set(result.ticketIds);
+      for (const id of resolveControllerRef.current.inFlight) {
+        next.delete(id);
+      }
+      return next;
+    });
   }, []);
 
   const refreshStaffDirectory = useCallback(async () => {
@@ -214,7 +261,22 @@ export default function CreatorSupportApp({
       }
 
       setLoadError(null);
-      setTickets(result.tickets);
+      setTickets((prev) =>
+        result.tickets.map((incoming) => {
+          const current = prev.find((ticket) => ticket.id === incoming.id);
+          if (!current) return incoming;
+          const guarded =
+            resolveControllerRef.current.inFlight.has(incoming.id) ||
+            checkingTicketIdsRef.current.has(incoming.id);
+          if (
+            guarded &&
+            !shouldApplyCanonicalTicket(current, incoming, { allowReopen: false })
+          ) {
+            return current;
+          }
+          return incoming;
+        }),
+      );
       setSelectedId((current) => {
         if (current && result.tickets.some((ticket) => ticket.id === current)) {
           return current;
@@ -233,15 +295,174 @@ export default function CreatorSupportApp({
   }
 
   function handleTicketUpdated(updated: Ticket) {
-    setTickets((prev) =>
-      prev.map((ticket) => (ticket.id === updated.id ? updated : ticket)),
-    );
+    setTickets((prev) => {
+      const guarded =
+        resolveControllerRef.current.inFlight.has(updated.id) ||
+        checkingTicketIdsRef.current.has(updated.id);
+      return mergeCanonicalTicket(prev, updated, { allowReopen: !guarded });
+    });
   }
 
-  function handleTicketResolved(updated: Ticket) {
-    handleTicketUpdated(updated);
+  const currentCache = useCallback((): TicketsCacheSnapshot => {
+    return {
+      tickets,
+      selectedId,
+      pendingReplyIds,
+    };
+  }, [tickets, selectedId, pendingReplyIds]);
+
+  const applyCache = useCallback((cache: TicketsCacheSnapshot) => {
+    setTickets(cache.tickets);
+    setSelectedId(cache.selectedId);
+    setPendingReplyIds(cache.pendingReplyIds);
+  }, []);
+
+  function handleResolveTicket(ticket: Ticket, resolutionSummary: string) {
+    const started = beginOptimisticResolve({
+      controller: resolveControllerRef.current,
+      cache: currentCache(),
+      ticket,
+      resolutionSummary,
+      resolvedAtIso: new Date().toISOString(),
+    });
+    if (!started.started) return;
+
+    resolveRetryRef.current = { ticket, summary: resolutionSummary };
+    applyCache(started.cache);
+    ticketsRef.current = started.cache.tickets;
+    selectedIdRef.current = started.cache.selectedId;
+    pendingReplyIdsRef.current = started.cache.pendingReplyIds;
     setMobileDetailOpen(true);
-    showSuccess(`Ticket ${updated.ticketNumber} marked as resolved.`);
+    setResolveFailure(null);
+    setCheckingTicketIds((prev) => {
+      const next = new Set(prev);
+      next.delete(ticket.id);
+      return next;
+    });
+    setPendingResolveIds((prev) => {
+      const next = new Set(prev);
+      next.add(ticket.id);
+      return next;
+    });
+
+    const finishPending = () => {
+      setPendingResolveIds((prev) => {
+        const next = new Set(prev);
+        next.delete(ticket.id);
+        return next;
+      });
+    };
+
+    const applySuccess = (canonical: Ticket) => {
+      finishPending();
+      setCheckingTicketIds((prev) => {
+        const next = new Set(prev);
+        next.delete(ticket.id);
+        return next;
+      });
+      const reconciled = completeOptimisticResolveSuccess({
+        controller: resolveControllerRef.current,
+        cache: {
+          tickets: ticketsRef.current,
+          selectedId: selectedIdRef.current,
+          pendingReplyIds: pendingReplyIdsRef.current,
+        },
+        canonical,
+      });
+      applyCache(reconciled);
+      ticketsRef.current = reconciled.tickets;
+      selectedIdRef.current = reconciled.selectedId;
+      pendingReplyIdsRef.current = reconciled.pendingReplyIds;
+      setResolveFailure(null);
+      showSuccess(RESOLVE_SUCCESS_NOTICE);
+      void fetchTicketById(ticket.id).then((fresh) => {
+        if ("ticket" in fresh) {
+          setTickets((prev) =>
+            mergeCanonicalTicket(prev, fresh.ticket, { allowReopen: false }),
+          );
+        }
+      });
+    };
+
+    const applyDefiniteFailure = () => {
+      finishPending();
+      setCheckingTicketIds((prev) => {
+        const next = new Set(prev);
+        next.delete(ticket.id);
+        return next;
+      });
+      const rolled = completeOptimisticResolveFailure({
+        controller: resolveControllerRef.current,
+        cache: {
+          tickets: ticketsRef.current,
+          selectedId: selectedIdRef.current,
+          pendingReplyIds: pendingReplyIdsRef.current,
+        },
+        ticketId: ticket.id,
+      });
+      applyCache(rolled.cache);
+      ticketsRef.current = rolled.cache.tickets;
+      selectedIdRef.current = rolled.cache.selectedId;
+      pendingReplyIdsRef.current = rolled.cache.pendingReplyIds;
+      setResolveFailure({
+        ticketId: ticket.id,
+        resolutionSummary,
+        message: RESOLVE_FAILURE_MESSAGE,
+      });
+    };
+
+    const verifyAfterAmbiguous = async () => {
+      finishPending();
+      setCheckingTicketIds((prev) => {
+        const next = new Set(prev);
+        next.add(ticket.id);
+        return next;
+      });
+      const fresh = await fetchTicketById(ticket.id);
+      const verification = classifyCanonicalVerification(
+        "ticket" in fresh ? fresh.ticket : null,
+        "error" in fresh,
+      );
+      if (verification.kind === "success") {
+        applySuccess(verification.ticket);
+        return;
+      }
+      if (verification.kind === "rollback") {
+        applyDefiniteFailure();
+        return;
+      }
+    };
+
+    void resolveTicketAction({
+      ticketId: ticket.id,
+      resolutionSummary,
+      idempotencyKey: resolveTicketIdempotencyKey(ticket.id),
+    })
+      .then((result) => {
+        const classified = classifyResolveActionResult(result);
+        if (classified.kind === "success") {
+          applySuccess(classified.ticket);
+          return;
+        }
+        if (classified.kind === "definite_failure") {
+          applyDefiniteFailure();
+          return;
+        }
+        return verifyAfterAmbiguous();
+      })
+      .catch(() => verifyAfterAmbiguous());
+  }
+
+  function handleRetryResolve() {
+    const pending = resolveRetryRef.current;
+    const failure = resolveFailure;
+    if (!pending && !failure) return;
+    const ticket =
+      tickets.find((item) => item.id === (failure?.ticketId ?? pending?.ticket.id)) ??
+      pending?.ticket;
+    const summary = failure?.resolutionSummary || pending?.summary;
+    if (!ticket || !summary) return;
+    handleResolveTicket(ticket, summary);
   }
 
   const viewCounts = useMemo(() => {
@@ -482,7 +703,24 @@ export default function CreatorSupportApp({
                   ticket={selectedTicket}
                   staffOptions={staffOptions}
                   onTicketUpdated={handleTicketUpdated}
-                  onTicketResolved={handleTicketResolved}
+                  onResolveTicket={handleResolveTicket}
+                  resolvePending={
+                    selectedTicket
+                      ? pendingResolveIds.has(selectedTicket.id)
+                      : false
+                  }
+                  resolveChecking={
+                    selectedTicket
+                      ? checkingTicketIds.has(selectedTicket.id)
+                      : false
+                  }
+                  resolveError={
+                    selectedTicket &&
+                    resolveFailure?.ticketId === selectedTicket.id
+                      ? resolveFailure.message
+                      : null
+                  }
+                  onRetryResolve={handleRetryResolve}
                   onConversationMutated={() => {
                     void refreshPendingReplies();
                   }}
@@ -583,6 +821,23 @@ export default function CreatorSupportApp({
         >
           <p className="font-medium text-accent">Success</p>
           <p className="mt-0.5 text-muted">{successMessage}</p>
+        </div>
+      ) : null}
+
+      {resolveFailure ? (
+        <div
+          role="alert"
+          className="fixed right-4 bottom-20 z-[60] max-w-sm rounded-md border border-border bg-surface px-4 py-3 text-sm text-foreground shadow-[var(--shadow-md)]"
+        >
+          <p className="font-medium text-[var(--danger)]">Could not resolve</p>
+          <p className="mt-0.5 text-muted">{resolveFailure.message}</p>
+          <button
+            type="button"
+            onClick={handleRetryResolve}
+            className="mt-2 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
+          >
+            Retry
+          </button>
         </div>
       ) : null}
     </div>

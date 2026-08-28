@@ -1,10 +1,6 @@
 "use server";
 
-import {
-  sendCreatorReplyEmail,
-  sendResolutionEmail,
-} from "@/lib/email/ticket-mail";
-import { sendInstagramResolutionTranscriptEmail } from "@/lib/email/instagram-ticket-mail";
+import { sendCreatorReplyEmail } from "@/lib/email/ticket-mail";
 import { getActiveStaffContext } from "@/lib/tickets/auth-action";
 import {
   loadTicketById,
@@ -24,8 +20,13 @@ import {
 } from "@/lib/tickets/whatsapp-reply";
 import { mapDbTicketToTicket } from "@/lib/tickets/map";
 import { consumeStaffActionRateLimit } from "@/lib/tickets/staff-rate-limit";
-import { createAdminInstagramStore } from "@/lib/meta/instagram-store";
 import { WHATSAPP_MESSAGING_WINDOW_STAFF_WARNING } from "@/lib/meta/routing-copy";
+import { resolveTicketIdempotencyKey } from "@/lib/tickets/resolve-cache";
+import {
+  commitTicketResolution,
+  toResolveTicketActionResult,
+} from "@/lib/tickets/resolve-ticket";
+import { scheduleResolutionJobDrain } from "@/lib/tickets/resolution-outbox";
 import { TICKET_SELECT } from "@/lib/tickets/select";
 import type { DbTicket } from "@/lib/tickets/types";
 import {
@@ -392,263 +393,20 @@ export async function resolveTicketAction(
   const context = await getActiveStaffContext();
   if (!context.ok) return { error: context.error };
 
-  const resolutionSummary = input.resolutionSummary.trim();
-  if (!resolutionSummary) {
-    return { error: "Resolution summary is required." };
-  }
-
-  const { data, error } = await context.supabase
-    .from("tickets")
-    .update({
-      status: "resolved",
-      resolution_summary: resolutionSummary,
-    })
-    .eq("id", input.ticketId)
-    .select(TICKET_SELECT)
-    .single();
-
-  if (error || !data) {
-    if (error) logSupabaseError("ticket resolve failed", error);
-    return {
-      error: error
-        ? toSafeTicketErrorMessage(error)
-        : "Unable to resolve the ticket.",
-    };
-  }
-
-  const resolvedTicket = data as DbTicket;
-
-  const { data: commentRow, error: commentError } = await context.supabase
-    .from("ticket_comments")
-    .insert({
-      ticket_id: resolvedTicket.id,
-      author_user_id: context.user.id,
-      author_name: context.profile.full_name,
-      visibility: "creator",
-      comment_text: resolutionSummary,
-      send_to_creator: true,
-      delivery_status: "pending",
-    })
-    .select(COMMENT_SELECT)
-    .single();
-
-  if (commentError || !commentRow) {
-    if (commentError) {
-      logSupabaseError("resolution comment insert failed", commentError);
-    }
-    return {
-      data: mapDbTicketToTicket(resolvedTicket),
-      resolutionEmail: "failed",
-      resolutionEmailMessage:
-        "Ticket resolved, but the resolution email could not be prepared.",
-    };
-  }
-
-  const comment = mapDbComment(commentRow);
-
-  if (isInstagramTicket(resolvedTicket)) {
-    const ig = await sendStaffInstagramReply({
-      ticket: { ...resolvedTicket, status: "open" },
-      commentId: comment.id,
-      commentText: resolutionSummary,
-    });
-    let store;
-    try {
-      store = createAdminInstagramStore();
-    } catch {
-      store = null;
-    }
-    if (store && resolvedTicket.external_conversation_id) {
-      const conversation = await store.getConversation(
-        "instagram",
-        resolvedTicket.external_conversation_id,
-      );
-      if (conversation && !("errorCode" in conversation)) {
-        const rows = await store.listSupportTranscript({
-          conversationId: conversation.id,
-          ticketId: resolvedTicket.id,
-        });
-        const transcriptText = rows
-          .map((row) => {
-            const who = row.direction === "inbound" ? "Creator" : "Cloutflow";
-            return `${who}: ${row.messageBody}`;
-          })
-          .join("\n\n");
-        const claim = await store.claimEmailDelivery({
-          ticketId: resolvedTicket.id,
-          conversationId: conversation.id,
-          commentId: comment.id,
-          purpose: "instagram-resolution-transcript",
-          idempotencyKey: `email:ig-resolve:${resolvedTicket.id}`,
-        });
-        if (claim.outcome === "claimed") {
-          const mailed = await sendInstagramResolutionTranscriptEmail({
-            ticket: resolvedTicket,
-            transcriptText,
-            resolutionSummary,
-          });
-          await store.markEmailDelivery(claim.id, {
-            deliveryStatus:
-              mailed.outcome === "sent"
-                ? "sent"
-                : mailed.outcome === "skipped"
-                  ? "skipped"
-                  : "failed",
-            brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
-            errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
-          });
-        }
-      }
-    }
-
-    const commentStatus =
-      ig.ok && ig.instagram === "sent" ? "sent" : "failed";
-    const updatedComment = await updateCommentDeliveryStatus(
-      context.supabase,
-      comment.id,
-      commentStatus === "sent" ? "sent" : "failed",
-    );
-    await markTicketCustomerNotified(context.supabase, resolvedTicket);
-    return {
-      data: mapDbTicketToTicket(resolvedTicket),
-      resolutionEmail: commentStatus === "sent" ? "sent" : "failed",
-      resolutionEmailMessage:
-        commentStatus === "sent"
-          ? "Ticket resolved and the creator was notified."
-          : "Ticket resolved, but Instagram/email notification failed.",
-      comment: "data" in updatedComment ? updatedComment.data : comment,
-    };
-  }
-
-  if (isWhatsAppTicket(resolvedTicket)) {
-    const wa = await sendStaffWhatsAppReply({
-      ticket: { ...resolvedTicket, status: "open" },
-      commentId: comment.id,
-      commentText: resolutionSummary,
-    });
-    let store;
-    try {
-      store = createAdminInstagramStore();
-    } catch {
-      store = null;
-    }
-    if (store && resolvedTicket.external_conversation_id) {
-      const conversation = await store.getConversation(
-        "whatsapp",
-        resolvedTicket.external_conversation_id,
-      );
-      if (conversation && !("errorCode" in conversation)) {
-        const rows = await store.listSupportTranscript({
-          conversationId: conversation.id,
-          ticketId: resolvedTicket.id,
-        });
-        const transcriptText = rows
-          .map((row) => {
-            const who = row.direction === "inbound" ? "Creator" : "Cloutflow";
-            return `${who}: ${row.messageBody}`;
-          })
-          .join("\n\n");
-        const claim = await store.claimEmailDelivery({
-          ticketId: resolvedTicket.id,
-          conversationId: conversation.id,
-          commentId: comment.id,
-          purpose: "whatsapp-resolution-transcript",
-          idempotencyKey: `email:wa-resolve:${resolvedTicket.id}`,
-        });
-        if (claim.outcome === "claimed") {
-          const mailed = await sendInstagramResolutionTranscriptEmail({
-            ticket: resolvedTicket,
-            transcriptText,
-            resolutionSummary,
-          });
-          await store.markEmailDelivery(claim.id, {
-            deliveryStatus:
-              mailed.outcome === "sent"
-                ? "sent"
-                : mailed.outcome === "skipped"
-                  ? "skipped"
-                  : "failed",
-            brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
-            errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
-          });
-        }
-      }
-    }
-
-    const commentStatus = wa.ok && wa.whatsapp === "sent" ? "sent" : "failed";
-    const updatedComment = await updateCommentDeliveryStatus(
-      context.supabase,
-      comment.id,
-      commentStatus === "sent" ? "sent" : "failed",
-    );
-    await markTicketCustomerNotified(context.supabase, resolvedTicket);
-    return {
-      data: mapDbTicketToTicket(resolvedTicket),
-      resolutionEmail: commentStatus === "sent" ? "sent" : "failed",
-      resolutionEmailMessage:
-        commentStatus === "sent"
-          ? "Ticket resolved and the creator was notified."
-          : "Ticket resolved, but WhatsApp/email notification failed.",
-      comment: "data" in updatedComment ? updatedComment.data : comment,
-    };
-  }
-
-  const sendResult = await sendResolutionEmail({
-    ticket: resolvedTicket,
-    resolutionSummary,
+  const committed = await commitTicketResolution(context.supabase, {
+    ticketId: input.ticketId,
+    resolutionSummary: input.resolutionSummary,
+    actorUserId: context.user.id,
+    actorName: context.profile.full_name ?? "System",
+    idempotencyKey:
+      input.idempotencyKey?.trim() ||
+      resolveTicketIdempotencyKey(input.ticketId),
   });
 
-  if (!sendResult.ok) {
-    const failed = await updateCommentDeliveryStatus(
-      context.supabase,
-      comment.id,
-      "failed",
-    );
-    return {
-      data: mapDbTicketToTicket(resolvedTicket),
-      resolutionEmail: "failed",
-      resolutionEmailMessage:
-        "Ticket resolved, but the resolution email could not be sent.",
-      comment: "data" in failed ? failed.data : comment,
-    };
-  }
+  if ("error" in committed) return { error: committed.error };
 
-  const updatedComment = await updateCommentDeliveryStatus(
-    context.supabase,
-    comment.id,
-    "sent",
-  );
-  if ("error" in updatedComment) {
-    return {
-      data: mapDbTicketToTicket(resolvedTicket),
-      resolutionEmail: "failed",
-      resolutionEmailMessage: updatedComment.rlsBlocked
-        ? "Ticket resolved and email accepted by Brevo, but delivery status could not be saved due to database permissions."
-        : "Ticket resolved and email accepted by Brevo, but delivery status could not be saved.",
-      comment,
-    };
-  }
-
-  const notified = await markTicketCustomerNotified(
-    context.supabase,
-    resolvedTicket,
-  );
-  if ("error" in notified) {
-    return {
-      data: mapDbTicketToTicket(resolvedTicket),
-      resolutionEmail: "sent",
-      resolutionEmailMessage:
-        "Ticket resolved and email accepted by Brevo, but notification timestamps could not be updated.",
-      comment: updatedComment.data,
-    };
-  }
-
-  return {
-    data: notified.data,
-    resolutionEmail: "sent",
-    resolutionEmailMessage: "Ticket resolved and resolution email sent.",
-    comment: updatedComment.data,
-  };
+  await scheduleResolutionJobDrain(committed.jobId);
+  return toResolveTicketActionResult(committed);
 }
 
 const DEFAULT_ASSIGNED_TEAM = "Creator Support";

@@ -9,7 +9,7 @@ interface ResolveTicketModalProps {
   submitting: boolean;
   error: string | null;
   onClose: () => void;
-  onConfirm: (resolutionSummary: string) => Promise<void>;
+  onConfirm: (resolutionSummary: string) => void | Promise<void>;
 }
 
 export default function ResolveTicketModal({
@@ -121,8 +121,8 @@ function ResolveTicketModalForm({
               />
             </label>
             <p className="text-xs text-muted">
-              Confirming will mark the ticket resolved and email the resolution
-              summary to the creator when an email address is available.
+              Confirming will mark the ticket resolved. The creator will be
+              notified in the background when a channel is available.
             </p>
             {displayError ? (
               <div
@@ -146,6 +146,7 @@ function ResolveTicketModalForm({
             <button
               type="submit"
               disabled={submitting}
+              aria-busy={submitting}
               className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
             >
               {submitting ? "Resolving..." : "Confirm Resolve"}
