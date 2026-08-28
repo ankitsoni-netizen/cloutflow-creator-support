@@ -2,6 +2,7 @@ import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { applyReserveInstagramOutboundAndSnapshot } from "@/lib/meta/instagram-reserve";
 import { instagramMemoryOutbox, instagramMemoryEmailOutbox } from "@/lib/meta/__tests__/instagram-memory-outbox";
 import {
+  IDENTITY_AMBIGUOUS,
   IDENTITY_MISSING,
   conversationIdentityFromLookup,
   findActiveTicketForIdentity,
@@ -14,6 +15,10 @@ import {
   IDENTITY_SCHEMA_UNAVAILABLE,
   isIdentitySchemaPhaseC,
 } from "@/lib/meta/identity-schema-phase";
+import {
+  applyWebhookEventClaim,
+  applyWebhookEventMark,
+} from "@/lib/meta/webhook-event-claim";
 
 export type MemoryIdentitySchema = "current" | "expanded";
 
@@ -80,38 +85,10 @@ export function createMemoryChatbotStore(
       payload: unknown;
       payloadHash: string | null;
     }) {
-      const existing = events.find(
-        (row) =>
-          row.provider === input.provider &&
-          row.externalEventId === input.externalEventId,
-      );
-      if (existing) {
-        if (
-          existing.processingStatus === "completed" ||
-          existing.processingStatus === "processed"
-        ) {
-          return { outcome: "already_processed" as const };
-        }
-        existing.processingStatus = "processing";
-        return { outcome: "retry" as const, id: existing.id as string };
-      }
-      const id = nextId();
-      events.push({
-        id,
-        provider: input.provider,
-        externalEventId: input.externalEventId,
-        payload: input.payload,
-        payloadHash: input.payloadHash,
-        processingStatus: "processing",
-      });
-      return { outcome: "claimed" as const, id };
+      return applyWebhookEventClaim(events, input, nextId);
     },
     async markWebhookEvent(id: string, status: "completed" | "failed", errorCode: string | null = null) {
-      const row = events.find((event) => event.id === id);
-      if (!row) return;
-      row.processingStatus = status;
-      row.errorCode = status === "failed" ? errorCode : null;
-      row.errorMessage = status === "failed" ? errorCode : null;
+      applyWebhookEventMark(events, id, status, errorCode);
     },
     getConversationCalls: 0,
     findActiveCalls: 0,
@@ -144,7 +121,7 @@ export function createMemoryChatbotStore(
         isIdentitySchemaPhaseC() &&
         !outboundIdentityAllowsReply(matched.identityStatus as string | null)
       ) {
-        return null;
+        return { errorCode: IDENTITY_AMBIGUOUS };
       }
       return mappedConversation(matched);
     },

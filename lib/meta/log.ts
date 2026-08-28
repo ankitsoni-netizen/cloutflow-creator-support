@@ -13,8 +13,6 @@ export function logMetaWebhookError(
   console.error("meta webhook storage failed", {
     errorCode,
     channel: identifiers.channel ?? null,
-    externalEventId: identifiers.externalEventId ?? null,
-    externalMessageId: identifiers.externalMessageId ?? null,
   });
 }
 

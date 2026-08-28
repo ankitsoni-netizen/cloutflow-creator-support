@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { META_INSTAGRAM_PROVIDER } from "@/lib/meta/constants";
 import {
+  IDENTITY_AMBIGUOUS,
   IDENTITY_MISSING,
   activeTicketMatchesIdentity,
   channelIdentityFromInbound,
@@ -795,11 +796,12 @@ describe("cross-creator ticket correlation", () => {
       lastProcessedExternalMessageId: "mid.prev",
       intakeSessionVersion: 1,
     });
-    await ingestInstagramInboundMessage(
+    const result = await ingestInstagramInboundMessage(
       igEvent(SENDER_A, "mid.after.quarantine", "hello again"),
       store,
       igContext,
     );
+    expect(result).toEqual({ outcome: "failed", errorCode: IDENTITY_AMBIGUOUS });
     expect(
       store.messages.some(
         (row) =>
@@ -808,7 +810,16 @@ describe("cross-creator ticket correlation", () => {
       ),
     ).toBe(false);
     expect(store.conversations.some((row) => row.id === "convo-mixed")).toBe(true);
-    expect(store.conversations.length).toBeGreaterThan(1);
+    expect(store.conversations.filter((row) => row.id === "convo-mixed")).toHaveLength(
+      1,
+    );
+    expect(store.conversations).toHaveLength(1);
+    expect(store.conversations[0]).toMatchObject({
+      id: "convo-mixed",
+      identityStatus: "quarantined",
+      ticketId: "ticket-mixed",
+      lastProcessedExternalMessageId: "mid.prev",
+    });
     });
   });
 });

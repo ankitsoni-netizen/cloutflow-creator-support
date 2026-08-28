@@ -35,6 +35,8 @@ export type IdentityRecord = {
   external_contact_id?: string | null;
   externalConversationId?: string | null;
   external_conversation_id?: string | null;
+  identityStatus?: string | null;
+  identity_status?: string | null;
 };
 
 function nonEmpty(value: unknown): string | null {
@@ -180,6 +182,107 @@ function recordRecipientAccountId(row: IdentityRecord): string | null {
   );
 }
 
+function recordIdentityStatus(row: IdentityRecord): string | null {
+  return nonEmpty(row.identityStatus) ?? nonEmpty(row.identity_status);
+}
+
+function identityRecipientAccountId(
+  identity: ConversationIdentity,
+): string | null {
+  return resolvedRecipientAccountId(
+    identity.recipientAccountId,
+    identity.externalConversationId,
+    identity.externalContactId,
+  );
+}
+
+function canonicalConversationIdFor(
+  identity: ConversationIdentity,
+): string | null {
+  const recipient = identityRecipientAccountId(identity);
+  if (!recipient) return null;
+  return scopedExternalConversationId(recipient, identity.externalContactId);
+}
+
+/**
+ * Phase C: exact canonical row. Ambiguous/quarantined/missing metadata are
+ * never eligible, even when the conversation id is already scoped.
+ */
+function isExactCanonicalUnambiguous(
+  row: IdentityRecord,
+  identity: ConversationIdentity,
+): boolean {
+  if (!outboundIdentityAllowsReply(recordIdentityStatus(row))) return false;
+  const contactId = recordContactId(row);
+  const conversationId = recordConversationId(row);
+  const canonicalId = canonicalConversationIdFor(identity);
+  const identityRecipient = identityRecipientAccountId(identity);
+  const recipient =
+    recordRecipientAccountId(row) ??
+    inferRecipientAccountId(conversationId, contactId);
+  if (
+    !contactId ||
+    !conversationId ||
+    !recipient ||
+    !canonicalId ||
+    !identityRecipient
+  ) {
+    return false;
+  }
+  if (contactId !== identity.externalContactId) return false;
+  if (recipient !== identityRecipient) return false;
+  if (conversationId !== canonicalId) return false;
+  const provider = nonEmpty(row.provider);
+  if (provider && provider !== identity.provider) return false;
+  return true;
+}
+
+/**
+ * Phase C legacy upgrade: sender-only key, proven unambiguous owner only.
+ * Page-only keys, ambiguous, and quarantined rows are never eligible.
+ */
+function isEligibleUnambiguousLegacy(
+  row: IdentityRecord,
+  identity: ConversationIdentity,
+): boolean {
+  if (!outboundIdentityAllowsReply(recordIdentityStatus(row))) return false;
+  const contactId = recordContactId(row);
+  const conversationId = recordConversationId(row);
+  const identityRecipient = identityRecipientAccountId(identity);
+  const canonicalId = canonicalConversationIdFor(identity);
+  if (!contactId || !conversationId || !identityRecipient || !canonicalId) {
+    return false;
+  }
+  if (contactId !== identity.externalContactId) return false;
+  if (conversationId === canonicalId) return false;
+  if (conversationId !== contactId) return false;
+  const recipient = recordRecipientAccountId(row);
+  if (recipient && recipient !== identityRecipient) return false;
+  const provider = nonEmpty(row.provider);
+  if (provider && provider !== identity.provider) return false;
+  return true;
+}
+
+function selectPhaseCIdentityMatch<T extends IdentityRecord>(
+  structuralMatches: readonly T[],
+  identity: ConversationIdentity,
+): T | null | { errorCode: typeof IDENTITY_AMBIGUOUS } {
+  const canonical = structuralMatches.filter((row) =>
+    isExactCanonicalUnambiguous(row, identity),
+  );
+  if (canonical.length > 1) return { errorCode: IDENTITY_AMBIGUOUS };
+  if (canonical.length === 1) return canonical[0] ?? null;
+
+  const legacy = structuralMatches.filter((row) =>
+    isEligibleUnambiguousLegacy(row, identity),
+  );
+  if (legacy.length > 1) return { errorCode: IDENTITY_AMBIGUOUS };
+  if (legacy.length === 1) return legacy[0] ?? null;
+
+  if (structuralMatches.length > 0) return { errorCode: IDENTITY_AMBIGUOUS };
+  return null;
+}
+
 export function conversationIdentityFromLookup(input: {
   channel: MetaChannel;
   externalConversationId: string;
@@ -315,6 +418,9 @@ export function findConversationForIdentity<T extends IdentityRecord>(
   const matches = rows.filter((row) =>
     conversationRowMatchesIdentity(row, identity),
   );
+  if (isIdentitySchemaPhaseC()) {
+    return selectPhaseCIdentityMatch(matches, identity);
+  }
   if (matches.length > 1) return { errorCode: IDENTITY_AMBIGUOUS };
   return matches[0] ?? null;
 }
@@ -332,6 +438,11 @@ export function findActiveTicketForIdentity<T extends IdentityRecord>(
     (row) =>
       isActive(row) && activeTicketMatchesIdentity(row, identity, sourceChannel),
   );
+  if (isIdentitySchemaPhaseC()) {
+    const selected = selectPhaseCIdentityMatch(matches, identity);
+    if (selected && "errorCode" in selected) return selected;
+    return selected;
+  }
   if (matches.length > 1) return { errorCode: IDENTITY_AMBIGUOUS };
   return matches[0] ?? null;
 }

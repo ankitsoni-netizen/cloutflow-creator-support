@@ -5,6 +5,7 @@ import { collectedFromRecord, collectedToRecord, parseIntakeField, parseRoutingI
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
 import type { InstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import {
+  IDENTITY_AMBIGUOUS,
   IDENTITY_MISSING,
   conversationLookupIds,
   conversationIdentityFromLookup,
@@ -29,9 +30,14 @@ import {
   type SanitizedInstagramOutboundPayload,
 } from "@/lib/meta/instagram-outbound-payload";
 import {
+  WEBHOOK_PROCESSING_LEASE_MS,
+  WEBHOOK_STATUS_PROCESSING,
+} from "@/lib/meta/constants";
+import {
   createSupabaseMetaStore,
   type MetaInboundStore,
 } from "@/lib/meta/store";
+import { decideExistingWebhookEventClaim } from "@/lib/meta/webhook-event-claim";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -516,6 +522,93 @@ export function createSupabaseInstagramStore(
   const base = createSupabaseMetaStore(supabase);
   return {
     ...base,
+    async claimWebhookEvent(input) {
+      const nowMs = Date.now();
+      const leaseAt = new Date(nowMs).toISOString();
+      const { data, error } = await supabase
+        .from("webhook_events")
+        .insert({
+          provider: input.provider,
+          external_event_id: input.externalEventId,
+          payload: input.payload ?? {},
+          payload_hash: input.payloadHash,
+          processing_status: WEBHOOK_STATUS_PROCESSING,
+          processed_at: leaseAt,
+        })
+        .select("id")
+        .single();
+
+      if (!error && data?.id) {
+        return { outcome: "claimed", id: data.id as string };
+      }
+
+      if (!isUniqueViolation(error)) {
+        return { outcome: "failed", errorCode: "webhook_event_insert_failed" };
+      }
+
+      const { data: existing, error: lookupError } = await supabase
+        .from("webhook_events")
+        .select("id, processing_status, processed_at")
+        .eq("provider", input.provider)
+        .eq("external_event_id", input.externalEventId)
+        .maybeSingle();
+
+      if (lookupError || !existing?.id) {
+        return { outcome: "failed", errorCode: "webhook_event_lookup_failed" };
+      }
+
+      const decision = decideExistingWebhookEventClaim(
+        {
+          id: String(existing.id),
+          processingStatus: String(existing.processing_status ?? ""),
+          processedAt:
+            (existing.processed_at as string | null | undefined) ?? null,
+        },
+        nowMs,
+      );
+      if (
+        decision.action === "already_processed" ||
+        decision.action === "lease_held"
+      ) {
+        return { outcome: "already_processed" };
+      }
+
+      const status = String(existing.processing_status ?? "");
+      let reclaim = supabase
+        .from("webhook_events")
+        .update({
+          processing_status: WEBHOOK_STATUS_PROCESSING,
+          error_code: null,
+          error_message: null,
+          processed_at: leaseAt,
+        })
+        .eq("id", existing.id);
+
+      if (status === WEBHOOK_STATUS_PROCESSING) {
+        const expiredIso = new Date(
+          nowMs - WEBHOOK_PROCESSING_LEASE_MS,
+        ).toISOString();
+        reclaim = reclaim.eq("processing_status", WEBHOOK_STATUS_PROCESSING);
+        const processedAt =
+          (existing.processed_at as string | null | undefined) ?? null;
+        reclaim = processedAt
+          ? reclaim.lt("processed_at", expiredIso)
+          : reclaim.is("processed_at", null);
+      } else {
+        reclaim = reclaim.eq("processing_status", status);
+      }
+
+      const { data: reclaimed, error: retryError } = await reclaim
+        .select("id")
+        .maybeSingle();
+      if (retryError) {
+        return { outcome: "failed", errorCode: "webhook_event_retry_failed" };
+      }
+      if (!reclaimed?.id) {
+        return { outcome: "already_processed" };
+      }
+      return { outcome: "retry", id: existing.id as string };
+    },
     async getConversation(channel, externalConversationId, lookup) {
       const identity = conversationIdentityFromLookup({
         channel,
@@ -566,7 +659,7 @@ export function createSupabaseInstagramStore(
           isIdentitySchemaPhaseC() &&
           !outboundIdentityAllowsReply(row.identityStatus)
         ) {
-          return null;
+          return { errorCode: IDENTITY_AMBIGUOUS };
         }
         return row;
       }
@@ -605,7 +698,7 @@ export function createSupabaseInstagramStore(
         isIdentitySchemaPhaseC() &&
         !outboundIdentityAllowsReply(contactRow.identityStatus)
       ) {
-        return null;
+        return { errorCode: IDENTITY_AMBIGUOUS };
       }
       return contactRow;
     },
@@ -901,7 +994,7 @@ export function createSupabaseInstagramStore(
         .from("tickets")
         .select(
           isIdentitySchemaPhaseC()
-            ? (`${select}, identity_status` as typeof select)
+            ? (`${select}, identity_status, recipient_account_id` as typeof select)
             : select,
         )
         .eq("source_channel", sourceChannel)

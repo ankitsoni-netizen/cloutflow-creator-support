@@ -10,6 +10,7 @@ import {
   conversationLookupIds,
   conversationRowMatchesIdentity,
   findActiveTicketForIdentity,
+  findConversationForIdentity,
   instagramExternalConversationId,
   outboundIdentityAllowsReply,
   phaseAOutboundIdentityProven,
@@ -116,6 +117,94 @@ describe("findActiveTicketForIdentity", () => {
     );
     expect(result).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
   });
+
+  it("selects an exact unambiguous canonical ticket and ignores an ineligible legacy ticket", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      const result = findActiveTicketForIdentity(
+        [
+          {
+            id: "t-canonical",
+            source_channel: "instagram",
+            external_conversation_id: identity.externalConversationId,
+            external_contact_id: "sender-a",
+            recipient_account_id: "page-1",
+            identity_status: "unambiguous",
+            status: "open",
+          },
+          {
+            id: "t-legacy",
+            source_channel: "instagram",
+            external_conversation_id: "sender-a",
+            external_contact_id: "sender-a",
+            recipient_account_id: "page-1",
+            identity_status: "ambiguous",
+            status: "open",
+          },
+        ],
+        identity,
+        "instagram",
+        (row) => row.status === "open",
+      );
+      expect(result).toMatchObject({ id: "t-canonical" });
+    });
+  });
+
+  it("does not attach to a resolved, foreign, or quarantined ticket", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(
+        findActiveTicketForIdentity(
+          [
+            {
+              id: "t-resolved",
+              source_channel: "instagram",
+              external_conversation_id: identity.externalConversationId,
+              external_contact_id: "sender-a",
+              identity_status: "unambiguous",
+              status: "resolved",
+            },
+          ],
+          identity,
+          "instagram",
+          (row) =>
+            ["open", "in_progress", "waiting"].includes(String(row.status)),
+        ),
+      ).toBeNull();
+      expect(
+        findActiveTicketForIdentity(
+          [
+            {
+              id: "t-foreign",
+              source_channel: "instagram",
+              external_conversation_id: identity.externalConversationId,
+              external_contact_id: "sender-b",
+              identity_status: "unambiguous",
+              status: "open",
+            },
+          ],
+          identity,
+          "instagram",
+          () => true,
+        ),
+      ).toBeNull();
+      expect(
+        findActiveTicketForIdentity(
+          [
+            {
+              id: "t-quarantined",
+              source_channel: "instagram",
+              external_conversation_id: "sender-a",
+              external_contact_id: "sender-a",
+              identity_status: "quarantined",
+              status: "open",
+            },
+          ],
+          identity,
+          "instagram",
+          () => true,
+        ),
+      ).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
+    });
+  });
 });
 
 describe("conversationLookupIds", () => {
@@ -153,6 +242,99 @@ describe("conversationLookupIds", () => {
         "instagram",
       ),
     ).toBe(false);
+  });
+});
+
+describe("findConversationForIdentity Phase C precedence", () => {
+  const canonical = {
+    id: "convo-canonical",
+    channel: "instagram" as const,
+    provider: META_INSTAGRAM_PROVIDER,
+    recipientAccountId: "page-1",
+    externalContactId: "sender-a",
+    externalConversationId: identity.externalConversationId,
+    identityStatus: "unambiguous" as const,
+  };
+  const legacyAmbiguous = {
+    id: "convo-legacy",
+    channel: "instagram" as const,
+    provider: META_INSTAGRAM_PROVIDER,
+    recipientAccountId: "page-1",
+    externalContactId: "sender-a",
+    externalConversationId: "sender-a",
+    identityStatus: "ambiguous" as const,
+  };
+
+  it("selects the exact canonical unambiguous row and ignores an ambiguous legacy row", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(
+        findConversationForIdentity([canonical, legacyAmbiguous], identity),
+      ).toMatchObject({ id: "convo-canonical" });
+    });
+  });
+
+  it("ignores a quarantined legacy row when a canonical unambiguous row exists", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(
+        findConversationForIdentity(
+          [
+            canonical,
+            { ...legacyAmbiguous, identityStatus: "quarantined" },
+          ],
+          identity,
+        ),
+      ).toMatchObject({ id: "convo-canonical" });
+    });
+  });
+
+  it("fails closed when the canonical row is itself ambiguous", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(
+        findConversationForIdentity(
+          [
+            { ...canonical, identityStatus: "ambiguous" },
+            legacyAmbiguous,
+          ],
+          identity,
+        ),
+      ).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
+    });
+  });
+
+  it("fails closed when two exact canonical unambiguous rows exist", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(
+        findConversationForIdentity(
+          [canonical, { ...canonical, id: "convo-canonical-2" }],
+          identity,
+        ),
+      ).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
+    });
+  });
+
+  it("upgrades exactly one unambiguous legacy owner when no canonical row exists", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(
+        findConversationForIdentity(
+          [{ ...legacyAmbiguous, identityStatus: "unambiguous" }],
+          identity,
+        ),
+      ).toMatchObject({ id: "convo-legacy" });
+    });
+  });
+
+  it("fails closed when only an ambiguous legacy row exists", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(findConversationForIdentity([legacyAmbiguous], identity)).toEqual({
+        errorCode: IDENTITY_AMBIGUOUS,
+      });
+    });
+  });
+
+  it("does not apply Phase C precedence in Phase A", () => {
+    expect(
+      findConversationForIdentity([canonical, legacyAmbiguous], identity),
+    ).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
   });
 });
 

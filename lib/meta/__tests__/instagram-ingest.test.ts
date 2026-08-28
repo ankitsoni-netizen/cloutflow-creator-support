@@ -42,6 +42,10 @@ import {
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
 import { chatbotOutboundIdempotencyKey } from "@/lib/meta/prompt-keys";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
+import {
+  applyWebhookEventClaim,
+  applyWebhookEventMark,
+} from "@/lib/meta/webhook-event-claim";
 import * as instagramSend from "@/lib/meta/instagram-send";
 import { INSTAGRAM_USERNAME_LOOKUP_TIMEOUT_MS } from "@/lib/meta/instagram-username";
 import { instagramMemoryOutbox, instagramMemoryEmailOutbox } from "@/lib/meta/__tests__/instagram-memory-outbox";
@@ -109,38 +113,10 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
       payload: unknown;
       payloadHash: string | null;
     }) {
-      const existing = events.find(
-        (row) =>
-          row.provider === input.provider &&
-          row.externalEventId === input.externalEventId,
-      );
-      if (existing) {
-        if (
-          existing.processingStatus === "completed" ||
-          existing.processingStatus === "processed"
-        ) {
-          return { outcome: "already_processed" as const };
-        }
-        existing.processingStatus = "processing";
-        return { outcome: "retry" as const, id: existing.id as string };
-      }
-      const id = nextId();
-      events.push({
-        id,
-        provider: input.provider,
-        externalEventId: input.externalEventId,
-        payload: input.payload,
-        payloadHash: input.payloadHash,
-        processingStatus: "processing",
-      });
-      return { outcome: "claimed" as const, id };
+      return applyWebhookEventClaim(events, input, nextId);
     },
     async markWebhookEvent(id: string, status: "completed" | "failed", errorCode: string | null = null) {
-      const row = events.find((event) => event.id === id);
-      if (!row) return;
-      row.processingStatus = status;
-      row.errorCode = status === "failed" ? errorCode : null;
-      row.errorMessage = status === "failed" ? errorCode : null;
+      applyWebhookEventMark(events, id, status, errorCode);
     },
     getConversationCalls: 0,
     findActiveCalls: 0,

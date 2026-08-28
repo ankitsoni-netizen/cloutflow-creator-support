@@ -2,6 +2,7 @@ import "server-only";
 
 import { getInstagramWebhookAppSecrets } from "@/lib/meta/config";
 import { META_WEBHOOK_EVENT_RECEIVED } from "@/lib/meta/constants";
+import { isRetryableInstagramWebhookFailure } from "@/lib/meta/webhook-event-claim";
 import { diagnoseMetaWebhookPayload } from "@/lib/meta/diagnose";
 import {
   logMetaWebhookError,
@@ -110,12 +111,11 @@ export async function handleInstagramWebhookPost(
     }
 
     if (result.outcome === "failed") {
-      logMetaWebhookError(result.errorCode ?? "unexpected_failure", {
-        channel: event.channel,
-        externalEventId: event.externalEventId,
-        externalMessageId: event.externalMessageId,
-      });
-      hadRetryableFailure = true;
+      const errorCode = result.errorCode ?? "unexpected_failure";
+      logMetaWebhookError(errorCode, { channel: event.channel });
+      if (isRetryableInstagramWebhookFailure(errorCode)) {
+        hadRetryableFailure = true;
+      }
     }
   }
 
@@ -129,12 +129,11 @@ export async function handleInstagramWebhookPost(
       result = { outcome: "failed" as const, errorCode: "unexpected_failure" };
     }
     if (result.outcome === "failed") {
-      logMetaWebhookError(result.errorCode ?? "unexpected_failure", {
-        channel: "instagram",
-        externalEventId: echo.externalEventId,
-        externalMessageId: echo.externalMessageId,
-      });
-      hadRetryableFailure = true;
+      const errorCode = result.errorCode ?? "unexpected_failure";
+      logMetaWebhookError(errorCode, { channel: "instagram" });
+      if (isRetryableInstagramWebhookFailure(errorCode)) {
+        hadRetryableFailure = true;
+      }
     }
   }
 
