@@ -98,6 +98,7 @@ export function instagramTextPayload(overrides: {
   text?: string;
   isEcho?: boolean;
   timestamp?: number;
+  quickReplyPayload?: string;
 } = {}) {
   return {
     object: "instagram",
@@ -114,6 +115,9 @@ export function instagramTextPayload(overrides: {
               mid: overrides.mid ?? "mid.instagram.abc",
               text: overrides.text ?? "Need help with a campaign",
               ...(overrides.isEcho ? { is_echo: true } : {}),
+              ...(overrides.quickReplyPayload
+                ? { quick_reply: { payload: overrides.quickReplyPayload } }
+                : {}),
             },
           },
         ],
@@ -218,6 +222,38 @@ export function instagramLoginMessagesChangesPayload() {
                 mid: "MESSAGE-ID-CHANGES",
                 text: "Hello from changes shape",
               },
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/** Instagram button / ice-breaker postback: payload lives on the item, not message.quick_reply. */
+export function instagramPostbackPayload(overrides: {
+  senderId?: string;
+  recipientId?: string;
+  mid?: string;
+  title?: string;
+  payload?: string;
+  timestamp?: number;
+} = {}) {
+  return {
+    object: "instagram",
+    entry: [
+      {
+        id: overrides.recipientId ?? "17841400008460000",
+        time: overrides.timestamp ?? 1603059206000,
+        messaging: [
+          {
+            sender: { id: overrides.senderId ?? "12334" },
+            recipient: { id: overrides.recipientId ?? "17841400008460000" },
+            timestamp: overrides.timestamp ?? 1603059206000,
+            postback: {
+              mid: overrides.mid ?? "mid.instagram.postback",
+              title: overrides.title ?? "I'm a creator",
+              payload: overrides.payload ?? "PERSONA_CREATOR",
             },
           },
         ],

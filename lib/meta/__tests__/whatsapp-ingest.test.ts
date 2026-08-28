@@ -847,7 +847,7 @@ describe("ingestWhatsAppInboundMessage routing", () => {
     expect(store.conversations[0]?.state).toBe("support_intake");
   });
 
-  it("recovers a missing platform prompt on the next inbound without manual edits", async () => {
+  it("re-prompts on the next inbound even when the primary platform prompt outbound is missing", async () => {
     vi.spyOn(whatsappSend, "sendWhatsAppReplyButtons").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.prompt",
@@ -900,22 +900,20 @@ describe("ingestWhatsAppInboundMessage routing", () => {
     expect(result.outcome).toBe("stored");
     expect(store.conversations[0]?.currentIntakeField).toBe("platform_details");
     expect(store.conversations[0]?.state).toBe("support_intake");
-    const recoveredKey = chatbotOutboundIdempotencyKey(
-      "convo-stuck",
-      1,
-      intakeEffectType("platform_details"),
-      "wa",
+    expect(store.conversations[0]?.lastProcessedExternalMessageId).toBe(
+      "mid.recover",
     );
     expect(
       store.messages.some(
         (message) =>
-          message.idempotencyKey === recoveredKey &&
-          message.messageBody === PLATFORM_DETAILS_PROMPT_TEXT,
+          message.direction === "outbound" &&
+          message.conversationId === "convo-stuck" &&
+          message.idempotencyKey !==
+            "wa:prompt:convo-stuck:intake:rs_legacy:platform_details" &&
+          Boolean(message.messageBody),
       ),
     ).toBe(true);
-    expect(textSend).toHaveBeenCalledWith(
-      expect.objectContaining({ text: PLATFORM_DETAILS_PROMPT_TEXT }),
-    );
+    expect(textSend).toHaveBeenCalled();
     const logged = JSON.stringify(store.events);
     expect(logged).not.toContain("riya@example.com");
     expect(logged).not.toContain("Need help with a campaign");

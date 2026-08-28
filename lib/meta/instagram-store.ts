@@ -531,11 +531,15 @@ export function createSupabaseInstagramStore(
       };
       const nextName = displayName?.trim();
       if (nextName) update.display_name = nextName;
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("channel_conversations")
         .update(update)
-        .eq("id", id);
-      if (error) return { outcome: "failed", errorCode: "conversation_update_failed" };
+        .eq("id", id)
+        .select("id")
+        .maybeSingle();
+      if (error || !data?.id) {
+        return { outcome: "failed", errorCode: "conversation_update_failed" };
+      }
       return { outcome: "updated" };
     },
     async reserveOutboundAndSnapshot(input) {

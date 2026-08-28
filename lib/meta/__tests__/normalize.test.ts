@@ -10,6 +10,7 @@ import {
 } from "@/lib/meta/normalize";
 import {
   instagramLoginMessagesPayload,
+  instagramPostbackPayload,
   instagramTextPayload,
   whatsappStatusPayload,
   whatsappTextPayload,
@@ -201,6 +202,40 @@ describe("normalizeMetaWebhookPayload", () => {
       recipientAccountId: "INSTAGRAM_ACCOUNT_ID",
     });
     expect(events[0]?.timestamp).toBe("2020-10-18T22:13:26.000Z");
+  });
+
+  it("normalizes Instagram quick-reply payload and title on first delivery", () => {
+    const events = normalizeMetaWebhookPayload(
+      instagramTextPayload({
+        senderId: "12334",
+        mid: "mid.qr.1",
+        text: "I'm a creator",
+        quickReplyPayload: "PERSONA_CREATOR",
+      }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      messageBody: "I'm a creator",
+      quickReplyPayload: "PERSONA_CREATOR",
+      externalMessageId: "mid.qr.1",
+    });
+  });
+
+  it("normalizes Instagram postback title and payload on first delivery", () => {
+    const events = normalizeMetaWebhookPayload(
+      instagramPostbackPayload({
+        mid: "mid.postback.1",
+        title: "I'm a creator",
+        payload: "PERSONA_CREATOR",
+      }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      messageBody: "I'm a creator",
+      quickReplyPayload: "PERSONA_CREATOR",
+      externalMessageId: "mid.postback.1",
+      externalContactId: "12334",
+    });
   });
 
   it("ignores Instagram echo messages in chatbot normalize and extracts them separately", () => {

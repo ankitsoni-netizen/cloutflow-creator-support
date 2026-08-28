@@ -280,22 +280,27 @@ function normalizeInstagramMessagingItem(
   if (isRecord(item.reaction)) return null;
 
   const message = isRecord(item.message) ? item.message : null;
-  if (!message) return null;
-  if (message.is_echo === true) return null;
-  if (message.is_self === true) return null;
-  if (message.is_deleted === true) return null;
+  const postback = isRecord(item.postback) ? item.postback : null;
+  if (!message && !postback) return null;
+  if (message?.is_echo === true) return null;
+  if (message?.is_self === true) return null;
+  if (message?.is_deleted === true) return null;
 
-  const quickReply = isRecord(message.quick_reply) ? message.quick_reply : null;
-  const quickReplyPayload = quickReply
-    ? asNonEmptyString(quickReply.payload)
-    : null;
-  const messageBody = asNonEmptyString(message.text);
-  const attachmentKind = instagramAttachmentKind(message);
+  const quickReply = isRecord(message?.quick_reply) ? message.quick_reply : null;
+  const quickReplyPayload =
+    (quickReply ? asNonEmptyString(quickReply.payload) : null) ??
+    (postback ? asNonEmptyString(postback.payload) : null);
+  const messageBody =
+    (message ? asNonEmptyString(message.text) : null) ??
+    (postback ? asNonEmptyString(postback.title) : null);
+  const attachmentKind = message ? instagramAttachmentKind(message) : null;
   if (!messageBody && !quickReplyPayload && !attachmentKind) return null;
 
   const sender = isRecord(item.sender) ? item.sender : null;
   const externalContactId = sender ? asNonEmptyString(sender.id) : null;
-  const externalMessageId = asNonEmptyString(message.mid);
+  const externalMessageId =
+    (message ? asNonEmptyString(message.mid) : null) ??
+    (postback ? asNonEmptyString(postback.mid) : null);
   if (!externalContactId || !externalMessageId) return null;
 
   const recipient = isRecord(item.recipient) ? item.recipient : null;
