@@ -13,6 +13,12 @@ import {
   type IntakeField,
 } from "@/lib/meta/intake-validate";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
+import {
+  campaignMonthConfirmationText,
+  CAMPAIGN_MONTH_CHOOSE_TEXT,
+  CAMPAIGN_MONTH_REASK_TEXT,
+  monthConfirmationQuickReplies,
+} from "@/lib/meta/month-confirmation";
 import { intakeEffectType } from "@/lib/meta/prompt-keys";
 import {
   INSTAGRAM_INTAKE_COPY,
@@ -35,6 +41,7 @@ export const ROUTING_CONVERSATION_STATES = [
   "awaiting_creator_reason",
   "awaiting_creator_issue_category",
   "creator_campaign_details",
+  "awaiting_month_confirmation",
   "creator_issue_details",
   "creator_confirmation",
   "brand_action",
@@ -316,6 +323,45 @@ function sendStepPrompt(
   };
 }
 
+function sendMonthConfirmation(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+  collected: IntakeCollectedData,
+  retry: boolean,
+): MachineResult {
+  const month = collected.campaignMonth;
+  const key = `awaiting_month_confirmation:retry:${signal.messageId}`;
+  return {
+    snapshot: withActivity(snapshot, signal, {
+      state: "awaiting_month_confirmation",
+      routingIntent: "creator_support",
+      currentIntakeField: "campaign_details",
+      collected,
+      lastPromptKey: key,
+    }),
+    effects: [
+      {
+        type: "send_quick_replies",
+        text: month
+          ? retry
+            ? CAMPAIGN_MONTH_CHOOSE_TEXT
+            : campaignMonthConfirmationText(month)
+          : CAMPAIGN_MONTH_CHOOSE_TEXT,
+        promptKey: key,
+        quickReplies: monthConfirmationQuickReplies(),
+      },
+    ],
+    attachTicketId: null,
+    inboundRoutingKind: "support",
+    processed: true,
+  };
+}
+
+function signalNow(signal: InboundSignal): Date {
+  const parsed = Date.parse(signal.timestamp);
+  return Number.isFinite(parsed) ? new Date(parsed) : new Date();
+}
+
 function createTicketFromIntake(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
@@ -402,8 +448,25 @@ function continueIntake(
     );
   }
 
-  const collected = mergeCampaignDetails(snapshot.collected, signal.text);
+  const collected = mergeCampaignDetails(
+    snapshot.collected,
+    signal.text,
+    signalNow(signal),
+  );
   const missing = missingCampaignDetailsPrompt(collected);
+  if (missing && !collected.campaignMonth) {
+    return sendStepPrompt(
+      snapshot,
+      signal,
+      "campaign_details",
+      collected,
+      missing,
+      copy,
+    );
+  }
+  if (collected.campaignMonth && !collected.campaignMonthConfirmed) {
+    return sendMonthConfirmation(snapshot, signal, collected, false);
+  }
   if (missing) {
     return sendStepPrompt(
       snapshot,
@@ -433,7 +496,12 @@ export function reduceChannelConversation(
   const command = detectRoutingCommand(signal.text, signal.quickReplyPayload);
   const state = routingStates(snapshot.state);
 
-  if (hasActiveTicket(snapshot) && state !== "support_intake" && state !== "awaiting_confirmation") {
+  if (
+    hasActiveTicket(snapshot) &&
+    state !== "support_intake" &&
+    state !== "awaiting_confirmation" &&
+    state !== "awaiting_month_confirmation"
+  ) {
     return {
       snapshot: withActivity(snapshot, signal, {
         state: "ticket_open",
@@ -542,7 +610,11 @@ export function reduceChannelConversation(
     };
   }
 
-  if (state === "support_intake" || state === "awaiting_confirmation") {
+  if (
+    state === "support_intake" ||
+    state === "awaiting_confirmation" ||
+    state === "awaiting_month_confirmation"
+  ) {
     if (command === "cancel") {
       const key = "cancelled";
       return {
@@ -563,6 +635,66 @@ export function reduceChannelConversation(
     if (command === "restart" || (state === "awaiting_confirmation" && command === "edit")) {
       return startIntake(snapshot, signal, "restart", copy);
     }
+  }
+
+  if (state === "awaiting_month_confirmation") {
+    if (command === "yes") {
+      if (snapshot.ticketId && hasActiveTicket(snapshot)) {
+        return {
+          snapshot: withActivity(snapshot, signal, {
+            state: "ticket_open",
+            routingIntent: "creator_support",
+          }),
+          effects: [{ type: "notify_help_inbound" }],
+          attachTicketId: snapshot.ticketId,
+          inboundRoutingKind: "support",
+          processed: true,
+        };
+      }
+      const collected = {
+        ...snapshot.collected,
+        campaignName: null as string | null,
+        campaignMonthConfirmed: true,
+      };
+      const missing = missingCampaignDetailsPrompt(collected);
+      if (missing) {
+        return sendStepPrompt(
+          snapshot,
+          signal,
+          "campaign_details",
+          collected,
+          missing,
+          copy,
+        );
+      }
+      if (isIntakeComplete(collected)) {
+        return createTicketFromIntake(snapshot, signal, collected);
+      }
+      return sendStepPrompt(
+        snapshot,
+        signal,
+        "campaign_details",
+        collected,
+        copy.campaignDetailsPrompt,
+        copy,
+      );
+    }
+    if (command === "no") {
+      const collected = {
+        ...snapshot.collected,
+        campaignMonth: null as string | null,
+        campaignMonthConfirmed: false,
+      };
+      return sendStepPrompt(
+        snapshot,
+        signal,
+        "campaign_details",
+        collected,
+        CAMPAIGN_MONTH_REASK_TEXT,
+        copy,
+      );
+    }
+    return sendMonthConfirmation(snapshot, signal, snapshot.collected, true);
   }
 
   if (state === "awaiting_confirmation") {

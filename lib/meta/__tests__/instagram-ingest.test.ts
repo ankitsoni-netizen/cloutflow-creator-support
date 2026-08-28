@@ -9,22 +9,37 @@ import {
   CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
   CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
   CREATOR_ISSUE_CATEGORY_TEXT,
+  CREATOR_PAYMENT_ISSUE_PAYLOAD,
   CREATOR_REASON_TEXT,
-  CREATOR_TICKET_CONFIRM_PAYLOAD,
   FLOW_BACK_PAYLOAD,
   INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
   PERSONA_CREATOR_PAYLOAD,
+  PERSONA_CREATOR_TITLE,
   activeTicketAttachText,
   creatorTicketRaisedText,
   personaWelcomeText,
   withPostCompletionQuestion,
 } from "@/lib/meta/instagram-persona-copy";
 import {
+  CAMPAIGN_MONTH_NO_PAYLOAD,
+  CAMPAIGN_MONTH_YES_PAYLOAD,
+} from "@/lib/meta/month-confirmation";
+import {
+  identityLookupFromEvent,
+  reloadConversationSnapshot,
+  withDurableConversationPersistence,
+} from "@/lib/meta/__tests__/durable-conversation";
+import {
   IDENTITY_MISSING,
   conversationLookupIds,
   findActiveTicketForIdentity,
   type ConversationIdentity,
 } from "@/lib/meta/conversation-identity";
+import {
+  instagramPostbackPayload,
+  instagramTextPayload,
+} from "@/lib/meta/__tests__/fixtures";
+import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
 import { chatbotOutboundIdempotencyKey } from "@/lib/meta/prompt-keys";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
@@ -61,6 +76,8 @@ function sampleInstagramEvent(
     ...overrides,
   };
 }
+
+const SAMPLE_IG_LOOKUP = identityLookupFromEvent(sampleInstagramEvent());
 
 function createMemoryInstagramStore(): InstagramIngestStore & {
   events: Array<Record<string, unknown>>;
@@ -796,7 +813,6 @@ describe("ingestInstagramInboundMessage routing", () => {
       recipientId: "12334",
     });
     const store = createMemoryInstagramStore();
-    const issue = "The film deliverable was rejected without a reason";
     await ingestInstagramInboundMessage(sampleInstagramEvent(), store, context);
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
@@ -832,36 +848,28 @@ describe("ingestInstagramInboundMessage routing", () => {
       sampleInstagramEvent({
         externalEventId: "mid.campaign",
         externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026, riya@example.com",
-      }),
-      store,
-      context,
-    );
-    await ingestInstagramInboundMessage(
-      sampleInstagramEvent({
-        externalEventId: "mid.details",
-        externalMessageId: "mid.details",
-        messageBody: issue,
+        messageBody: "Acme, August 2026, riya@example.com",
       }),
       store,
       context,
     );
     const created = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.confirm",
-        externalMessageId: "mid.confirm",
-        messageBody: "Yes, raise it",
-        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
+        quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
       }),
       store,
       context,
     );
     expect(created.outcome).toBe("stored");
     expect(store.tickets).toHaveLength(1);
-    expect(store.tickets[0]?.issue_description).toBe(issue);
     expect(store.tickets[0]?.issue_type).toBe("other");
     expect(store.tickets[0]?.creator_email).toBe("riya@example.com");
-    expect(store.tickets[0]?.campaign_name).toBe("Summer Drop");
+    expect(store.tickets[0]?.brand_name).toBe("Acme");
+    expect(store.tickets[0]?.campaign_month).toBe("2026-08-01");
+    expect(store.tickets[0]?.campaign_name).toBeNull();
     expect(store.tickets[0]?.platform).toBe("instagram");
     expect(store.conversations[0]?.state).toBe("awaiting_post_completion");
     const confirmation = qrSend.mock.calls
@@ -873,10 +881,10 @@ describe("ingestInstagramInboundMessage routing", () => {
 
     const duplicate = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.confirm",
-        externalMessageId: "mid.confirm",
-        messageBody: "Yes, raise it",
-        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
+        quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
       }),
       store,
       context,
@@ -1791,16 +1799,7 @@ describe("Instagram DM reliability hardening", () => {
       sampleInstagramEvent({
         externalEventId: "mid.campaign",
         externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026, riya@example.com",
-      }),
-      store,
-      context,
-    );
-    await ingestInstagramInboundMessage(
-      sampleInstagramEvent({
-        externalEventId: "mid.details",
-        externalMessageId: "mid.details",
-        messageBody: "The film deliverable was rejected",
+        messageBody: "Acme, August 2026, riya@example.com",
       }),
       store,
       context,
@@ -1809,20 +1808,20 @@ describe("Instagram DM reliability hardening", () => {
     const [first, second] = await Promise.all([
       ingestInstagramInboundMessage(
         sampleInstagramEvent({
-          externalEventId: "mid.confirm.a",
-          externalMessageId: "mid.confirm.a",
-          messageBody: "Yes, raise it",
-          quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+          externalEventId: "mid.month.yes.a",
+          externalMessageId: "mid.month.yes.a",
+          messageBody: "Yes",
+          quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
         }),
         store,
         context,
       ),
       ingestInstagramInboundMessage(
         sampleInstagramEvent({
-          externalEventId: "mid.confirm.b",
-          externalMessageId: "mid.confirm.b",
-          messageBody: "Yes, raise it",
-          quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+          externalEventId: "mid.month.yes.b",
+          externalMessageId: "mid.month.yes.b",
+          messageBody: "Yes",
+          quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
         }),
         store,
         context,
@@ -1876,26 +1875,17 @@ describe("Instagram DM reliability hardening", () => {
       sampleInstagramEvent({
         externalEventId: "mid.campaign",
         externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026, riya@example.com",
+        messageBody: "Acme, August 2026, riya@example.com",
       }),
       store,
       context,
     );
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.details",
-        externalMessageId: "mid.details",
-        messageBody: "The film deliverable was rejected",
-      }),
-      store,
-      context,
-    );
-    await ingestInstagramInboundMessage(
-      sampleInstagramEvent({
-        externalEventId: "mid.confirm",
-        externalMessageId: "mid.confirm",
-        messageBody: "Yes, raise it",
-        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
+        quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
       }),
       store,
       context,
@@ -2665,5 +2655,436 @@ describe("Instagram sender actions and fast replies", () => {
     ).toHaveLength(1);
     expect(store.conversations[0]?.state).toBe("awaiting_persona");
     expect(Number(store.conversations[0]?.intakeSessionVersion ?? 0)).toBe(version);
+  });
+});
+
+describe("Instagram ingest first-delivery conversation persistence", () => {
+  async function sendOnce(
+    store: ReturnType<typeof createMemoryInstagramStore>,
+    event: NormalizedMetaInboundText,
+  ) {
+    const outboundBefore = store.messages.filter(
+      (message) => message.direction === "outbound",
+    ).length;
+    const result = await ingestInstagramInboundMessage(event, store, context);
+    expect(result.outcome).toBe("stored");
+    const snapshot = await reloadConversationSnapshot(
+      store,
+      "instagram",
+      event.externalConversationId,
+      identityLookupFromEvent(event),
+    );
+    expect(snapshot.lastProcessedExternalMessageId).toBe(event.externalMessageId);
+    const webhook = store.events.find(
+      (row) => row.externalEventId === event.externalEventId,
+    );
+    expect(webhook?.processingStatus).toBe("completed");
+    const outboundAfter = store.messages.filter(
+      (message) => message.direction === "outbound",
+    );
+    return {
+      snapshot,
+      newOutboundCount: outboundAfter.length - outboundBefore,
+      outboundAfter,
+    };
+  }
+
+  function mockSends() {
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: "12334",
+    });
+    vi.spyOn(instagramSend, "sendInstagramText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: "12334",
+    });
+  }
+
+  async function playCreatorPaymentFlow(
+    store: ReturnType<typeof createMemoryInstagramStore>,
+    reply: (
+      mid: string,
+      text: string,
+      payload?: string | null,
+    ) => NormalizedMetaInboundText,
+  ) {
+    const hi = await sendOnce(store, reply("mid.hi", "Hi"));
+    expect(hi.snapshot.state).toBe("awaiting_persona");
+    expect(hi.newOutboundCount).toBe(1);
+
+    const persona = await sendOnce(
+      store,
+      reply("mid.persona", PERSONA_CREATOR_TITLE, PERSONA_CREATOR_PAYLOAD),
+    );
+    expect(persona.snapshot.state).toBe("awaiting_creator_reason");
+    expect(persona.snapshot.collected.igPersona).toBe("creator");
+    expect(persona.newOutboundCount).toBe(1);
+
+    const existing = await sendOnce(
+      store,
+      reply("mid.existing", "Existing campaign", CREATOR_EXISTING_CAMPAIGN_PAYLOAD),
+    );
+    expect(existing.snapshot.state).toBe("awaiting_creator_issue_category");
+    expect(existing.newOutboundCount).toBe(1);
+
+    const payment = await sendOnce(
+      store,
+      reply("mid.payment", "Payment issue", CREATOR_PAYMENT_ISSUE_PAYLOAD),
+    );
+    expect(payment.snapshot.state).toBe("creator_campaign_details");
+    expect(payment.snapshot.collected.igIssueCategory).toBe("payment");
+    expect(payment.newOutboundCount).toBe(1);
+
+    const campaign = await sendOnce(
+      store,
+      reply("mid.campaign", "Acme, August 2026, riya@example.com"),
+    );
+    expect(campaign.snapshot.state).toBe("awaiting_month_confirmation");
+    expect(campaign.snapshot.collected.brandName).toBe("Acme");
+    expect(campaign.snapshot.collected.campaignMonth).toBe("2026-08-01");
+    expect(campaign.snapshot.collected.email).toBe("riya@example.com");
+    expect(campaign.snapshot.collected.campaignMonthConfirmed).toBe(false);
+    expect(campaign.newOutboundCount).toBe(1);
+
+    const yes = await sendOnce(
+      store,
+      reply("mid.month.yes", "Yes", CAMPAIGN_MONTH_YES_PAYLOAD),
+    );
+    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(yes.snapshot.collected.campaignMonthConfirmed).toBe(true);
+    expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
+    expect(store.tickets).toHaveLength(1);
+    expect(store.tickets[0]?.campaign_name).toBeNull();
+    expect(store.tickets[0]?.brand_name).toBe("Acme");
+    expect(store.tickets[0]?.campaign_month).toBe("2026-08-01");
+    expect(store.tickets[0]?.creator_email).toBe("riya@example.com");
+  }
+
+  it("accepts every Instagram text reply on first delivery and reloads persisted state", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await playCreatorPaymentFlow(store, (mid, text, payload = null) =>
+      sampleInstagramEvent({
+        externalEventId: mid,
+        externalMessageId: mid,
+        messageBody: text,
+        quickReplyPayload: payload,
+      }),
+    );
+  });
+
+  it("accepts Instagram quick-reply payload+title on first webhook delivery", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await playCreatorPaymentFlow(store, (mid, text, payload = null) => {
+      const events = normalizeMetaWebhookPayload(
+        instagramTextPayload({
+          senderId: "12334",
+          mid,
+          text,
+          quickReplyPayload: payload ?? undefined,
+        }),
+      );
+      expect(events).toHaveLength(1);
+      return events[0]!;
+    });
+  });
+
+  it("accepts an Instagram postback title/payload on first delivery", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.hi",
+        externalMessageId: "mid.hi",
+        messageBody: "Hi",
+      }),
+    );
+    const events = normalizeMetaWebhookPayload(
+      instagramPostbackPayload({
+        mid: "mid.persona.postback",
+        title: PERSONA_CREATOR_TITLE,
+        payload: PERSONA_CREATOR_PAYLOAD,
+      }),
+    );
+    expect(events).toHaveLength(1);
+    const persona = await sendOnce(store, events[0]!);
+    expect(persona.snapshot.state).toBe("awaiting_creator_reason");
+    expect(persona.snapshot.collected.igPersona).toBe("creator");
+    expect(persona.newOutboundCount).toBe(1);
+  });
+
+  it("accepts No → corrected month → Yes with each reply sent once", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleInstagramEvent({ messageBody: "Hi" }));
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: PERSONA_CREATOR_TITLE,
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.existing",
+        externalMessageId: "mid.existing",
+        messageBody: "Existing campaign",
+        quickReplyPayload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.issue",
+        externalMessageId: "mid.issue",
+        messageBody: "Campaign issue",
+        quickReplyPayload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
+      }),
+    );
+    const campaign = await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.campaign",
+        externalMessageId: "mid.campaign",
+        messageBody: "Acme, August 2026, riya@example.com",
+      }),
+    );
+    expect(campaign.snapshot.state).toBe("awaiting_month_confirmation");
+
+    const no = await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.month.no",
+        externalMessageId: "mid.month.no",
+        messageBody: "No",
+        quickReplyPayload: CAMPAIGN_MONTH_NO_PAYLOAD,
+      }),
+    );
+    expect(no.snapshot.state).toBe("creator_campaign_details");
+    expect(no.snapshot.collected.campaignMonth).toBeNull();
+    expect(no.newOutboundCount).toBe(1);
+
+    const corrected = await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.campaign.2",
+        externalMessageId: "mid.campaign.2",
+        messageBody: "July 2026",
+      }),
+    );
+    expect(corrected.snapshot.state).toBe("awaiting_month_confirmation");
+    expect(corrected.snapshot.collected.campaignMonth).toBe("2026-07-01");
+    expect(corrected.snapshot.collected.brandName).toBe("Acme");
+    expect(corrected.newOutboundCount).toBe(1);
+
+    const yes = await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
+        quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
+      }),
+    );
+    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(yes.snapshot.collected.campaignMonthConfirmed).toBe(true);
+    expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
+    expect(store.tickets).toHaveLength(1);
+    expect(store.tickets[0]?.campaign_name).toBeNull();
+    expect(corrected.snapshot.lastPromptKey).not.toBe(campaign.snapshot.lastPromptKey);
+  });
+
+  it("ignores a webhook retry of the same external event without a second copy of the text", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    const first = sampleInstagramEvent({ messageBody: "Hi" });
+    await sendOnce(store, first);
+    const retry = await ingestInstagramInboundMessage(first, store, context);
+    expect(retry.outcome).toBe("duplicate");
+    const snapshot = await reloadConversationSnapshot(
+      store,
+      "instagram",
+      "12334",
+      SAMPLE_IG_LOOKUP,
+    );
+    expect(snapshot.state).toBe("awaiting_persona");
+    expect(
+      store.messages.filter((message) => message.direction === "outbound"),
+    ).toHaveLength(1);
+  });
+
+  it("does not let an echo callback move conversation state", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleInstagramEvent({ messageBody: "Hi" }));
+    const before = await reloadConversationSnapshot(store, "instagram", "12334", SAMPLE_IG_LOOKUP);
+    await ingestInstagramEcho(
+      {
+        channel: "instagram",
+        provider: META_INSTAGRAM_PROVIDER,
+        externalEventId: "echo:mid.prompt",
+        externalMessageId: "mid.prompt",
+        externalConversationId: "12334",
+        recipientId: "12334",
+        senderId: "17841400008460000",
+        messageBody: personaWelcomeText(null),
+        timestamp: "2020-10-18T22:13:27.000Z",
+        isEcho: true,
+        isSelf: false,
+        eventFragment: { messaging_product: "instagram", type: "echo", hasId: true },
+      },
+      store,
+      context,
+    );
+    const after = await reloadConversationSnapshot(store, "instagram", "12334", SAMPLE_IG_LOOKUP);
+    expect(after.state).toBe(before.state);
+    expect(after.lastProcessedExternalMessageId).toBe(
+      before.lastProcessedExternalMessageId,
+    );
+    expect(store.tickets).toHaveLength(0);
+  });
+
+  it("does not let an echo callback advance month confirmation", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleInstagramEvent({ messageBody: "Hi" }));
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: PERSONA_CREATOR_TITLE,
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.existing",
+        externalMessageId: "mid.existing",
+        messageBody: "Existing campaign",
+        quickReplyPayload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.payment",
+        externalMessageId: "mid.payment",
+        messageBody: "Payment issue",
+        quickReplyPayload: CREATOR_PAYMENT_ISSUE_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.campaign",
+        externalMessageId: "mid.campaign",
+        messageBody: "Acme, August 2026, riya@example.com",
+      }),
+    );
+    const before = await reloadConversationSnapshot(
+      store,
+      "instagram",
+      "12334",
+      SAMPLE_IG_LOOKUP,
+    );
+    expect(before.state).toBe("awaiting_month_confirmation");
+    const outboundBefore = store.messages.filter(
+      (message) => message.direction === "outbound",
+    ).length;
+    await ingestInstagramEcho(
+      {
+        channel: "instagram",
+        provider: META_INSTAGRAM_PROVIDER,
+        externalEventId: "echo:mid.month.prompt",
+        externalMessageId: "mid.prompt",
+        externalConversationId: "12334",
+        recipientId: "12334",
+        senderId: "17841400008460000",
+        messageBody: "I understood the campaign month as August 2026. Is that correct?",
+        timestamp: "2020-10-18T22:13:27.000Z",
+        isEcho: true,
+        isSelf: false,
+        eventFragment: { messaging_product: "instagram", type: "echo", hasId: true },
+      },
+      store,
+      context,
+    );
+    const after = await reloadConversationSnapshot(
+      store,
+      "instagram",
+      "12334",
+      SAMPLE_IG_LOOKUP,
+    );
+    expect(after.state).toBe("awaiting_month_confirmation");
+    expect(after.lastProcessedExternalMessageId).toBe(
+      before.lastProcessedExternalMessageId,
+    );
+    expect(store.tickets).toHaveLength(0);
+    expect(
+      store.messages.filter((message) => message.direction === "outbound"),
+    ).toHaveLength(outboundBefore);
+  });
+
+  it("creates the ticket from an Instagram postback Yes on first delivery", async () => {
+    mockSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleInstagramEvent({ messageBody: "Hi" }));
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.persona",
+        externalMessageId: "mid.persona",
+        messageBody: PERSONA_CREATOR_TITLE,
+        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.existing",
+        externalMessageId: "mid.existing",
+        messageBody: "Existing campaign",
+        quickReplyPayload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.payment",
+        externalMessageId: "mid.payment",
+        messageBody: "Payment issue",
+        quickReplyPayload: CREATOR_PAYMENT_ISSUE_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.campaign",
+        externalMessageId: "mid.campaign",
+        messageBody: "Acme, August 2026, riya@example.com",
+      }),
+    );
+    const events = normalizeMetaWebhookPayload(
+      instagramPostbackPayload({
+        mid: "mid.month.yes.postback",
+        title: "Yes",
+        payload: CAMPAIGN_MONTH_YES_PAYLOAD,
+      }),
+    );
+    expect(events).toHaveLength(1);
+    const yes = await sendOnce(store, events[0]!);
+    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(store.tickets).toHaveLength(1);
+    expect(store.tickets[0]?.campaign_name).toBeNull();
+    expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
   });
 });

@@ -154,21 +154,18 @@ describe("Instagram intake parsing", () => {
         "Campaign: Summer Drop\nBrand: Acme\nMonth: Aug 2026",
       ),
     ).toEqual({
-      campaignName: "Summer Drop",
       brandName: "Acme",
       campaignMonth: "2026-08-01",
     });
     expect(
       parseCampaignDetailsBundle("Summer Drop, Acme, August 2026"),
     ).toEqual({
-      campaignName: "Summer Drop",
       brandName: "Acme",
       campaignMonth: "2026-08-01",
     });
     expect(
       parseCampaignDetailsBundle("Summer Drop\nAcme\n08/2026"),
     ).toEqual({
-      campaignName: "Summer Drop",
       brandName: "Acme",
       campaignMonth: "2026-08-01",
     });
@@ -179,7 +176,6 @@ describe("Instagram intake parsing", () => {
 
   it("does not accept I don't know for required campaign fields", () => {
     const parsed = parseCampaignDetailsBundle("I don't know");
-    expect(parsed.campaignName).toBeNull();
     expect(parsed.brandName).toBeNull();
     expect(parsed.campaignMonth).toBeNull();
     expect(
@@ -190,12 +186,12 @@ describe("Instagram intake parsing", () => {
   it("asks only for the missing or invalid campaign value", () => {
     const collected = mergeCampaignDetails(
       emptyIntakeCollected(),
-      "Summer Drop, Acme",
+      "Acme",
     );
-    expect(collected.campaignName).toBe("Summer Drop");
+    expect(collected.campaignName).toBeNull();
     expect(collected.brandName).toBe("Acme");
     expect(missingCampaignDetailsPrompt(collected)).toBe(
-      "Please send the campaign month and year, for example August 2026.",
+      "Please send the campaign month, for example June or June 2026.",
     );
   });
 

@@ -16,14 +16,19 @@ describe("instagram persona parsers", () => {
         "Campaign: Summer Drop\nBrand: Acme\nMonth: August 2026\nEmail: riya@example.com",
       ),
     ).toEqual({
-      campaignName: "Summer Drop",
+      campaignName: null,
       brandName: "Acme",
       campaignMonth: "2026-08-01",
       contactEmail: "riya@example.com",
     });
     expect(
       parseCreatorCampaignBundle("Summer Drop, Acme, Aug 2026, riya@example.com"),
-    ).toMatchObject({ campaignMonth: "2026-08-01", contactEmail: "riya@example.com" });
+    ).toMatchObject({
+      campaignName: null,
+      brandName: "Acme",
+      campaignMonth: "2026-08-01",
+      contactEmail: "riya@example.com",
+    });
     expect(parseCreatorCampaignBundle("Summer Drop, Acme, 08/2026, riya@example.com").campaignMonth).toBe(
       "2026-08-01",
     );
@@ -32,10 +37,10 @@ describe("instagram persona parsers", () => {
     );
   });
 
-  it("asks only for missing campaign fields", () => {
+  it("asks only for missing brand, month, or email", () => {
     expect(
       missingCreatorCampaignPrompt({
-        campaignName: "Summer Drop",
+        campaignName: null,
         brandName: "Acme",
         campaignMonth: null,
         contactEmail: null,
@@ -81,13 +86,14 @@ describe("instagram persona parsers", () => {
     ).toBe("+14155552671");
   });
 
-  it("does not infer leading commentary as a campaign name", () => {
+  it("does not store leftover campaign names", () => {
     const parsed = parseCreatorCampaignBundle(
       "Hey this is about the summer work, Acme, August 2026, riya@example.com",
     );
-    expect(parsed.campaignBrandAmbiguous).toBe(true);
     expect(parsed.campaignName).toBeNull();
-    expect(missingCreatorCampaignPrompt(parsed)).toContain("Campaign:");
+    expect(parsed.brandName).toBe("Acme");
+    expect(parsed.campaignMonth).toBe("2026-08-01");
+    expect(missingCreatorCampaignPrompt(parsed)).toBeNull();
   });
 
   it("stores issue details as untrusted plain text", () => {

@@ -106,6 +106,7 @@ export const CONVERSATION_STATES = [
   "awaiting_creator_reason",
   "awaiting_creator_issue_category",
   "creator_campaign_details",
+  "awaiting_month_confirmation",
   "creator_issue_details",
   "creator_confirmation",
   "brand_action",

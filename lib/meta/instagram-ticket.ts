@@ -113,9 +113,10 @@ export function mapIntakeToInstagramTicketInsert(input: {
     ? []
     : incompleteCollectedFields(channelCollected).filter(
         (field) =>
-          field !== "issueType" &&
-          field !== "cloutflowPocName" &&
-          field !== "cloutflowPocContactNumber",
+        field !== "issueType" &&
+        field !== "campaignName" &&
+        field !== "cloutflowPocName" &&
+        field !== "cloutflowPocContactNumber",
       );
   const issueType = ticketIssueType(collected);
 

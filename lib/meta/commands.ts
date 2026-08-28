@@ -8,6 +8,10 @@ import {
   USE_ORIGINAL_PAYLOAD,
   YES_PAYLOAD,
 } from "@/lib/meta/routing-copy";
+import {
+  CAMPAIGN_MONTH_NO_PAYLOAD,
+  CAMPAIGN_MONTH_YES_PAYLOAD,
+} from "@/lib/meta/month-confirmation";
 
 export type RoutingCommand =
   | "collaboration"
@@ -17,6 +21,7 @@ export type RoutingCommand =
   | "confirm"
   | "edit"
   | "yes"
+  | "no"
   | "support_reclassify";
 
 function normalizeCommandText(value: string): string {
@@ -39,7 +44,10 @@ export function detectRoutingCommand(
   if (payload === RESTART_PAYLOAD) return "restart";
   if (payload === CONFIRM_PAYLOAD) return "confirm";
   if (payload === EDIT_PAYLOAD) return "edit";
-  if (payload === YES_PAYLOAD || payload === USE_ORIGINAL_PAYLOAD) return "yes";
+  if (payload === YES_PAYLOAD || payload === USE_ORIGINAL_PAYLOAD || payload === CAMPAIGN_MONTH_YES_PAYLOAD) {
+    return "yes";
+  }
+  if (payload === CAMPAIGN_MONTH_NO_PAYLOAD) return "no";
 
   const normalized = normalizeCommandText(text);
   if (!normalized) return null;
@@ -49,6 +57,7 @@ export function detectRoutingCommand(
   if (normalized === "confirm" || normalized === "yes confirm") return "confirm";
   if (normalized === "edit") return "edit";
   if (normalized === "yes" || normalized === "y") return "yes";
+  if (normalized === "no" || normalized === "n") return "no";
 
   if (
     normalized === "support" ||

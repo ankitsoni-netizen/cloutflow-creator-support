@@ -9,7 +9,6 @@ import {
   CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
   CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
   CREATOR_ISSUE_CATEGORY_TEXT,
-  CREATOR_ISSUE_DETAILS_TEXT,
   PERSONA_CREATOR_PAYLOAD,
 } from "@/lib/meta/instagram-persona-copy";
 import {
@@ -167,13 +166,20 @@ describe("WATI WhatsApp end-to-end parity with the shared conversation machine",
 
     const created = reduceChannelConversation(
       platform.snapshot,
-      signal("Summer Drop, Acme, August 2026", { messageId: "wamid.campaign" }),
+      signal("Acme, August 2026", { messageId: "wamid.campaign" }),
       WHATSAPP_INTAKE_COPY,
     );
-    expect(created.snapshot.state).toBe("ticket_open");
-    expect(created.effects.some((effect) => effect.type === "create_ticket")).toBe(
+    expect(created.snapshot.state).toBe("awaiting_month_confirmation");
+    const confirmed = reduceChannelConversation(
+      created.snapshot,
+      signal("Yes", { messageId: "wamid.month.yes" }),
+      WHATSAPP_INTAKE_COPY,
+    );
+    expect(confirmed.snapshot.state).toBe("ticket_open");
+    expect(confirmed.effects.some((effect) => effect.type === "create_ticket")).toBe(
       true,
     );
+    expect(confirmed.snapshot.collected.campaignName).toBeNull();
 
     const restart = reduceChannelConversation(
       creator.snapshot,
@@ -247,11 +253,19 @@ describe("WATI WhatsApp end-to-end parity with the shared conversation machine",
 
     const details = reduceInstagramConversation(
       fromWati.snapshot,
-      signal("Summer Drop, Acme, August 2026, riya@example.com", {
+      signal("Acme, August 2026, riya@example.com", {
         messageId: "mid.4",
       }),
     );
-    expect(details.snapshot.state).toBe("creator_issue_details");
-    expect(sendText(details)).toBe(CREATOR_ISSUE_DETAILS_TEXT);
+    expect(details.snapshot.state).toBe("awaiting_month_confirmation");
+    const monthYes = reduceInstagramConversation(
+      details.snapshot,
+      signal("Yes", { messageId: "mid.month.yes" }),
+    );
+    expect(monthYes.snapshot.state).toBe("awaiting_post_completion");
+    expect(monthYes.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
+      1,
+    );
+    expect(monthYes.snapshot.collected.campaignName).toBeNull();
   });
 });

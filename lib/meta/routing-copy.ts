@@ -43,7 +43,7 @@ export const PLATFORM_DETAILS_PROMPT_TEXT =
   "Thanks. Which platform is this regarding—Instagram or YouTube—and what’s your username or handle there?";
 
 export const CAMPAIGN_DETAILS_PROMPT_TEXT =
-  "Lastly, please share the campaign name, brand name and campaign month.";
+  "Lastly, please share the brand name and campaign month.";
 
 export const INTAKE_CANCELLED_TEXT =
   "No problem. I have cancelled this Creator Support intake and no ticket was created. Reply anytime if you need help.";

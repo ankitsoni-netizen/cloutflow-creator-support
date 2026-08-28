@@ -6,6 +6,19 @@ import {
 } from "@/lib/meta/whatsapp-ingest";
 import { processWhatsAppVerifiedPayload } from "@/lib/meta/whatsapp-webhook";
 import { whatsappStatusPayload, whatsappTextPayload } from "@/lib/meta/__tests__/fixtures";
+import {
+  identityLookupFromEvent,
+  reloadConversationSnapshot,
+  withDurableConversationPersistence,
+} from "@/lib/meta/__tests__/durable-conversation";
+import {
+  CAMPAIGN_MONTH_NO_PAYLOAD,
+  CAMPAIGN_MONTH_YES_PAYLOAD,
+} from "@/lib/meta/month-confirmation";
+import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
+import { normalizeWatiWebhookPayload } from "@/lib/wati/normalize";
+import { watiTextPayload } from "@/lib/wati/__tests__/fixtures";
+import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
 import * as instagramTicketMail from "@/lib/email/instagram-ticket-mail";
 import type { DbTicket } from "@/lib/tickets/types";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
@@ -646,11 +659,22 @@ describe("ingestWhatsAppInboundMessage routing", () => {
       store,
       context,
     );
-    const created = await ingestWhatsAppInboundMessage(
+    const campaign = await ingestWhatsAppInboundMessage(
       sampleWhatsAppEvent({
         externalEventId: "mid.campaign",
         externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026",
+        messageBody: "Acme, August 2026",
+      }),
+      store,
+      context,
+    );
+    expect(campaign.outcome).toBe("stored");
+    expect(store.tickets).toHaveLength(0);
+    const created = await ingestWhatsAppInboundMessage(
+      sampleWhatsAppEvent({
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
       }),
       store,
       context,
@@ -671,9 +695,9 @@ describe("ingestWhatsAppInboundMessage routing", () => {
 
     const duplicate = await ingestWhatsAppInboundMessage(
       sampleWhatsAppEvent({
-        externalEventId: "mid.campaign",
-        externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026",
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
       }),
       store,
       context,
@@ -1462,11 +1486,21 @@ describe("ingestWhatsAppInboundMessage routing", () => {
       context,
       { loadTicket },
     );
-    const created = await ingestWhatsAppInboundMessage(
+    await ingestWhatsAppInboundMessage(
       sampleWhatsAppEvent({
         externalEventId: "mid.campaign",
         externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026",
+        messageBody: "Acme, August 2026",
+      }),
+      store,
+      context,
+      { loadTicket },
+    );
+    const created = await ingestWhatsAppInboundMessage(
+      sampleWhatsAppEvent({
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
       }),
       store,
       context,
@@ -1576,11 +1610,21 @@ describe("ingestWhatsAppInboundMessage routing", () => {
       context,
       deps,
     );
-    const created = await ingestWhatsAppInboundMessage(
+    await ingestWhatsAppInboundMessage(
       sampleWhatsAppEvent({
         externalEventId: "mid.campaign",
         externalMessageId: "mid.campaign",
-        messageBody: "Summer Drop, Acme, August 2026",
+        messageBody: "Acme, August 2026",
+      }),
+      store,
+      context,
+      deps,
+    );
+    const created = await ingestWhatsAppInboundMessage(
+      sampleWhatsAppEvent({
+        externalEventId: "mid.month.yes",
+        externalMessageId: "mid.month.yes",
+        messageBody: "Yes",
       }),
       store,
       context,
@@ -1734,5 +1778,545 @@ describe("WATI interactive ingest parity", () => {
     expect(result.outcome).toBe("stored");
     expect(store.messages[0]?.deliveryStatus).toBe("delivered");
     expect(store.messages[0]?.externalMessageId).toBe("wamid.wati.interactive");
+  });
+});
+
+describe("WhatsApp ingest first-delivery conversation persistence", () => {
+  async function sendOnce(
+    store: ReturnType<typeof createMemoryInstagramStore>,
+    event: NormalizedMetaInboundText,
+  ) {
+    const outboundBefore = store.messages.filter(
+      (message) => message.direction === "outbound",
+    ).length;
+    const result = await ingestWhatsAppInboundMessage(event, store, context);
+    expect(result.outcome).toBe("stored");
+    const snapshot = await reloadConversationSnapshot(
+      store,
+      "whatsapp",
+      event.externalConversationId,
+      identityLookupFromEvent(event),
+    );
+    expect(snapshot.lastProcessedExternalMessageId).toBe(event.externalMessageId);
+    const webhook = store.events.find(
+      (row) => row.externalEventId === event.externalEventId,
+    );
+    expect(webhook?.processingStatus).toBe("completed");
+    const outboundAfter = store.messages.filter(
+      (message) => message.direction === "outbound",
+    );
+    return {
+      snapshot,
+      newOutboundCount: outboundAfter.length - outboundBefore,
+    };
+  }
+
+  function mockMetaSends() {
+    vi.spyOn(whatsappSend, "sendWhatsAppReplyButtons").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.prompt",
+      recipientId: WA_ID,
+    });
+    vi.spyOn(whatsappSend, "sendWhatsAppText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "mid.text",
+      recipientId: WA_ID,
+    });
+  }
+
+  async function playWhatsAppSupportFlow(
+    store: ReturnType<typeof createMemoryInstagramStore>,
+    reply: (
+      mid: string,
+      text: string,
+      payload?: string | null,
+    ) => NormalizedMetaInboundText,
+  ) {
+    const hi = await sendOnce(store, reply("wamid.hi", "Hi"));
+    expect(hi.snapshot.state).toBe("awaiting_route");
+    expect(hi.newOutboundCount).toBe(1);
+
+    const route = await sendOnce(
+      store,
+      reply("wamid.route", "Creator Support", ROUTE_CREATOR_SUPPORT_PAYLOAD),
+    );
+    expect(route.snapshot.state).toBe("support_intake");
+    expect(route.snapshot.currentIntakeField).toBe("creator_details");
+    expect(route.newOutboundCount).toBeGreaterThanOrEqual(1);
+
+    const creator = await sendOnce(
+      store,
+      reply("wamid.creator", "Riya Sharma, riya@example.com"),
+    );
+    expect(creator.snapshot.currentIntakeField).toBe("platform_details");
+    expect(creator.snapshot.collected.creatorName).toBe("Riya Sharma");
+    expect(creator.snapshot.collected.email).toBe("riya@example.com");
+    expect(creator.newOutboundCount).toBe(1);
+
+    const platform = await sendOnce(
+      store,
+      reply("wamid.platform", "Instagram, @riya_creates"),
+    );
+    expect(platform.snapshot.currentIntakeField).toBe("campaign_details");
+    expect(platform.snapshot.collected.platform).toBe("instagram");
+    expect(platform.newOutboundCount).toBe(1);
+
+    const campaign = await sendOnce(
+      store,
+      reply("wamid.campaign", "Acme, August 2026"),
+    );
+    expect(campaign.snapshot.state).toBe("awaiting_month_confirmation");
+    expect(campaign.snapshot.collected.brandName).toBe("Acme");
+    expect(campaign.snapshot.collected.campaignMonth).toBe("2026-08-01");
+    expect(campaign.snapshot.collected.campaignMonthConfirmed).toBe(false);
+    expect(campaign.newOutboundCount).toBe(1);
+
+    const yes = await sendOnce(
+      store,
+      reply("wamid.month.yes", "Yes", CAMPAIGN_MONTH_YES_PAYLOAD),
+    );
+    expect(yes.snapshot.state).toBe("ticket_open");
+    expect(yes.snapshot.collected.campaignMonthConfirmed).toBe(true);
+    expect(store.tickets).toHaveLength(1);
+    expect(store.tickets[0]?.campaign_name).toBeNull();
+    expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
+  }
+
+  it("accepts every Meta WhatsApp text reply on first delivery and reloads persisted state", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await playWhatsAppSupportFlow(store, (mid, text, payload = null) =>
+      sampleWhatsAppEvent({
+        externalEventId: mid,
+        externalMessageId: mid,
+        messageBody: text,
+        quickReplyPayload: payload,
+      }),
+    );
+  });
+
+  it("accepts Meta WhatsApp interactive button replies on first delivery", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleWhatsAppEvent({ messageBody: "Hi" }));
+    const payload = whatsappTextPayload({
+      id: "wamid.route.btn",
+      body: "Creator Support",
+    });
+    const message = payload.entry[0].changes[0].value.messages[0] as Record<
+      string,
+      unknown
+    >;
+    message.type = "interactive";
+    delete message.text;
+    message.interactive = {
+      type: "button_reply",
+      button_reply: {
+        id: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+        title: "Creator Support",
+      },
+    };
+    const events = normalizeMetaWebhookPayload(payload);
+    expect(events).toHaveLength(1);
+    const routed = await sendOnce(store, events[0]!);
+    expect(routed.snapshot.state).toBe("support_intake");
+    expect(routed.snapshot.currentIntakeField).toBe("creator_details");
+    expect(routed.newOutboundCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("accepts a valid campaign reply on first delivery even when the current prompt outbound is missing", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    store.conversations.push({
+      id: "convo-missing-prompt",
+      channel: "whatsapp",
+      externalConversationId: CONVO_EXTERNAL_ID,
+      externalContactId: WA_ID,
+      state: "support_intake",
+      routingIntent: "creator_support",
+      currentIntakeField: "campaign_details",
+      lastPromptKey: "intake:campaign_details:followup:mid.old",
+      lastProcessedExternalMessageId: "mid.old",
+      intakeSessionVersion: 1,
+      collectedData: {
+        creatorName: "Riya Sharma",
+        email: "riya@example.com",
+        phoneNormalized: "+16315551181",
+        platform: "instagram",
+        socialHandle: "riya_creates",
+        originalInboundText: "Need help with a campaign",
+      },
+    });
+    const result = await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.campaign.valid",
+        externalMessageId: "wamid.campaign.valid",
+        messageBody: "Acme, August 2026",
+      }),
+    );
+    expect(result.snapshot.state).toBe("awaiting_month_confirmation");
+    expect(result.snapshot.collected.brandName).toBe("Acme");
+    expect(result.snapshot.collected.campaignMonth).toBe("2026-08-01");
+    expect(store.tickets).toHaveLength(0);
+  });
+
+  it("accepts No → corrected month → Yes with each WhatsApp reply sent once", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleWhatsAppEvent({ messageBody: "Hi" }));
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.route",
+        externalMessageId: "wamid.route",
+        messageBody: "Creator Support",
+        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.creator",
+        externalMessageId: "wamid.creator",
+        messageBody: "Riya Sharma, riya@example.com",
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.platform",
+        externalMessageId: "wamid.platform",
+        messageBody: "Instagram, @riya_creates",
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.campaign",
+        externalMessageId: "wamid.campaign",
+        messageBody: "Acme, August 2026",
+      }),
+    );
+    const no = await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.month.no",
+        externalMessageId: "wamid.month.no",
+        messageBody: "No",
+        quickReplyPayload: CAMPAIGN_MONTH_NO_PAYLOAD,
+      }),
+    );
+    expect(no.snapshot.state).toBe("support_intake");
+    expect(no.snapshot.collected.campaignMonth).toBeNull();
+    expect(no.newOutboundCount).toBe(1);
+
+    const corrected = await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.campaign.2",
+        externalMessageId: "wamid.campaign.2",
+        messageBody: "July 2026",
+      }),
+    );
+    expect(corrected.snapshot.state).toBe("awaiting_month_confirmation");
+    expect(corrected.snapshot.collected.campaignMonth).toBe("2026-07-01");
+    expect(corrected.newOutboundCount).toBe(1);
+
+    const yes = await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.month.yes",
+        externalMessageId: "wamid.month.yes",
+        messageBody: "Yes",
+        quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
+      }),
+    );
+    expect(yes.snapshot.state).toBe("ticket_open");
+    expect(store.tickets).toHaveLength(1);
+  });
+
+  it("ignores a retry of the same external event and does not require a new copy of the text", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    const first = sampleWhatsAppEvent({ messageBody: "Hi" });
+    await sendOnce(store, first);
+    const retry = await ingestWhatsAppInboundMessage(first, store, context);
+    expect(retry.outcome).toBe("duplicate");
+    const snapshot = await reloadConversationSnapshot(
+      store,
+      "whatsapp",
+      CONVO_EXTERNAL_ID,
+      identityLookupFromEvent(sampleWhatsAppEvent()),
+    );
+    expect(snapshot.state).toBe("awaiting_route");
+    expect(
+      store.messages.filter((message) => message.direction === "outbound"),
+    ).toHaveLength(1);
+  });
+
+  it("does not let a delivery status callback move or overwrite conversation state", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleWhatsAppEvent({ messageBody: "Hi" }));
+    const before = await reloadConversationSnapshot(
+      store,
+      "whatsapp",
+      CONVO_EXTERNAL_ID,
+      identityLookupFromEvent(sampleWhatsAppEvent()),
+    );
+    const status = await ingestWhatsAppStatus(
+      {
+        channel: "whatsapp",
+        provider: META_WHATSAPP_PROVIDER,
+        externalEventId: "status:mid.prompt:delivered",
+        metaMessageId: "mid.prompt",
+        status: "delivered",
+        timestamp: "2020-10-18T22:13:27.000Z",
+        phoneNumberId: PHONE_NUMBER_ID,
+        errorCode: null,
+      },
+      store,
+      context,
+    );
+    expect(status.outcome).not.toBe("failed");
+    const after = await reloadConversationSnapshot(
+      store,
+      "whatsapp",
+      CONVO_EXTERNAL_ID,
+      identityLookupFromEvent(sampleWhatsAppEvent()),
+    );
+    expect(after.state).toBe(before.state);
+    expect(after.lastProcessedExternalMessageId).toBe(
+      before.lastProcessedExternalMessageId,
+    );
+    expect(after.collected.creatorName).toBe(before.collected.creatorName);
+  });
+
+  it("does not let a delivery status callback advance month confirmation", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await sendOnce(store, sampleWhatsAppEvent({ messageBody: "Hi" }));
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.route",
+        externalMessageId: "wamid.route",
+        messageBody: "Creator Support",
+        quickReplyPayload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.creator",
+        externalMessageId: "wamid.creator",
+        messageBody: "Riya Sharma, riya@example.com",
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.platform",
+        externalMessageId: "wamid.platform",
+        messageBody: "Instagram, @riya_creates",
+      }),
+    );
+    await sendOnce(
+      store,
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.campaign",
+        externalMessageId: "wamid.campaign",
+        messageBody: "Acme, August 2026",
+      }),
+    );
+    const before = await reloadConversationSnapshot(
+      store,
+      "whatsapp",
+      CONVO_EXTERNAL_ID,
+      identityLookupFromEvent(sampleWhatsAppEvent()),
+    );
+    expect(before.state).toBe("awaiting_month_confirmation");
+    const outboundBefore = store.messages.filter(
+      (message) => message.direction === "outbound",
+    ).length;
+    const status = await ingestWhatsAppStatus(
+      {
+        channel: "whatsapp",
+        provider: META_WHATSAPP_PROVIDER,
+        externalEventId: "status:mid.prompt:delivered",
+        metaMessageId: "mid.prompt",
+        status: "delivered",
+        timestamp: "2020-10-18T22:13:27.000Z",
+        phoneNumberId: PHONE_NUMBER_ID,
+        errorCode: null,
+      },
+      store,
+      context,
+    );
+    expect(status.outcome).not.toBe("failed");
+    const after = await reloadConversationSnapshot(
+      store,
+      "whatsapp",
+      CONVO_EXTERNAL_ID,
+      identityLookupFromEvent(sampleWhatsAppEvent()),
+    );
+    expect(after.state).toBe("awaiting_month_confirmation");
+    expect(after.lastProcessedExternalMessageId).toBe(
+      before.lastProcessedExternalMessageId,
+    );
+    expect(store.tickets).toHaveLength(0);
+    expect(
+      store.messages.filter((message) => message.direction === "outbound"),
+    ).toHaveLength(outboundBefore);
+  });
+
+  it("creates exactly one ticket for one complete WhatsApp flow", async () => {
+    mockMetaSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    await playWhatsAppSupportFlow(store, (mid, text, payload = null) =>
+      sampleWhatsAppEvent({
+        externalEventId: mid,
+        externalMessageId: mid,
+        messageBody: text,
+        quickReplyPayload: payload,
+      }),
+    );
+    expect(store.tickets).toHaveLength(1);
+    const retryYes = await ingestWhatsAppInboundMessage(
+      sampleWhatsAppEvent({
+        externalEventId: "wamid.month.yes",
+        externalMessageId: "wamid.month.yes",
+        messageBody: "Yes",
+        quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(retryYes.outcome).toBe("duplicate");
+    expect(store.tickets).toHaveLength(1);
+  });
+});
+
+describe("WATI ingest first-delivery conversation persistence", () => {
+  async function sendWatiOnce(
+    store: ReturnType<typeof createMemoryInstagramStore>,
+    payload: Record<string, unknown>,
+  ) {
+    const normalized = normalizeWatiWebhookPayload(payload);
+    expect(normalized.events).toHaveLength(1);
+    const event = normalized.events[0]!;
+    const outboundBefore = store.messages.filter(
+      (message) => message.direction === "outbound",
+    ).length;
+    const result = await ingestWhatsAppInboundMessage(event, store, {
+      webhookPayload: { provider: WATI_WHATSAPP_PROVIDER, sanitized: true },
+    });
+    expect(result.outcome).toBe("stored");
+    const snapshot = await reloadConversationSnapshot(
+      store,
+      "whatsapp",
+      event.externalConversationId,
+      identityLookupFromEvent(event),
+    );
+    expect(snapshot.lastProcessedExternalMessageId).toBe(event.externalMessageId);
+    const webhook = store.events.find(
+      (row) => row.externalEventId === event.externalEventId,
+    );
+    expect(webhook?.processingStatus).toBe("completed");
+    const outboundAfter = store.messages.filter(
+      (message) => message.direction === "outbound",
+    );
+    return {
+      snapshot,
+      event,
+      newOutboundCount: outboundAfter.length - outboundBefore,
+    };
+  }
+
+  function mockWatiSends() {
+    process.env.WHATSAPP_PROVIDER = "wati";
+    vi.spyOn(watiSend, "sendWatiInteractiveMessage").mockResolvedValue({
+      ok: true,
+      metaMessageId: "wamid.wati.qr",
+      recipientId: "8618719149214",
+    });
+    vi.spyOn(watiSend, "sendWatiSessionText").mockResolvedValue({
+      ok: true,
+      metaMessageId: "wamid.wati.text",
+      recipientId: "8618719149214",
+    });
+  }
+
+  it("accepts WATI typed, button, and list replies on first delivery", async () => {
+    mockWatiSends();
+    const store = withDurableConversationPersistence(createMemoryInstagramStore());
+    const hi = await sendWatiOnce(
+      store,
+      watiTextPayload({
+        text: "Hi",
+        whatsappMessageId: "wamid.wati.hi",
+      }),
+    );
+    expect(hi.snapshot.state).toBe("awaiting_route");
+    expect(hi.newOutboundCount).toBe(1);
+
+    const button = await sendWatiOnce(
+      store,
+      watiTextPayload({
+        text: null,
+        type: "button",
+        buttonReply: {
+          title: "Creator Support",
+        },
+        whatsappMessageId: "wamid.wati.btn",
+      }),
+    );
+    expect(button.snapshot.state).toBe("support_intake");
+    expect(button.snapshot.currentIntakeField).toBe("creator_details");
+    expect(button.newOutboundCount).toBeGreaterThanOrEqual(1);
+
+    const typed = await sendWatiOnce(
+      store,
+      watiTextPayload({
+        text: "Riya Sharma, riya@example.com",
+        whatsappMessageId: "wamid.wati.creator",
+      }),
+    );
+    expect(typed.snapshot.currentIntakeField).toBe("platform_details");
+    expect(typed.snapshot.collected.creatorName).toBe("Riya Sharma");
+    expect(typed.newOutboundCount).toBe(1);
+
+    const list = await sendWatiOnce(
+      store,
+      watiTextPayload({
+        text: null,
+        type: "list",
+        listReply: { title: "Instagram, @riya_creates" },
+        whatsappMessageId: "wamid.wati.platform",
+      }),
+    );
+    expect(list.snapshot.currentIntakeField).toBe("campaign_details");
+
+    const campaign = await sendWatiOnce(
+      store,
+      watiTextPayload({
+        text: "Acme, August 2026",
+        whatsappMessageId: "wamid.wati.campaign",
+      }),
+    );
+    expect(campaign.snapshot.state).toBe("awaiting_month_confirmation");
+
+    const yesList = await sendWatiOnce(
+      store,
+      watiTextPayload({
+        text: null,
+        type: "button",
+        buttonReply: { title: "Yes" },
+        whatsappMessageId: "wamid.wati.yes",
+      }),
+    );
+    expect(yesList.snapshot.state).toBe("ticket_open");
+    expect(store.tickets).toHaveLength(1);
   });
 });

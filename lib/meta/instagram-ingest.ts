@@ -298,8 +298,9 @@ async function finishAlreadyProcessedInbound(input: {
       snapshot.state === "ticket_open") &&
     !snapshot.ticketId &&
     Boolean(snapshot.collected.igIssueCategory) &&
-    Boolean(snapshot.collected.issueDescription) &&
-    Boolean(snapshot.collected.campaignName)
+    Boolean(snapshot.collected.brandName) &&
+    Boolean(snapshot.collected.campaignMonth) &&
+    snapshot.collected.campaignMonthConfirmed
   ) {
     const applied = await applyInstagramEffects({
       effects: [{ type: "create_ticket" }],

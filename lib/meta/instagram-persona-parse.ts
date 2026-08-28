@@ -8,14 +8,14 @@ import {
   parseIntakePhone,
 } from "@/lib/meta/intake-validate";
 import { toUntrustedPlainText } from "@/lib/meta/plain-text";
-import { parseCampaignMonthForDb } from "@/lib/tickets/map";
+import { parseCampaignMonthInput } from "@/lib/tickets/campaign-month";
 
 export type CreatorCampaignFields = {
   campaignName: string | null;
   brandName: string | null;
   campaignMonth: string | null;
   contactEmail: string | null;
-  campaignBrandAmbiguous?: boolean;
+  brandAmbiguous?: boolean;
 };
 
 export type AgencyDetailFields = {
@@ -125,7 +125,10 @@ function stripLabelPrefix(part: string, labels: RegExp): string {
   return part.replace(labels, "").trim();
 }
 
-export function parseCreatorCampaignBundle(raw: string): CreatorCampaignFields {
+export function parseCreatorCampaignBundle(
+  raw: string,
+  now: Date = new Date(),
+): CreatorCampaignFields {
   const text = toUntrustedPlainText(raw);
   if (!text) {
     return {
@@ -136,17 +139,17 @@ export function parseCreatorCampaignBundle(raw: string): CreatorCampaignFields {
     };
   }
 
-  let campaignName = requiredTextValue(
-    labelledValue(text, /^(campaign(?:\s*name)?)$/i),
-  );
   let brandName = requiredTextValue(
     labelledValue(text, /^(brand(?:\s*name)?)$/i),
   );
-  const monthRaw = labelledValue(
+  const labelledMonth = labelledValue(
     text,
     /^(month|campaign\s*month|date)$/i,
   );
-  let campaignMonth = monthRaw ? parseCampaignMonthForDb(monthRaw) : null;
+  const monthParse =
+    parseCampaignMonthInput(labelledMonth ?? "", now) ??
+    parseCampaignMonthInput(text, now);
+  const campaignMonth = monthParse?.iso ?? null;
   let contactEmail =
     firstValidEmail(labelledValue(text, /^(e-?mail|mail|contact\s*email)$/i) ?? "") ??
     firstValidEmail(text);
@@ -154,18 +157,18 @@ export function parseCreatorCampaignBundle(raw: string): CreatorCampaignFields {
   const labelPrefix =
     /^(campaign(?:\s*name)?|brand(?:\s*name)?|month|campaign\s*month|date|e-?mail|mail|contact\s*email)\s*[:\-]\s*/i;
 
-  if (!campaignName || !brandName || !campaignMonth || !contactEmail) {
-    const parts = splitParts(text).map((part) => stripLabelPrefix(part, labelPrefix));
-
-    if (!campaignMonth) {
-      for (const part of parts) {
-        const month = parseCampaignMonthForDb(part);
-        if (month) {
-          campaignMonth = month;
-          break;
-        }
-      }
+  if (!brandName || !campaignMonth || !contactEmail) {
+    let working = text;
+    if (monthParse?.matched) {
+      working = working.replace(monthParse.matched, " ");
     }
+    if (contactEmail) {
+      working = working.replace(new RegExp(escapeRegExp(contactEmail), "ig"), " ");
+    }
+    working = working.replace(/[^\s,;<>]+@[^\s,;<>]+/g, " ");
+
+    const parts = splitParts(working).map((part) => stripLabelPrefix(part, labelPrefix));
+
     if (!contactEmail) {
       for (const part of parts) {
         const email = firstValidEmail(part);
@@ -179,45 +182,43 @@ export function parseCreatorCampaignBundle(raw: string): CreatorCampaignFields {
     const remaining = parts.filter(
       (part) =>
         requiredTextValue(part) &&
-        parseCampaignMonthForDb(part) === null &&
+        parseCampaignMonthInput(part, now) === null &&
         !firstValidEmail(part) &&
         !/^(campaign(?:\s*name)?|brand(?:\s*name)?|month|campaign\s*month|date|e-?mail|mail)$/i.test(
           part,
         ),
     );
 
-    const commentaryOrExtra =
-      remaining.some((part) => looksLikeCommentary(part)) || remaining.length > 2;
-    if (commentaryOrExtra && (!campaignName || !brandName)) {
-      return {
-        campaignName: requiredTextValue(campaignName),
-        brandName: requiredTextValue(brandName),
-        campaignMonth,
-        contactEmail,
-        campaignBrandAmbiguous: true,
-      };
-    }
-
-    if (!campaignName && remaining[0]) {
-      campaignName = requiredTextValue(remaining[0]);
-    }
-    if (!brandName && remaining[1]) {
-      brandName = requiredTextValue(remaining[1]);
-    }
-    if (!campaignName && remaining.length === 1 && brandName) {
-      campaignName = requiredTextValue(remaining[0]);
-    }
-    if (!brandName && remaining.length === 1 && campaignName) {
-      brandName = requiredTextValue(remaining[0]);
+    const nonCommentary = remaining.filter((part) => !looksLikeCommentary(part));
+    if (!brandName) {
+      if (remaining.length === 1) {
+        brandName = requiredTextValue(remaining[0]);
+      } else if (remaining.length === 2) {
+        brandName = requiredTextValue(remaining[1]);
+      } else if (nonCommentary.length === 1) {
+        brandName = requiredTextValue(nonCommentary[0]);
+      } else if (remaining.length > 2 && !brandName) {
+        return {
+          campaignName: null,
+          brandName: null,
+          campaignMonth,
+          contactEmail,
+          brandAmbiguous: true,
+        };
+      }
     }
   }
 
   return {
-    campaignName: requiredTextValue(campaignName),
+    campaignName: null,
     brandName: requiredTextValue(brandName),
     campaignMonth,
     contactEmail,
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function mergeCreatorCampaignFields(
@@ -225,22 +226,21 @@ export function mergeCreatorCampaignFields(
   parsed: CreatorCampaignFields,
 ): CreatorCampaignFields {
   return {
-    campaignName: parsed.campaignName ?? current.campaignName,
+    campaignName: null,
     brandName: parsed.brandName ?? current.brandName,
     campaignMonth: parsed.campaignMonth ?? current.campaignMonth,
     contactEmail: parsed.contactEmail ?? current.contactEmail,
-    campaignBrandAmbiguous: parsed.campaignBrandAmbiguous ?? false,
+    brandAmbiguous: parsed.brandAmbiguous ?? false,
   };
 }
 
 export function missingCreatorCampaignPrompt(
   fields: CreatorCampaignFields,
 ): string | null {
-  if (fields.campaignBrandAmbiguous && (!fields.campaignName || !fields.brandName)) {
+  if (fields.brandAmbiguous && !fields.brandName) {
     return CREATOR_CAMPAIGN_AMBIGUOUS_TEXT;
   }
   const missing: string[] = [];
-  if (!fields.campaignName) missing.push("the campaign name");
   if (!fields.brandName) missing.push("the brand name");
   if (!fields.campaignMonth) missing.push("a valid campaign month");
   if (!fields.contactEmail) missing.push("a valid email address");

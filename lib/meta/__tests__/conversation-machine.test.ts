@@ -14,17 +14,12 @@ import {
   BRAND_BOOK_CALL_PAYLOAD,
   BRAND_BOOKING_TEXT,
   CREATOR_APPLY_TEXT,
-  CREATOR_CAMPAIGN_AMBIGUOUS_TEXT,
-  CREATOR_CAMPAIGN_DETAILS_TEXT,
   CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
   CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
   CREATOR_ISSUE_CATEGORY_TEXT,
-  CREATOR_ISSUE_DETAILS_TEXT,
   CREATOR_NEW_WORK_PAYLOAD,
   CREATOR_PAYMENT_ISSUE_PAYLOAD,
   CREATOR_REASON_TEXT,
-  CREATOR_TICKET_CONFIRM_PAYLOAD,
-  CREATOR_TICKET_EDIT_PAYLOAD,
   FLOW_BACK_PAYLOAD,
   FLOW_BACK_TITLE,
   FLOW_CANCEL_PAYLOAD,
@@ -43,6 +38,10 @@ import {
   personaWelcomeText,
   withPostCompletionQuestion,
 } from "@/lib/meta/instagram-persona-copy";
+import {
+  CAMPAIGN_MONTH_NO_PAYLOAD,
+  CAMPAIGN_MONTH_YES_PAYLOAD,
+} from "@/lib/meta/month-confirmation";
 import {
   CREATOR_DETAILS_PROMPT_TEXT,
   ROUTE_CREATOR_SUPPORT_PAYLOAD,
@@ -137,31 +136,20 @@ describe("Instagram persona routing state machine", () => {
   });
 
   it("does not treat menu or restart inside a longer description as a command", () => {
-    const menued = toPersona();
-    const creator = reduceInstagramConversation(
-      menued.snapshot,
-      signal("I'm a creator", { messageId: "mid.p", payload: PERSONA_CREATOR_PAYLOAD }),
-    );
-    const existing = reduceInstagramConversation(
-      creator.snapshot,
-      signal("Existing campaign", {
-        messageId: "mid.e",
-        payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
-      }),
-    );
-    const issue = reduceInstagramConversation(
-      existing.snapshot,
-      signal("Campaign issue", {
-        messageId: "mid.i",
-        payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
-      }),
-    );
-    const details = reduceInstagramConversation(
-      issue.snapshot,
-      signal("Summer Drop, Acme, August 2026, riya@example.com", { messageId: "mid.c" }),
-    );
+    const start = emptyConversationSnapshot({
+      state: "creator_issue_details",
+      routingIntent: "creator_support",
+      collected: {
+        ...emptyConversationSnapshot().collected,
+        brandName: "Acme",
+        campaignMonth: "2026-08-01",
+        campaignMonthConfirmed: true,
+        email: "riya@example.com",
+        igIssueCategory: "campaign",
+      },
+    });
     const described = reduceInstagramConversation(
-      details.snapshot,
+      start,
       signal("Please restart my campaign and open the menu for the brand", {
         messageId: "mid.issue",
       }),
@@ -254,17 +242,18 @@ describe("Instagram persona routing state machine", () => {
         messageId: "mid.3",
       },
       {
-        text: "Summer Drop, Acme, August 2026, riya@example.com",
+        text: "Acme, August 2026, riya@example.com",
         messageId: "mid.4",
       },
-      { text: "Payment never arrived for the film", messageId: "mid.5" },
-      { text: "Yes, raise it", payload: CREATOR_TICKET_CONFIRM_PAYLOAD, messageId: "mid.6" },
+      { text: "Yes", messageId: "mid.month.yes" },
     ]);
     expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
     expect(last.snapshot.collected.igIssueCategory).toBe("campaign");
     expect(last.snapshot.collected.issueType).toBe("other");
     expect(last.snapshot.collected.campaignMonth).toBe("2026-08-01");
-    expect(last.snapshot.collected.issueDescription).toBe("Payment never arrived for the film");
+    expect(last.snapshot.collected.campaignName).toBeNull();
+    expect(last.snapshot.collected.brandName).toBe("Acme");
+    expect(last.snapshot.collected.email).toBe("riya@example.com");
     expect(last.snapshot.state).toBe("awaiting_post_completion");
   });
 
@@ -278,13 +267,14 @@ describe("Instagram persona routing state machine", () => {
         messageId: "mid.2",
       },
       { text: "Payment issue", payload: CREATOR_PAYMENT_ISSUE_PAYLOAD, messageId: "mid.3" },
-      { text: "Summer Drop, Acme, Aug 2026, riya@example.com", messageId: "mid.4" },
-      { text: "TDS was deducted twice", messageId: "mid.5" },
-      { text: "yes", messageId: "mid.6" },
+      { text: "Acme, Aug 2026, riya@example.com", messageId: "mid.4" },
+      { text: "Yes", messageId: "mid.month.yes" },
     ]);
     expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
     expect(last.snapshot.collected.igIssueCategory).toBe("payment");
     expect(last.snapshot.collected.issueType).toBe("payment_delayed");
+    expect(last.snapshot.collected.campaignName).toBeNull();
+    expect(last.snapshot.state).toBe("awaiting_post_completion");
   });
 
   it("re-asks only missing campaign fields", () => {
@@ -301,10 +291,10 @@ describe("Instagram persona routing state machine", () => {
         payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
         messageId: "mid.3",
       },
-      { text: "Summer Drop, Acme", messageId: "mid.4" },
+      { text: "Acme", messageId: "mid.4" },
     ]);
     expect(partial.snapshot.state).toBe("creator_campaign_details");
-    expect(partial.snapshot.collected.campaignName).toBe("Summer Drop");
+    expect(partial.snapshot.collected.campaignName).toBeNull();
     expect(partial.snapshot.collected.brandName).toBe("Acme");
     expect(sendTexts(partial)[0]).toContain("campaign month");
     expect(sendTexts(partial)[0]).toContain("email");
@@ -316,13 +306,21 @@ describe("Instagram persona routing state machine", () => {
       partial.snapshot,
       signal("August 2026, riya@example.com", { messageId: "mid.5" }),
     );
+    expect(filled.snapshot.state).toBe("awaiting_month_confirmation");
     expect(filled.snapshot.collected.campaignMonth).toBe("2026-08-01");
     expect(filled.snapshot.collected.email).toBe("riya@example.com");
-    expect(sendTexts(filled)).toEqual([CREATOR_ISSUE_DETAILS_TEXT]);
+    const monthYes = reduceInstagramConversation(
+      filled.snapshot,
+      signal("Yes", { messageId: "mid.month.yes" }),
+    );
+    expect(monthYes.snapshot.state).toBe("awaiting_post_completion");
+    expect(monthYes.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
+      1,
+    );
   });
 
-  it("edit preserves issue details and returns to campaign question 1", () => {
-    const confirmed = play([
+  it("creates the ticket on month Yes without collecting a campaign name", () => {
+    const last = play([
       { text: "Hi", messageId: "mid.0" },
       { text: "I'm a creator", payload: PERSONA_CREATOR_PAYLOAD, messageId: "mid.1" },
       {
@@ -335,29 +333,14 @@ describe("Instagram persona routing state machine", () => {
         payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
         messageId: "mid.3",
       },
-      { text: "Old Campaign, Old Brand, 08/2026, old@example.com", messageId: "mid.4" },
-      { text: "The brief changed twice", messageId: "mid.5" },
+      { text: "Old Brand, 08/2026, old@example.com", messageId: "mid.4" },
+      { text: "Yes", messageId: "mid.month.yes" },
     ]);
-    const edited = reduceInstagramConversation(
-      confirmed.snapshot,
-      signal("Edit details", {
-        messageId: "mid.6",
-        payload: CREATOR_TICKET_EDIT_PAYLOAD,
-      }),
-    );
-    expect(edited.snapshot.state).toBe("creator_campaign_details");
-    expect(edited.snapshot.collected.issueDescription).toBe("The brief changed twice");
-    expect(edited.snapshot.collected.campaignName).toBeNull();
-    expect(sendTexts(edited)).toEqual([CREATOR_CAMPAIGN_DETAILS_TEXT]);
-
-    const updated = reduceInstagramConversation(
-      edited.snapshot,
-      signal("New Campaign, New Brand, 2026-08, new@example.com", { messageId: "mid.7" }),
-    );
-    expect(updated.snapshot.state).toBe("creator_confirmation");
-    expect(updated.snapshot.collected.campaignName).toBe("New Campaign");
-    expect(updated.snapshot.collected.issueDescription).toBe("The brief changed twice");
-    expect(updated.effects.some((effect) => effect.type === "create_ticket")).toBe(false);
+    expect(last.snapshot.state).toBe("awaiting_post_completion");
+    expect(last.snapshot.collected.campaignName).toBeNull();
+    expect(last.snapshot.collected.brandName).toBe("Old Brand");
+    expect(last.snapshot.collected.email).toBe("old@example.com");
+    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
   });
 
   it("cancel returns to the main menu without a ticket", () => {
@@ -374,8 +357,7 @@ describe("Instagram persona routing state machine", () => {
         payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
         messageId: "mid.3",
       },
-      { text: "Summer Drop, Acme, August 2026, riya@example.com", messageId: "mid.4" },
-      { text: "The film was delayed", messageId: "mid.5" },
+      { text: "Acme, August 2026, riya@example.com", messageId: "mid.4" },
     ]);
     const cancelled = reduceInstagramConversation(
       confirmed.snapshot,
@@ -687,7 +669,7 @@ describe("Instagram persona routing state machine", () => {
     );
   });
 
-  it("asks for labelled campaign and brand when they are ambiguous", () => {
+  it("asks for a labelled brand when remaining names are ambiguous", () => {
     const details = play(
       [
         { text: "Hello", messageId: "mid.first" },
@@ -707,14 +689,20 @@ describe("Instagram persona routing state machine", () => {
           messageId: "mid.issue",
         },
         {
-          text: "Hey this is about the summer work, Acme, August 2026, riya@example.com",
+          text: "Alpha, Beta, Gamma, August 2026, riya@example.com",
           messageId: "mid.campaign",
         },
       ],
     );
-    expect(details.snapshot.state).toBe("creator_campaign_details");
+    expect(details.snapshot.state).toBe("awaiting_month_confirmation");
     expect(details.snapshot.collected.campaignName).toBeNull();
-    expect(sendTexts(details)[0]).toBe(CREATOR_CAMPAIGN_AMBIGUOUS_TEXT);
+    const monthYes = reduceInstagramConversation(
+      details.snapshot,
+      signal("Yes", { messageId: "mid.month.yes" }),
+    );
+    expect(monthYes.snapshot.state).toBe("creator_campaign_details");
+    expect(sendTexts(monthYes)[0]).toBe("Please send the brand name.");
+    expect(monthYes.snapshot.collected.campaignName).toBeNull();
   });
 });
 
@@ -818,7 +806,7 @@ describe("Instagram FLOW_BACK / Go back", () => {
       },
     },
     {
-      from: "creator_issue_details",
+      from: "awaiting_month_confirmation",
       to: "creator_campaign_details",
       setup: [
         { text: "Hi", messageId: "mid.0" },
@@ -838,45 +826,14 @@ describe("Instagram FLOW_BACK / Go back", () => {
           messageId: "mid.3",
         },
         {
-          text: "Summer Drop, Acme, August 2026, riya@example.com",
+          text: "Acme, August 2026, riya@example.com",
           messageId: "mid.4",
         },
       ],
       preserved: {
-        campaignName: "Summer Drop",
+        campaignName: null,
         brandName: "Acme",
         email: "riya@example.com",
-      },
-    },
-    {
-      from: "creator_confirmation",
-      to: "creator_issue_details",
-      setup: [
-        { text: "Hi", messageId: "mid.0" },
-        {
-          text: "I'm a creator",
-          payload: PERSONA_CREATOR_PAYLOAD,
-          messageId: "mid.1",
-        },
-        {
-          text: "Existing campaign",
-          payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
-          messageId: "mid.2",
-        },
-        {
-          text: "Campaign issue",
-          payload: CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
-          messageId: "mid.3",
-        },
-        {
-          text: "Summer Drop, Acme, August 2026, riya@example.com",
-          messageId: "mid.4",
-        },
-        { text: "Payment never arrived", messageId: "mid.5" },
-      ],
-      preserved: {
-        campaignName: "Summer Drop",
-        issueDescription: "Payment never arrived",
       },
     },
     {
@@ -1061,7 +1018,7 @@ describe("Instagram FLOW_BACK / Go back", () => {
   });
 
   it("lets a new answer overwrite only the relevant fields after going back", () => {
-    const confirmed = play([
+    const awaiting = play([
       { text: "Hi", messageId: "mid.0" },
       {
         text: "I'm a creator",
@@ -1079,28 +1036,26 @@ describe("Instagram FLOW_BACK / Go back", () => {
         messageId: "mid.3",
       },
       {
-        text: "Summer Drop, Acme, August 2026, riya@example.com",
+        text: "Acme, August 2026, riya@example.com",
         messageId: "mid.4",
       },
-      { text: "Payment never arrived", messageId: "mid.5" },
     ]);
     const back = reduceInstagramConversation(
-      confirmed.snapshot,
-      signal("back", { messageId: "mid.back.issue" }),
+      awaiting.snapshot,
+      signal("back", { messageId: "mid.back.month" }),
     );
-    expect(back.snapshot.state).toBe("creator_issue_details");
-    expect(back.snapshot.collected.issueDescription).toBe("Payment never arrived");
-    expect(back.snapshot.collected.campaignName).toBe("Summer Drop");
+    expect(back.snapshot.state).toBe("creator_campaign_details");
+    expect(back.snapshot.collected.brandName).toBe("Acme");
+    expect(back.snapshot.collected.email).toBe("riya@example.com");
+    expect(back.snapshot.collected.campaignName).toBeNull();
 
     const revised = reduceInstagramConversation(
       back.snapshot,
-      signal("Brand never shared the brief", { messageId: "mid.revised" }),
+      signal("July 2026", { messageId: "mid.revised" }),
     );
-    expect(revised.snapshot.state).toBe("creator_confirmation");
-    expect(revised.snapshot.collected.issueDescription).toBe(
-      "Brand never shared the brief",
-    );
-    expect(revised.snapshot.collected.campaignName).toBe("Summer Drop");
+    expect(revised.snapshot.state).toBe("awaiting_month_confirmation");
+    expect(revised.snapshot.collected.campaignMonth).toBe("2026-07-01");
+    expect(revised.snapshot.collected.campaignName).toBeNull();
     expect(revised.snapshot.collected.email).toBe("riya@example.com");
     assertNoSideEffects(revised);
   });
@@ -1279,21 +1234,18 @@ describe("Instagram FLOW_BACK / Go back", () => {
         messageId: "mid.3",
       },
       {
-        text: "Summer Drop, Acme, August 2026, riya@example.com",
+        text: "Acme, August 2026, riya@example.com",
         messageId: "mid.4",
       },
-      { text: "Payment never arrived", messageId: "mid.5" },
     ]);
     expect(quickRepliesOf(confirmation).map((reply) => reply.payload)).toEqual([
-      CREATOR_TICKET_CONFIRM_PAYLOAD,
-      CREATOR_TICKET_EDIT_PAYLOAD,
-      FLOW_CANCEL_PAYLOAD,
+      CAMPAIGN_MONTH_YES_PAYLOAD,
+      CAMPAIGN_MONTH_NO_PAYLOAD,
       FLOW_BACK_PAYLOAD,
     ]);
     expect(quickRepliesOf(confirmation).map((reply) => reply.title)).toEqual([
-      "Yes, raise it",
-      "Edit details",
-      "Cancel",
+      "Yes",
+      "No",
       FLOW_BACK_TITLE,
     ]);
   });

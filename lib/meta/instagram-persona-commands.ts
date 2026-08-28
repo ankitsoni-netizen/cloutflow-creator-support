@@ -20,6 +20,10 @@ import {
   POST_DONE_PAYLOAD,
   POST_MAIN_MENU_PAYLOAD,
 } from "@/lib/meta/instagram-persona-copy";
+import {
+  CAMPAIGN_MONTH_NO_PAYLOAD,
+  CAMPAIGN_MONTH_YES_PAYLOAD,
+} from "@/lib/meta/month-confirmation";
 
 export type InstagramPersonaCommand =
   | "menu"
@@ -42,6 +46,7 @@ export type InstagramPersonaCommand =
   | "other_edit"
   | "edit"
   | "yes"
+  | "no"
   | "flow_cancel"
   | "flow_back"
   | "post_main_menu"
@@ -80,6 +85,10 @@ function payloadCommand(
       return "creator_ticket_confirm";
     case CREATOR_TICKET_EDIT_PAYLOAD:
       return "creator_ticket_edit";
+    case CAMPAIGN_MONTH_YES_PAYLOAD:
+      return "yes";
+    case CAMPAIGN_MONTH_NO_PAYLOAD:
+      return "no";
     case BRAND_BOOK_CALL_PAYLOAD:
       return "brand_book_call";
     case BRAND_BOOK_DEMO_PAYLOAD:
@@ -119,6 +128,7 @@ const TEXT_COMMANDS: Array<[InstagramPersonaCommand, readonly string[]]> = [
   ["creator_ticket_confirm", ["yes, raise it", "yes raise it"]],
   ["edit", ["edit details", "edit"]],
   ["yes", ["yes", "y"]],
+  ["no", ["no", "n"]],
   ["brand_book_call", ["book a call", "call"]],
   ["brand_book_demo", ["book a demo", "demo"]],
   ["agency_send", ["send to team"]],

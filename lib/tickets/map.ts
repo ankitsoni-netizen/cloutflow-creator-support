@@ -20,49 +20,11 @@ import type {
   TicketPriority,
   TicketStatus,
 } from "@/lib/types";
+import {
+  formatCampaignMonthNameYear,
+  parseCampaignMonthForDb as parseCampaignMonthValue,
+} from "@/lib/tickets/campaign-month";
 import type { DbTicket, DbTicketInsert, DbPlatform } from "@/lib/tickets/types";
-
-const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-] as const;
-
-const MONTH_LOOKUP: Record<string, number> = {
-  january: 0,
-  jan: 0,
-  february: 1,
-  feb: 1,
-  march: 2,
-  mar: 2,
-  april: 3,
-  apr: 3,
-  may: 4,
-  june: 5,
-  jun: 5,
-  july: 6,
-  jul: 6,
-  august: 7,
-  aug: 7,
-  september: 8,
-  sep: 8,
-  sept: 8,
-  october: 9,
-  oct: 9,
-  november: 10,
-  nov: 10,
-  december: 11,
-  dec: 11,
-};
 
 function emptyToNull(value: string): string | null {
   const trimmed = value.trim();
@@ -73,51 +35,14 @@ export function formatCampaignMonthForDisplay(
   value: string | null | undefined,
 ): string {
   if (!value) return "";
-
-  const isoMatch = value.match(/^(\d{4})-(\d{2})(?:-\d{2})?/);
-  if (isoMatch) {
-    const year = Number(isoMatch[1]);
-    const monthIndex = Number(isoMatch[2]) - 1;
-    if (monthIndex >= 0 && monthIndex < 12) {
-      return `${MONTH_NAMES[monthIndex]} ${year}`;
-    }
-  }
-
-  return value;
+  return formatCampaignMonthNameYear(value);
 }
 
-export function parseCampaignMonthForDb(input: string): string | null {
-  const value = input.trim();
-  if (!value) return null;
-
-  const isoMatch = value.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
-  if (isoMatch) {
-    const year = Number(isoMatch[1]);
-    const month = Number(isoMatch[2]);
-    if (month >= 1 && month <= 12) {
-      return `${year}-${String(month).padStart(2, "0")}-01`;
-    }
-  }
-
-  const namedMatch = value.match(/^([A-Za-z]+)\s+(\d{4})$/);
-  if (namedMatch) {
-    const monthIndex = MONTH_LOOKUP[namedMatch[1].toLowerCase()];
-    const year = Number(namedMatch[2]);
-    if (monthIndex !== undefined) {
-      return `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
-    }
-  }
-
-  const slashMatch = value.match(/^(\d{1,2})[\/-](\d{4})$/);
-  if (slashMatch) {
-    const month = Number(slashMatch[1]);
-    const year = Number(slashMatch[2]);
-    if (month >= 1 && month <= 12) {
-      return `${year}-${String(month).padStart(2, "0")}-01`;
-    }
-  }
-
-  return null;
+export function parseCampaignMonthForDb(
+  input: string,
+  now: Date = new Date(),
+): string | null {
+  return parseCampaignMonthValue(input, now);
 }
 
 function mapStatus(value: string): TicketStatus {

@@ -84,7 +84,7 @@ export const CREATOR_ISSUE_CATEGORY_TEXT =
   "Got it. Is this about the campaign itself, or about a payment?";
 
 export const CREATOR_CAMPAIGN_DETAILS_TEXT =
-  "Sure, I can help with that. Send me the campaign name, the brand it is for, the month it ran, and the best email to reach you on. You can put it all in one message.";
+  "Sure, I can help with that. Send me the brand name, the month it ran, and the best email to reach you on. You can put it all in one message.";
 
 export const CREATOR_ISSUE_DETAILS_TEXT =
   "Thanks, got it. Now tell me what is going wrong, in as much detail as you can. The more you share, the faster we can sort it out.";
@@ -120,7 +120,7 @@ export const INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT =
   "I can currently process text messages only. Please type your answer here so I can continue helping you.";
 
 export const CREATOR_CAMPAIGN_AMBIGUOUS_TEXT =
-  "Please send the campaign name and brand on separate labelled lines, for example:\nCampaign: Summer Drop\nBrand: Acme";
+  "Please send the brand name on a labelled line, for example:\nBrand: Acme";
 
 export const AGENCY_INTERNAL_EMAIL_SUBJECT = "New agency details received";
 export const OTHER_INTERNAL_EMAIL_SUBJECT = "New general inquiry received";
@@ -145,23 +145,28 @@ export function activeTicketAttachText(ticketCode: string): string {
 }
 
 export function creatorConfirmationText(input: {
-  campaignName: string;
+  campaignName?: string | null;
   brandName: string;
   displayCampaignMonth: string;
   contactEmail: string;
   issueDetails: string;
 }): string {
-  return [
+  const lines = [
     "Here is what I have.",
     "",
-    `Campaign: ${input.campaignName}`,
+  ];
+  if (input.campaignName?.trim()) {
+    lines.push(`Campaign: ${input.campaignName}`);
+  }
+  lines.push(
     `Brand: ${input.brandName}`,
     `Month: ${input.displayCampaignMonth}`,
     `Email: ${input.contactEmail}`,
     `Issue: ${input.issueDetails}`,
     "",
     "Should I raise a support ticket with these details?",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 export function agencySummaryText(input: {

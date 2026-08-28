@@ -88,6 +88,12 @@ import {
   type IntakeCollectedData,
 } from "@/lib/meta/intake-validate";
 import { formatCampaignMonthForDisplay } from "@/lib/tickets/map";
+import {
+  campaignMonthConfirmationText,
+  CAMPAIGN_MONTH_CHOOSE_TEXT,
+  CAMPAIGN_MONTH_REASK_TEXT,
+  monthConfirmationQuickReplies,
+} from "@/lib/meta/month-confirmation";
 import type {
   ConversationSnapshot,
   InboundSignal,
@@ -102,6 +108,7 @@ export const INSTAGRAM_PERSONA_STATES = [
   "awaiting_creator_reason",
   "awaiting_creator_issue_category",
   "creator_campaign_details",
+  "awaiting_month_confirmation",
   "creator_issue_details",
   "creator_confirmation",
   "brand_action",
@@ -125,6 +132,7 @@ export const INSTAGRAM_FLOW_BACK_TRANSITIONS: Readonly<
   awaiting_creator_reason: "awaiting_persona",
   awaiting_creator_issue_category: "awaiting_creator_reason",
   creator_campaign_details: "awaiting_creator_issue_category",
+  awaiting_month_confirmation: "creator_campaign_details",
   creator_issue_details: "creator_campaign_details",
   creator_confirmation: "creator_issue_details",
   brand_action: "awaiting_persona",
@@ -443,6 +451,11 @@ function creatorCampaignFields(collected: IntakeCollectedData) {
   };
 }
 
+function signalNow(signal: InboundSignal): Date {
+  const parsed = Date.parse(signal.timestamp);
+  return Number.isFinite(parsed) ? new Date(parsed) : new Date();
+}
+
 function agencyFields(collected: IntakeCollectedData) {
   return {
     agencyName: collected.agencyName,
@@ -463,7 +476,6 @@ function otherContactFields(collected: IntakeCollectedData) {
 
 function buildCreatorConfirmation(collected: IntakeCollectedData): string | null {
   if (
-    !collected.campaignName ||
     !collected.brandName ||
     !collected.campaignMonth ||
     !collected.email ||
@@ -475,7 +487,7 @@ function buildCreatorConfirmation(collected: IntakeCollectedData): string | null
   return truncateDisplayedIssue(
     (issueDetails) =>
       creatorConfirmationText({
-        campaignName: collected.campaignName as string,
+        campaignName: collected.campaignName,
         brandName: collected.brandName as string,
         displayCampaignMonth: formatCampaignMonthForDisplay(collected.campaignMonth),
         contactEmail: collected.email as string,
@@ -566,6 +578,17 @@ export function instagramPromptForState(
         CREATOR_CAMPAIGN_DETAILS_TEXT,
       promptKey: key,
       quickReplies: withFlowBackQuickReply(state, []),
+    };
+  }
+  if (state === "awaiting_month_confirmation") {
+    const month = snapshot.collected.campaignMonth;
+    return {
+      type: "send_quick_replies",
+      text: month
+        ? campaignMonthConfirmationText(month)
+        : CREATOR_CAMPAIGN_DETAILS_TEXT,
+      promptKey: key,
+      quickReplies: withFlowBackQuickReply(state, monthConfirmationQuickReplies()),
     };
   }
   if (state === "creator_issue_details") {
@@ -944,19 +967,49 @@ function handleCreatorCampaignDetails(
 ): MachineResult {
   const merged = mergeCreatorCampaignFields(
     creatorCampaignFields(snapshot.collected),
-    parseCreatorCampaignBundle(signal.text),
+    parseCreatorCampaignBundle(signal.text, signalNow(signal)),
   );
+  const monthUnconfirmed =
+    Boolean(merged.campaignMonth) &&
+    (merged.campaignMonth !== snapshot.collected.campaignMonth ||
+      !snapshot.collected.campaignMonthConfirmed);
   const collected: IntakeCollectedData = {
     ...snapshot.collected,
-    campaignName: merged.campaignName,
+    campaignName: null,
     brandName: merged.brandName,
     campaignMonth: merged.campaignMonth,
+    campaignMonthConfirmed: monthUnconfirmed
+      ? false
+      : snapshot.collected.campaignMonthConfirmed,
     email: merged.contactEmail,
     issueDescription: options.preserveIssueDetails
       ? snapshot.collected.issueDescription
       : snapshot.collected.issueDescription,
   };
   const missing = missingCreatorCampaignPrompt(merged);
+  if (missing && !merged.campaignMonth) {
+    return sendText(
+      snapshot,
+      signal,
+      { collected, routingIntent: "creator_support" },
+      missing,
+      "creator_campaign_details",
+      true,
+      "support",
+    );
+  }
+  if (collected.campaignMonth && !collected.campaignMonthConfirmed) {
+    return sendQr(
+      snapshot,
+      signal,
+      { collected, routingIntent: "creator_support", currentIntakeField: null },
+      campaignMonthConfirmationText(collected.campaignMonth),
+      "awaiting_month_confirmation",
+      monthConfirmationQuickReplies(),
+      true,
+      "support",
+    );
+  }
   if (missing) {
     return sendText(
       snapshot,
@@ -968,26 +1021,95 @@ function handleCreatorCampaignDetails(
       "support",
     );
   }
-  if (collected.issueDescription) {
-    const confirmation = buildCreatorConfirmation(collected);
-    return sendQr(
+  return raiseCreatorTicket(snapshot, signal, collected);
+}
+
+function raiseCreatorTicket(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+  collected: IntakeCollectedData,
+): MachineResult {
+  return {
+    snapshot: withActivity(snapshot, signal, {
+      state: "awaiting_post_completion",
+      routingIntent: "creator_support",
+      currentIntakeField: null,
+      collected: {
+        ...collected,
+        campaignName: null,
+      },
+    }),
+    effects: [{ type: "create_ticket" }],
+    attachTicketId: null,
+    inboundRoutingKind: "support",
+    processed: true,
+  };
+}
+
+function handleMonthConfirmation(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+  command: InstagramPersonaCommand | null,
+): MachineResult {
+  if (command === "yes") {
+    if (!snapshot.collected.campaignMonth) {
+      return sendText(
+        snapshot,
+        signal,
+        { routingIntent: "creator_support" },
+        CREATOR_CAMPAIGN_DETAILS_TEXT,
+        "creator_campaign_details",
+        true,
+        "support",
+      );
+    }
+    const collected: IntakeCollectedData = {
+      ...snapshot.collected,
+      campaignName: null,
+      campaignMonthConfirmed: true,
+    };
+    const missing = missingCreatorCampaignPrompt(creatorCampaignFields(collected));
+    if (missing) {
+      return sendText(
+        snapshot,
+        signal,
+        { collected, routingIntent: "creator_support" },
+        missing,
+        "creator_campaign_details",
+        false,
+        "support",
+      );
+    }
+    return raiseCreatorTicket(snapshot, signal, collected);
+  }
+  if (command === "flow_cancel") {
+    return startInstagramPersonaMenu(snapshot, signal, { incrementSession: true });
+  }
+  if (command === "no") {
+    const collected: IntakeCollectedData = {
+      ...snapshot.collected,
+      campaignMonth: null,
+      campaignMonthConfirmed: false,
+    };
+    return sendText(
       snapshot,
       signal,
-      { collected, routingIntent: "creator_support", currentIntakeField: null },
-      confirmation ?? CREATOR_ISSUE_DETAILS_TEXT,
-      "creator_confirmation",
-      creatorConfirmationQuickReplies(),
-      false,
+      { collected, routingIntent: "creator_support" },
+      CAMPAIGN_MONTH_REASK_TEXT,
+      "creator_campaign_details",
+      true,
       "support",
     );
   }
-  return sendText(
+  const month = snapshot.collected.campaignMonth;
+  return sendQr(
     snapshot,
     signal,
-    { collected, routingIntent: "creator_support" },
-    CREATOR_ISSUE_DETAILS_TEXT,
-    "creator_issue_details",
-    false,
+    { routingIntent: "creator_support" },
+    month ? CAMPAIGN_MONTH_CHOOSE_TEXT : CREATOR_CAMPAIGN_DETAILS_TEXT,
+    month ? "awaiting_month_confirmation" : "creator_campaign_details",
+    month ? monthConfirmationQuickReplies() : [],
+    true,
     "support",
   );
 }
@@ -1056,6 +1178,7 @@ function handleCreatorConfirmation(
       campaignName: null,
       brandName: null,
       campaignMonth: null,
+      campaignMonthConfirmed: false,
       email: null,
     };
     return sendText(
@@ -1349,7 +1472,7 @@ function handleOtherConfirmation(
 }
 
 /**
- * Instagram persona router. WhatsApp continues to use reduceChannelConversation.
+ * Shared Instagram / WhatsApp / WATI persona router. Deterministic, no I/O.
  */
 export function reduceInstagramPersonaConversation(
   snapshot: ConversationSnapshot,
@@ -1436,6 +1559,8 @@ export function reduceInstagramPersonaConversation(
       return handleCreatorIssueCategory(snapshot, signal, command);
     case "creator_campaign_details":
       return handleCreatorCampaignDetails(snapshot, signal);
+    case "awaiting_month_confirmation":
+      return handleMonthConfirmation(snapshot, signal, command);
     case "creator_issue_details":
       return handleCreatorIssueDetails(snapshot, signal);
     case "creator_confirmation":

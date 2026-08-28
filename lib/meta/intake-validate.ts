@@ -6,7 +6,7 @@ import {
 } from "@/lib/meta/routing-copy";
 import { toUntrustedPlainText } from "@/lib/meta/plain-text";
 import { normalizePhoneNumber } from "@/lib/phone";
-import { parseCampaignMonthForDb } from "@/lib/tickets/map";
+import { parseCampaignMonthInput } from "@/lib/tickets/campaign-month";
 
 export const INTAKE_FIELDS = [
   "creator_details",
@@ -91,6 +91,7 @@ export type IntakeCollectedData = {
   campaignName: string | null;
   brandName: string | null;
   campaignMonth: string | null;
+  campaignMonthConfirmed: boolean;
   cloutflowPocName: string | null;
   cloutflowPocContact: string | null;
   issueDescription: string | null;
@@ -123,6 +124,7 @@ export function emptyIntakeCollected(
     campaignName: null,
     brandName: null,
     campaignMonth: null,
+    campaignMonthConfirmed: false,
     cloutflowPocName: null,
     cloutflowPocContact: null,
     issueDescription: null,
@@ -522,72 +524,59 @@ function requiredTextValue(value: string | null | undefined): string | null {
   return trimmed;
 }
 
-export function parseCampaignDetailsBundle(raw: string): {
-  campaignName: string | null;
+export function parseCampaignDetailsBundle(
+  raw: string,
+  now: Date = new Date(),
+): {
   brandName: string | null;
   campaignMonth: string | null;
 } {
   const text = toUntrustedPlainText(raw);
   if (!text) {
-    return { campaignName: null, brandName: null, campaignMonth: null };
+    return { brandName: null, campaignMonth: null };
   }
 
-  let campaignName = requiredTextValue(
-    labelledValue(text, /^(campaign(?:\s*name)?)$/i),
-  );
   let brandName = requiredTextValue(
     labelledValue(text, /^(brand(?:\s*name)?)$/i),
   );
-  const monthRaw = labelledValue(
+  const labelledMonth = labelledValue(
     text,
     /^(month|campaign\s*month|date)$/i,
   );
-  let campaignMonth = monthRaw ? parseCampaignMonthForDb(monthRaw) : null;
+  const monthParse =
+    parseCampaignMonthInput(labelledMonth ?? "", now) ??
+    parseCampaignMonthInput(text, now);
+  const campaignMonth = monthParse?.iso ?? null;
 
-  if (!campaignName || !brandName || !campaignMonth) {
-    const parts = splitParts(text).map((part) => {
+  if (!brandName) {
+    let working = text;
+    if (monthParse?.matched) {
+      working = working.replace(monthParse.matched, " ");
+    }
+    working = working.replace(/[^\s,;<>]+@[^\s,;<>]+/g, " ");
+    const parts = splitParts(working).map((part) => {
       const stripped = part.replace(
         /^(campaign(?:\s*name)?|brand(?:\s*name)?|month|campaign\s*month|date)\s*[:\-]\s*/i,
         "",
       );
       return stripped.trim();
     });
-
-    if (!campaignMonth) {
-      for (const part of parts) {
-        const month = parseCampaignMonthForDb(part);
-        if (month) {
-          campaignMonth = month;
-          break;
-        }
-      }
-    }
-
     const remaining = parts.filter(
       (part) =>
         requiredTextValue(part) &&
-        parseCampaignMonthForDb(part) === null &&
+        parseCampaignMonthInput(part, now) === null &&
         !/^(campaign(?:\s*name)?|brand(?:\s*name)?|month|campaign\s*month|date)$/i.test(
           part,
         ),
     );
-
-    if (!campaignName && remaining[0]) {
-      campaignName = requiredTextValue(remaining[0]);
-    }
-    if (!brandName && remaining[1]) {
-      brandName = requiredTextValue(remaining[1]);
-    }
-    if (!campaignName && remaining.length === 1 && brandName) {
-      campaignName = requiredTextValue(remaining[0]);
-    }
-    if (!brandName && remaining.length === 1 && campaignName) {
+    if (remaining.length === 1) {
       brandName = requiredTextValue(remaining[0]);
+    } else if (remaining.length === 2) {
+      brandName = requiredTextValue(remaining[1]);
     }
   }
 
   return {
-    campaignName: requiredTextValue(campaignName),
     brandName: requiredTextValue(brandName),
     campaignMonth,
   };
@@ -596,13 +585,19 @@ export function parseCampaignDetailsBundle(raw: string): {
 export function mergeCampaignDetails(
   collected: IntakeCollectedData,
   raw: string,
+  now: Date = new Date(),
 ): IntakeCollectedData {
-  const parsed = parseCampaignDetailsBundle(raw);
+  const parsed = parseCampaignDetailsBundle(raw, now);
+  const nextMonth = keepExisting(collected.campaignMonth, parsed.campaignMonth);
   return {
     ...collected,
-    campaignName: keepExisting(collected.campaignName, parsed.campaignName),
+    campaignName: null,
     brandName: keepExisting(collected.brandName, parsed.brandName),
-    campaignMonth: keepExisting(collected.campaignMonth, parsed.campaignMonth),
+    campaignMonth: nextMonth,
+    campaignMonthConfirmed:
+      nextMonth !== null &&
+      nextMonth === collected.campaignMonth &&
+      collected.campaignMonthConfirmed,
   };
 }
 
@@ -610,23 +605,12 @@ export function missingCampaignDetailsPrompt(
   collected: IntakeCollectedData,
 ): string | null {
   const missing: string[] = [];
-  if (!collected.campaignName) missing.push("campaign");
   if (!collected.brandName) missing.push("brand");
   if (!collected.campaignMonth) missing.push("month");
   if (missing.length === 0) return null;
-  if (missing.length === 3) return CAMPAIGN_DETAILS_PROMPT_TEXT;
-  if (missing.length === 1) {
-    if (missing[0] === "campaign") return "Please send the campaign name.";
-    if (missing[0] === "brand") return "Please send the brand name.";
-    return "Please send the campaign month and year, for example August 2026.";
-  }
-  if (!missing.includes("campaign")) {
-    return "Please send the brand name and campaign month.";
-  }
-  if (!missing.includes("brand")) {
-    return "Please send the campaign name and campaign month.";
-  }
-  return "Please send the campaign name and brand name.";
+  if (missing.length === 2) return CAMPAIGN_DETAILS_PROMPT_TEXT;
+  if (missing[0] === "brand") return "Please send the brand name.";
+  return "Please send the campaign month, for example June or June 2026.";
 }
 
 export function isIntakeComplete(collected: IntakeCollectedData): boolean {
@@ -636,9 +620,9 @@ export function isIntakeComplete(collected: IntakeCollectedData): boolean {
       collected.phoneNormalized &&
       collected.platform &&
       collected.socialHandle &&
-      collected.campaignName &&
       collected.brandName &&
-      collected.campaignMonth,
+      collected.campaignMonth &&
+      collected.campaignMonthConfirmed,
   );
 }
 
@@ -670,7 +654,6 @@ export const INTAKE_COLLECTED_VALUE_FIELDS = [
   "phoneNormalized",
   "platform",
   "socialHandle",
-  "campaignName",
   "brandName",
   "campaignMonth",
 ] as const;
