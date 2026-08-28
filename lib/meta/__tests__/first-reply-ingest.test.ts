@@ -29,6 +29,7 @@ import {
   withDurableConversationPersistence,
 } from "@/lib/meta/__tests__/durable-conversation";
 import { createMemoryChatbotStore } from "@/lib/meta/__tests__/chatbot-memory-store";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
 import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
 import { normalizeWatiWebhookPayload } from "@/lib/wati/normalize";
 import { watiTextPayload } from "@/lib/wati/__tests__/fixtures";
@@ -42,6 +43,8 @@ const CAMPAIGN_COMPLETE_TEXT = "Summer Drop, Acme, August 2026";
 
 const waContext = { webhookPayload: { object: "whatsapp_business_account" } };
 const igContext = { webhookPayload: { object: "instagram" } };
+
+pinIdentitySchemaPhase("a");
 
 beforeEach(() => {
   process.env.WHATSAPP_PROVIDER = "meta";
@@ -147,7 +150,7 @@ describe("first-reply DM ingest persistence", () => {
   it("accepts every Meta WhatsApp reply on first delivery and creates one ticket", async () => {
     mockMetaSends();
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("whatsapp"),
+      createMemoryChatbotStore("whatsapp", { identitySchema: "current" }),
     );
     const hi = await sendWhatsAppOnce(store, sampleWhatsAppEvent({ messageBody: "Hi" }));
     expect(hi.snapshot.state).toBe("awaiting_route");
@@ -204,7 +207,7 @@ describe("first-reply DM ingest persistence", () => {
   it("accepts a valid campaign reply on first delivery when the primary prompt outbound is missing", async () => {
     mockMetaSends();
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("whatsapp"),
+      createMemoryChatbotStore("whatsapp", { identitySchema: "current" }),
     );
     store.conversations.push({
       id: "convo-missing-prompt",
@@ -244,7 +247,7 @@ describe("first-reply DM ingest persistence", () => {
   it("ignores a retry of the same external event and does not require a new copy of the text", async () => {
     mockMetaSends();
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("whatsapp"),
+      createMemoryChatbotStore("whatsapp", { identitySchema: "current" }),
     );
     const first = sampleWhatsAppEvent({ messageBody: "Hi" });
     await sendWhatsAppOnce(store, first);
@@ -265,7 +268,7 @@ describe("first-reply DM ingest persistence", () => {
   it("does not let a delivery status callback move or overwrite conversation state", async () => {
     mockMetaSends();
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("whatsapp"),
+      createMemoryChatbotStore("whatsapp", { identitySchema: "current" }),
     );
     await sendWhatsAppOnce(store, sampleWhatsAppEvent({ messageBody: "Hi" }));
     const before = await reloadConversationSnapshot(
@@ -303,7 +306,7 @@ describe("first-reply DM ingest persistence", () => {
 
   it("fails the webhook when conversation state cannot be persisted", async () => {
     mockMetaSends();
-    const store = createMemoryChatbotStore("whatsapp");
+    const store = createMemoryChatbotStore("whatsapp", { identitySchema: "current" });
     store.saveConversationSnapshot = async () => ({
       outcome: "failed",
       errorCode: "conversation_update_failed",
@@ -334,7 +337,7 @@ describe("first-reply DM ingest persistence", () => {
       recipientId: "8618719149214",
     });
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("whatsapp"),
+      createMemoryChatbotStore("whatsapp", { identitySchema: "current" }),
     );
 
     async function sendWatiOnce(payload: Record<string, unknown>) {
@@ -412,7 +415,7 @@ describe("first-reply DM ingest persistence", () => {
       recipientId: "12334",
     });
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("instagram"),
+      createMemoryChatbotStore("instagram", { identitySchema: "current" }),
     );
     const hi = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
@@ -465,7 +468,7 @@ describe("first-reply DM ingest persistence", () => {
       recipientId: "12334",
     });
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("instagram"),
+      createMemoryChatbotStore("instagram", { identitySchema: "current" }),
     );
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
@@ -509,7 +512,7 @@ describe("first-reply DM ingest persistence", () => {
       recipientId: "12334",
     });
     const store = withDurableConversationPersistence(
-      createMemoryChatbotStore("instagram"),
+      createMemoryChatbotStore("instagram", { identitySchema: "current" }),
     );
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({ messageBody: "Hi" }),

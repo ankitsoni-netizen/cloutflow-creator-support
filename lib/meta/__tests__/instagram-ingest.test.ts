@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
 import { META_INSTAGRAM_PROVIDER } from "@/lib/meta/constants";
 import { ingestInstagramInboundMessage } from "@/lib/meta/instagram-ingest";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
@@ -603,6 +604,8 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
 }
 
 const context = { webhookPayload: { object: "instagram" } };
+
+pinIdentitySchemaPhase("a");
 
 describe("ingestInstagramInboundMessage routing", () => {
   afterEach(() => {

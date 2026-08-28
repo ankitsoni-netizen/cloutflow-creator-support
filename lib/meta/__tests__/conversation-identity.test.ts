@@ -96,26 +96,30 @@ describe("findActiveTicketForIdentity", () => {
   });
 
   it("fails closed when two active tickets match the same identity", () => {
-    const result = findActiveTicketForIdentity(
-      [
-        {
-          id: "t1",
-          source_channel: "instagram",
-          external_conversation_id: identity.externalConversationId,
-          external_contact_id: "sender-a",
-        },
-        {
-          id: "t2",
-          source_channel: "instagram",
-          external_conversation_id: "sender-a",
-          external_contact_id: "sender-a",
-        },
-      ],
-      identity,
-      "instagram",
-      () => true,
-    );
-    expect(result).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
+    const assertAmbiguous = () => {
+      const result = findActiveTicketForIdentity(
+        [
+          {
+            id: "t1",
+            source_channel: "instagram",
+            external_conversation_id: identity.externalConversationId,
+            external_contact_id: "sender-a",
+          },
+          {
+            id: "t2",
+            source_channel: "instagram",
+            external_conversation_id: "sender-a",
+            external_contact_id: "sender-a",
+          },
+        ],
+        identity,
+        "instagram",
+        () => true,
+      );
+      expect(result).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
+    };
+    runWithIdentitySchemaPhase("a", assertAmbiguous);
+    runWithIdentitySchemaPhase("c", assertAmbiguous);
   });
 
   it("selects an exact unambiguous canonical ticket and ignores an ineligible legacy ticket", () => {
@@ -332,9 +336,11 @@ describe("findConversationForIdentity Phase C precedence", () => {
   });
 
   it("does not apply Phase C precedence in Phase A", () => {
-    expect(
-      findConversationForIdentity([canonical, legacyAmbiguous], identity),
-    ).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
+    runWithIdentitySchemaPhase("a", () => {
+      expect(
+        findConversationForIdentity([canonical, legacyAmbiguous], identity),
+      ).toEqual({ errorCode: IDENTITY_AMBIGUOUS });
+    });
   });
 });
 
@@ -457,18 +463,20 @@ describe("phaseAOutboundIdentityProven", () => {
 
 describe("allowOutboundReply", () => {
   it("uses structural proof in Phase A and identity_status in Phase C", () => {
-    expect(
-      allowOutboundReply({
-        ticketContactId: "sender-a",
-        ticketConversationId: "sender-a",
-      }),
-    ).toBe(true);
-    expect(
-      allowOutboundReply({
-        ticketContactId: "sender-a",
-        ticketConversationId: "page-1",
-      }),
-    ).toBe(false);
+    runWithIdentitySchemaPhase("a", () => {
+      expect(
+        allowOutboundReply({
+          ticketContactId: "sender-a",
+          ticketConversationId: "sender-a",
+        }),
+      ).toBe(true);
+      expect(
+        allowOutboundReply({
+          ticketContactId: "sender-a",
+          ticketConversationId: "page-1",
+        }),
+      ).toBe(false);
+    });
     runWithIdentitySchemaPhase("c", () => {
       expect(
         allowOutboundReply({

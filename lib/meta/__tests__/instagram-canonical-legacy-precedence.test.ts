@@ -13,6 +13,7 @@ import * as instagramSend from "@/lib/meta/instagram-send";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
 import { runWithIdentitySchemaPhaseAsync } from "@/lib/meta/identity-schema-phase";
 import { createMemoryChatbotStore } from "@/lib/meta/__tests__/chatbot-memory-store";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
 import {
   identityLookupFromEvent,
   reloadConversationSnapshot,
@@ -105,9 +106,10 @@ function phaseCStore() {
   );
 }
 
+pinIdentitySchemaPhase("c");
+
 afterEach(() => {
   vi.restoreAllMocks();
-  delete process.env.IDENTITY_SCHEMA_PHASE;
 });
 
 describe("Phase C canonical-versus-legacy conversation precedence", () => {

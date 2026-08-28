@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
 import {
   sendStaffWhatsAppReply,
   isWhatsAppTicket,
@@ -15,6 +16,8 @@ import { runWithIdentitySchemaPhaseAsync } from "@/lib/meta/identity-schema-phas
 
 const WA_ID = "16315551181";
 const CONVO_EXTERNAL_ID = "123456123:16315551181";
+
+pinIdentitySchemaPhase("a");
 
 function ticket(overrides: Partial<DbTicket> = {}): DbTicket {
   return {

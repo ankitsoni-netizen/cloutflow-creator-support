@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
 import { META_WHATSAPP_PROVIDER } from "@/lib/meta/constants";
 import {
   ingestWhatsAppInboundMessage,
@@ -42,6 +43,8 @@ import * as watiSend from "@/lib/wati/send";
 
 const WA_ID = "16315551181";
 const PHONE_NUMBER_ID = "123456123";
+
+pinIdentitySchemaPhase("a");
 
 beforeEach(() => {
   // Fail-closed provider selection requires an explicit transport.

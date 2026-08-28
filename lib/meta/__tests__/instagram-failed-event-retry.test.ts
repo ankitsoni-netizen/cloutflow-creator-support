@@ -15,6 +15,8 @@ import * as instagramSend from "@/lib/meta/instagram-send";
 import { handleInstagramWebhookPost } from "@/lib/meta/instagram-webhook";
 import { normalizeMetaWebhookPayload } from "@/lib/meta/normalize";
 import { createMemoryChatbotStore } from "@/lib/meta/__tests__/chatbot-memory-store";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
+import { runWithIdentitySchemaPhaseAsync } from "@/lib/meta/identity-schema-phase";
 import {
   identityLookupFromEvent,
   reloadConversationSnapshot,
@@ -32,6 +34,16 @@ const SENDER = "12334";
 const VERIFY_TOKEN = "meta-ig-verify-token";
 const APP_SECRET = "meta-app-secret-test";
 const CONTEXT = { webhookPayload: { object: "instagram" } };
+
+pinIdentitySchemaPhase("c");
+
+function phaseCMemoryStore() {
+  return createMemoryChatbotStore("instagram", { identitySchema: "expanded" });
+}
+
+function phaseCDurableStore() {
+  return withDurableConversationPersistence(phaseCMemoryStore());
+}
 
 function testEnv(): Record<string, string | undefined> {
   return {
@@ -104,7 +116,7 @@ afterEach(() => {
 describe("Instagram failed-event retry lifecycle", () => {
   it("transitions from awaiting_persona on the first valid persona-selection delivery", async () => {
     mockSends();
-    const store = withDurableConversationPersistence(createMemoryChatbotStore());
+    const store = phaseCDurableStore();
     const hi = eventFromPayload(
       instagramTextPayload({
         senderId: SENDER,
@@ -148,8 +160,11 @@ describe("Instagram failed-event retry lifecycle", () => {
   });
 
   it("reclaims a prior identity_ambiguous failure once canonical identity is unambiguous", async () => {
+    await runWithIdentitySchemaPhaseAsync("a", async () => {
     mockSends();
-    const store = withDurableConversationPersistence(createMemoryChatbotStore());
+    const store = withDurableConversationPersistence(
+      createMemoryChatbotStore("instagram", { identitySchema: "current" }),
+    );
     store.conversations.push(
       awaitingPersonaRow(),
       awaitingPersonaRow({
@@ -212,11 +227,12 @@ describe("Instagram failed-event retry lifecycle", () => {
     expect(
       store.messages.filter((row) => row.externalMessageId === "mid.persona"),
     ).toHaveLength(1);
+    });
   });
 
   it("lets only one concurrent retry process a failed event", async () => {
     mockSends();
-    const store = withDurableConversationPersistence(createMemoryChatbotStore());
+    const store = phaseCDurableStore();
     store.conversations.push(awaitingPersonaRow());
     store.events.push({
       id: "evt-failed",
@@ -256,7 +272,7 @@ describe("Instagram failed-event retry lifecycle", () => {
 
   it("fails closed for a crafted missing sender without sending or transitioning", async () => {
     mockSends();
-    const store = createMemoryChatbotStore();
+    const store = phaseCMemoryStore();
     const event = eventFromPayload(
       instagramTextPayload({
         senderId: SENDER,
@@ -279,7 +295,7 @@ describe("Instagram failed-event retry lifecycle", () => {
 
   it("fails closed for a crafted sender/recipient mismatch without sending", async () => {
     mockSends();
-    const store = createMemoryChatbotStore();
+    const store = phaseCMemoryStore();
     const event = eventFromPayload(
       instagramTextPayload({
         senderId: SENDER,
@@ -305,8 +321,9 @@ describe("Instagram failed-event retry lifecycle", () => {
   });
 
   it("keeps genuine ambiguity fail-closed after reclaim and does not send", async () => {
+    await runWithIdentitySchemaPhaseAsync("a", async () => {
     mockSends();
-    const store = createMemoryChatbotStore();
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     store.conversations.push(
       awaitingPersonaRow(),
       awaitingPersonaRow({
@@ -334,13 +351,14 @@ describe("Instagram failed-event retry lifecycle", () => {
     );
     expect(store.tickets).toHaveLength(0);
     expect(instagramSend.sendInstagramQuickReplies).not.toHaveBeenCalled();
+    });
   });
 });
 
 describe("Instagram webhook HTTP class for failed events", () => {
   it("returns 200 and does not reprocess a completed event retry", async () => {
     mockSends();
-    const store = createMemoryChatbotStore();
+    const store = phaseCMemoryStore();
     const payload = instagramTextPayload({
       senderId: SENDER,
       recipientId: PAGE,
@@ -383,7 +401,7 @@ describe("Instagram webhook HTTP class for failed events", () => {
     });
     const response = await handleInstagramWebhookPost(signedPost(payload), {
       env: testEnv(),
-      instagramStore: createMemoryChatbotStore(),
+      instagramStore: phaseCMemoryStore(),
     });
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(META_WEBHOOK_EVENT_RECEIVED);
@@ -412,7 +430,7 @@ describe("Instagram webhook HTTP class for failed events", () => {
           text: "Hi",
         }),
       ),
-      { env: testEnv(), instagramStore: createMemoryChatbotStore() },
+      { env: testEnv(), instagramStore: phaseCMemoryStore() },
     );
     expect(response.status).toBe(500);
     expect(await response.text()).toBe("Unable to process event");
@@ -443,7 +461,7 @@ describe("Instagram webhook HTTP class for failed events", () => {
           },
         ],
       }),
-      { env: testEnv(), instagramStore: createMemoryChatbotStore() },
+      { env: testEnv(), instagramStore: phaseCMemoryStore() },
     );
     const mismatch = await handleInstagramWebhookPost(
       signedPost(
@@ -454,7 +472,7 @@ describe("Instagram webhook HTTP class for failed events", () => {
           text: "Hi",
         }),
       ),
-      { env: testEnv(), instagramStore: createMemoryChatbotStore() },
+      { env: testEnv(), instagramStore: phaseCMemoryStore() },
     );
     expect(missing.status).toBe(200);
     expect(mismatch.status).toBe(200);
@@ -465,7 +483,7 @@ describe("Instagram webhook HTTP class for failed events", () => {
 
   it("accepts an Instagram postback persona selection on first delivery through the webhook", async () => {
     mockSends();
-    const store = withDurableConversationPersistence(createMemoryChatbotStore());
+    const store = phaseCDurableStore();
     const hi = await handleInstagramWebhookPost(
       signedPost(
         instagramTextPayload({

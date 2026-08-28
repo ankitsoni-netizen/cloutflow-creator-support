@@ -29,6 +29,7 @@ import { validateWebsiteTicketBody } from "@/lib/public-intake/validate";
 import type { DbTicket } from "@/lib/tickets/types";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
 import { runWithIdentitySchemaPhaseAsync } from "@/lib/meta/identity-schema-phase";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
 
 const PAGE_A = "17841400008460000";
 const PAGE_B = "17841499999999999";
@@ -36,6 +37,8 @@ const SENDER_A = "11111";
 const SENDER_B = "22222";
 const igContext = { webhookPayload: { object: "instagram" } };
 const waContext = { webhookPayload: { object: "whatsapp_business_account" } };
+
+pinIdentitySchemaPhase("a");
 
 beforeEach(() => {
   process.env.WHATSAPP_PROVIDER = "meta";
@@ -134,7 +137,7 @@ describe("conversation identity matching", () => {
 describe("cross-creator ticket correlation", () => {
   it("creates two conversations and two tickets for two Instagram accounts messaging concurrently", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const sameText = "Need help with a campaign";
     const sameTs = "2026-08-28T07:00:00.000Z";
     await Promise.all([
@@ -181,7 +184,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("does not collide when two accounts send the same text at the same timestamp", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const text = "hello";
     const timestamp = "2026-08-28T07:00:00.000Z";
     await Promise.all([
@@ -202,7 +205,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("never uses recipient.id as the creator identity", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     await ingestInstagramInboundMessage(igEvent(SENDER_A, "mid.a", "hi"), store, igContext);
     await ingestInstagramInboundMessage(igEvent(SENDER_B, "mid.b", "hi"), store, igContext);
     expect(
@@ -219,7 +222,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("keeps two accounts with identical usernames separate", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     await ingestInstagramInboundMessage(
       igEvent(SENDER_A, "mid.a", "hi", { displayName: "same_handle" }),
       store,
@@ -235,7 +238,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("preserves the stable sender id when the username changes", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     await ingestInstagramInboundMessage(
       igEvent(SENDER_A, "mid.1", "hi", { displayName: "old_name" }),
       store,
@@ -253,7 +256,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("works when username is missing", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const result = await ingestInstagramInboundMessage(
       igEvent(SENDER_A, "mid.anon", "hi", { displayName: null, senderName: null }),
       store,
@@ -266,7 +269,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("fails closed when sender identity is missing", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const event = igEvent(SENDER_A, "mid.missing", "hi");
     const result = await ingestInstagramInboundMessage(
       { ...event, externalContactId: "", senderAddress: "" },
@@ -280,7 +283,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("scopes the same Instagram sender through two receiving page accounts", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     await ingestInstagramInboundMessage(igEvent(SENDER_A, "mid.p1", "hi"), store, igContext);
     await ingestInstagramInboundMessage(
       igEvent(SENDER_A, "mid.p2", "hi", {
@@ -303,7 +306,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("keeps Meta WhatsApp senders separate", async () => {
     mockWhatsAppSend();
-    const store = createMemoryChatbotStore("whatsapp");
+    const store = createMemoryChatbotStore("whatsapp", { identitySchema: "current" });
     const events = normalizeMetaWebhookPayload(
       whatsappTextPayload({
         from: "16315551181",
@@ -322,7 +325,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("keeps WATI senders separate", async () => {
     mockWhatsAppSend();
-    const store = createMemoryChatbotStore("whatsapp");
+    const store = createMemoryChatbotStore("whatsapp", { identitySchema: "current" });
     const first = normalizeWatiWebhookPayload(watiTextPayload(), {
       expectedChannelPhoneNumber: WATI_TEST_CHANNEL,
     }).events[0]!;
@@ -439,7 +442,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("appends follow-ups only to that identity's active ticket", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const convoA = instagramExternalConversationId(PAGE_A, SENDER_A);
     store.tickets.push({
       id: "ticket-a",
@@ -491,7 +494,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("does not attach a second sender to a ticket keyed by the receiving page id", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     store.tickets.push({
       id: "ticket-page-key",
       status: "open",
@@ -533,7 +536,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("creates a new ticket after the identity's ticket is resolved", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const convoA = instagramExternalConversationId(PAGE_A, SENDER_A);
     store.tickets.push({
       id: "ticket-resolved",
@@ -572,7 +575,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("creates fifty isolated conversations for fifty parallel inbound identities", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const results = await Promise.all(
       Array.from({ length: 50 }, (_, index) => {
         const senderId = String(30000 + index);
@@ -608,7 +611,7 @@ describe("cross-creator ticket correlation", () => {
   it("sends outbound replies only to the identity bound to that ticket", async () => {
     mockInstagramSend();
     const send = vi.mocked(instagramSend.sendInstagramText);
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     await ingestInstagramInboundMessage(igEvent(SENDER_A, "mid.a", "hi"), store, igContext);
     await ingestInstagramInboundMessage(igEvent(SENDER_B, "mid.b", "hi"), store, igContext);
     const convoA = store.conversations.find((row) => row.externalContactId === SENDER_A);
@@ -681,7 +684,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("does not duplicate conversations, tickets, or messages on webhook retry", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const event = igEvent(SENDER_A, "mid.retry", "hello");
     const first = await ingestInstagramInboundMessage(event, store, igContext);
     const ticket = await store.insertInstagramTicket(
@@ -704,7 +707,7 @@ describe("cross-creator ticket correlation", () => {
 
   it("continues the legitimate legacy ticket after an unambiguous identity upgrade", async () => {
     mockInstagramSend();
-    const store = createMemoryChatbotStore("instagram");
+    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
     const canonical = instagramExternalConversationId(PAGE_A, SENDER_A);
     store.tickets.push({
       id: "ticket-legacy",

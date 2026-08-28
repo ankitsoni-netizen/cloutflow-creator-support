@@ -22,7 +22,6 @@ const SENDER_B = "22222";
 const igContext = { webhookPayload: { object: "instagram" } };
 
 afterEach(() => {
-  delete process.env.IDENTITY_SCHEMA_PHASE;
   vi.restoreAllMocks();
 });
 
@@ -106,45 +105,51 @@ async function ingestTwoSenders(store: ReturnType<typeof createMemoryChatbotStor
 
 describe("identity rollout phases", () => {
   it("Phase A ticket select never includes new schema columns", () => {
-    expect(ticketSelect()).toBe(TICKET_SELECT_PHASE_A);
-    expect(ticketSelect()).not.toMatch(/identity_status/);
-    expect(ticketSelect()).not.toMatch(/recipient_account_id/);
+    runWithIdentitySchemaPhase("a", () => {
+      expect(ticketSelect()).toBe(TICKET_SELECT_PHASE_A);
+      expect(ticketSelect()).not.toMatch(/identity_status/);
+      expect(ticketSelect()).not.toMatch(/recipient_account_id/);
+    });
     runWithIdentitySchemaPhase("c", () => {
       expect(ticketSelect()).toMatch(/identity_status/);
     });
   });
 
   it("1. current schema + Phase A isolates creators and blocks page-only outbound", async () => {
-    const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
-    await ingestTwoSenders(store);
-    const convoA = store.conversations.find((row) => row.externalContactId === SENDER_A);
-    const convoB = store.conversations.find((row) => row.externalContactId === SENDER_B);
-    expect(convoA?.id).toBeTruthy();
-    expect(convoB?.id).toBeTruthy();
-    expect(convoA?.id).not.toBe(convoB?.id);
-    expect(store.conversations).toHaveLength(2);
+    await runWithIdentitySchemaPhaseAsync("a", async () => {
+      const store = createMemoryChatbotStore("instagram", { identitySchema: "current" });
+      await ingestTwoSenders(store);
+      const convoA = store.conversations.find((row) => row.externalContactId === SENDER_A);
+      const convoB = store.conversations.find((row) => row.externalContactId === SENDER_B);
+      expect(convoA?.id).toBeTruthy();
+      expect(convoB?.id).toBeTruthy();
+      expect(convoA?.id).not.toBe(convoB?.id);
+      expect(store.conversations).toHaveLength(2);
 
-    const send = vi.spyOn(instagramSend, "sendInstagramText");
-    const blocked = await sendStaffInstagramReply({
-      ticket: staffTicket({ external_conversation_id: PAGE_A }),
-      commentId: "comment-page",
-      commentText: "nope",
-      store,
+      const send = vi.spyOn(instagramSend, "sendInstagramText");
+      const blocked = await sendStaffInstagramReply({
+        ticket: staffTicket({ external_conversation_id: PAGE_A }),
+        commentId: "comment-page",
+        commentText: "nope",
+        store,
+      });
+      expect(blocked).toMatchObject({ ok: false, errorCode: "identity_ambiguous" });
+      expect(send).not.toHaveBeenCalled();
     });
-    expect(blocked).toMatchObject({ ok: false, errorCode: "identity_ambiguous" });
-    expect(send).not.toHaveBeenCalled();
   });
 
   it("2. expanded schema + Phase A still isolates creators without selecting new columns", async () => {
-    const store = createMemoryChatbotStore("instagram", { identitySchema: "expanded" });
-    await ingestTwoSenders(store);
-    const ids = new Set(
-      store.conversations
-        .filter((row) => row.externalContactId === SENDER_A || row.externalContactId === SENDER_B)
-        .map((row) => row.id),
-    );
-    expect(ids.size).toBe(2);
-    expect(ticketSelect()).not.toMatch(/identity_status/);
+    await runWithIdentitySchemaPhaseAsync("a", async () => {
+      const store = createMemoryChatbotStore("instagram", { identitySchema: "expanded" });
+      await ingestTwoSenders(store);
+      const ids = new Set(
+        store.conversations
+          .filter((row) => row.externalContactId === SENDER_A || row.externalContactId === SENDER_B)
+          .map((row) => row.id),
+      );
+      expect(ids.size).toBe(2);
+      expect(ticketSelect()).not.toMatch(/identity_status/);
+    });
   });
 
   it("3. expanded schema + Phase C continues unambiguous owners and blocks quarantined outbound", async () => {

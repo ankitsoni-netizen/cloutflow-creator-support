@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { pinIdentitySchemaPhase } from "@/lib/meta/__tests__/identity-phase-test";
 import {
   sendStaffInstagramReply,
   isInstagramTicket,
@@ -7,6 +8,8 @@ import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import type { DbTicket } from "@/lib/tickets/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
 import { runWithIdentitySchemaPhaseAsync } from "@/lib/meta/identity-schema-phase";
+
+pinIdentitySchemaPhase("a");
 
 function ticket(overrides: Partial<DbTicket> = {}): DbTicket {
   return {
