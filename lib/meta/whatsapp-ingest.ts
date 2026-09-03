@@ -10,12 +10,19 @@ import {
   retryFailedInstagramOutbounds,
 } from "@/lib/meta/instagram-effects";
 import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
+import {
+  isIncompletePostCompletionWithoutTicket,
+  isRecoverableCreatorConfirmation,
+  isSafeStuckPostCompletionRecovery,
+} from "@/lib/meta/instagram-persona-machine";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
+  IDENTITY_AMBIGUOUS,
   IDENTITY_MISSING,
   channelIdentityFromInbound,
   type ConversationIdentity,
 } from "@/lib/meta/conversation-identity";
+import { promotePhaseACanonicalIdentityIfEligible } from "@/lib/meta/phase-a-canonical-promotion";
 import {
   snapshotFromConversationRow,
   type InstagramConversationRow,
@@ -66,10 +73,23 @@ async function upsertConversation(
     identity.externalConversationId,
     lookup,
   );
+  if (existing && !("errorCode" in existing)) {
+    return { outcome: "ok", row: existing };
+  }
+  if (existing && "errorCode" in existing && existing.errorCode !== IDENTITY_AMBIGUOUS) {
+    return { outcome: "failed", errorCode: existing.errorCode };
+  }
+
+  const promoted = await promotePhaseACanonicalIdentityIfEligible(store, identity);
+  if (promoted.outcome === "ok") {
+    return { outcome: "ok", row: promoted.row };
+  }
   if (existing && "errorCode" in existing) {
     return { outcome: "failed", errorCode: existing.errorCode };
   }
-  if (existing) return { outcome: "ok", row: existing };
+  if (promoted.outcome === "failed") {
+    return { outcome: "failed", errorCode: promoted.errorCode };
+  }
 
   const inserted = await store.insertConversation({
     channel: identity.channel,
@@ -457,7 +477,61 @@ export async function ingestWhatsAppInboundMessage(
         );
         return { outcome: "failed", errorCode: "whatsapp_send_failed" };
       }
+      if (watiPersona && snapshot.ticketId && snapshot.ticketId !== conversation.row.ticketId) {
+        const linked = await store.saveConversationSnapshot(
+          conversation.row.id,
+          snapshot,
+          event.timestamp,
+          event.displayName,
+        );
+        if (linked.outcome === "failed") {
+          await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, linked.errorCode);
+          return { outcome: "failed", errorCode: linked.errorCode };
+        }
+      }
       if (
+        watiPersona &&
+        (isRecoverableCreatorConfirmation(snapshot) ||
+          isIncompletePostCompletionWithoutTicket(snapshot))
+      ) {
+        const recovered = reduceInstagramConversation(
+          { ...snapshot, lastProcessedExternalMessageId: null },
+          {
+            text: event.messageBody,
+            quickReplyPayload: event.quickReplyPayload ?? null,
+            timestamp: event.timestamp,
+            messageId: event.externalMessageId,
+          },
+        );
+        if (isSafeStuckPostCompletionRecovery(recovered)) {
+          const applied = await applyWhatsAppEffects({
+            effects: recovered.effects,
+            snapshotTicketId: recovered.snapshot.ticketId,
+            collected: recovered.snapshot.collected,
+            intakeSessionVersion: recovered.snapshot.intakeSessionVersion,
+            ...whatsappEffectArgs(event, store, conversation.row.id, ingestDeps),
+          });
+          const saved = await store.saveConversationSnapshot(
+            conversation.row.id,
+            recovered.snapshot,
+            event.timestamp,
+            event.displayName,
+          );
+          if (saved.outcome === "failed") {
+            await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
+            return { outcome: "failed", errorCode: saved.errorCode };
+          }
+          if (applied.retryableFailure) {
+            await store.markWebhookEvent(
+              eventId,
+              WEBHOOK_STATUS_FAILED,
+              "whatsapp_send_failed",
+            );
+            return { outcome: "failed", errorCode: "whatsapp_send_failed" };
+          }
+        }
+      } else if (
+        !watiPersona &&
         reduced.snapshot.state === "ticket_open" &&
         !reduced.snapshot.ticketId &&
         isIntakeComplete(reduced.snapshot.collected)

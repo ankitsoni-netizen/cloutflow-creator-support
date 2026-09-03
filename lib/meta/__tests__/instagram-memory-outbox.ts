@@ -1,5 +1,8 @@
 import { isInstagramTerminalSendError } from "@/lib/meta/instagram-send";
-import { isInstagramEmailTerminalError } from "@/lib/meta/instagram-email-outbox";
+import {
+  isInstagramEmailDrainPurpose,
+  isInstagramEmailTerminalError,
+} from "@/lib/meta/email-drain-purposes";
 
 export function instagramMemoryOutbox(messages: Array<Record<string, unknown>>) {
   return {
@@ -108,8 +111,7 @@ export function instagramMemoryEmailOutbox(emails: Array<Record<string, unknown>
       return emails
         .filter((row) => {
           const purpose = String(row.purpose ?? "");
-          if (!purpose.startsWith("instagram-")) return false;
-          if (purpose === "instagram-ticket-reply") return false;
+          if (!isInstagramEmailDrainPurpose(purpose)) return false;
           const status = String(row.deliveryStatus ?? "pending");
           if (!["pending", "failed", "skipped"].includes(status)) return false;
           if (isInstagramEmailTerminalError(String(row.errorCode ?? ""))) return false;
@@ -134,6 +136,9 @@ export function instagramMemoryEmailOutbox(emails: Array<Record<string, unknown>
       const row = emails.find((email) => email.id === input.id);
       if (!row) return { outcome: "failed" as const, errorCode: "email_outbox_lookup_failed" };
       if (row.emailClaimed === true) return { outcome: "skipped" as const };
+      if (isInstagramEmailTerminalError(row.errorCode as string | null)) {
+        return { outcome: "skipped" as const };
+      }
       const status = String(row.deliveryStatus ?? "pending");
       if (!["pending", "failed", "skipped"].includes(status)) {
         return { outcome: "skipped" as const };

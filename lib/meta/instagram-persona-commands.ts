@@ -125,7 +125,10 @@ const TEXT_COMMANDS: Array<[InstagramPersonaCommand, readonly string[]]> = [
   ["creator_existing_campaign", ["existing campaign"]],
   ["creator_campaign_issue", ["campaign issue"]],
   ["creator_payment_issue", ["payment issue"]],
-  ["creator_ticket_confirm", ["yes, raise it", "yes raise it"]],
+  [
+    "creator_ticket_confirm",
+    ["raise ticket", "yes, raise it", "yes raise it"],
+  ],
   ["edit", ["edit details", "edit"]],
   ["yes", ["yes", "y"]],
   ["no", ["no", "n"]],

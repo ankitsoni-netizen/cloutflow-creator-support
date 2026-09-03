@@ -7,12 +7,14 @@ import {
   reduceInstagramConversation,
 } from "@/lib/meta/conversation-machine";
 import { applyInstagramEffects, retryFailedInstagramOutbounds } from "@/lib/meta/instagram-effects";
-import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
-  IDENTITY_MISSING,
-  channelIdentityFromInbound,
-  type ConversationIdentity,
-} from "@/lib/meta/conversation-identity";
+  isIncompletePostCompletionWithoutTicket,
+  isRecoverableCreatorConfirmation,
+  isSafeStuckPostCompletionRecovery,
+} from "@/lib/meta/instagram-persona-machine";
+import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
+import { IDENTITY_AMBIGUOUS, IDENTITY_MISSING, channelIdentityFromInbound, type ConversationIdentity } from "@/lib/meta/conversation-identity";
+import { promotePhaseACanonicalIdentityIfEligible } from "@/lib/meta/phase-a-canonical-promotion";
 import {
   lookupInstagramUsername,
   trackUsernameLookup,
@@ -69,12 +71,22 @@ async function upsertConversation(
     identity.externalConversationId,
     lookup,
   );
-  if (existing && "errorCode" in existing) {
+  if (existing && !("errorCode" in existing)) {
+    return { outcome: "ok", row: existing, created: false };
+  }
+  if (existing && "errorCode" in existing && existing.errorCode !== IDENTITY_AMBIGUOUS) {
     return { outcome: "failed", errorCode: existing.errorCode };
   }
 
-  if (existing) {
-    return { outcome: "ok", row: existing, created: false };
+  const promoted = await promotePhaseACanonicalIdentityIfEligible(store, identity);
+  if (promoted.outcome === "ok") {
+    return { outcome: "ok", row: promoted.row, created: false };
+  }
+  if (existing && "errorCode" in existing) {
+    return { outcome: "failed", errorCode: existing.errorCode };
+  }
+  if (promoted.outcome === "failed") {
+    return { outcome: "failed", errorCode: promoted.errorCode };
   }
 
   const inserted = await store.insertConversation({
@@ -283,6 +295,7 @@ async function finishAlreadyProcessedInbound(input: {
   snapshot: ReturnType<typeof snapshotFromConversationRow>;
   ingestDeps: InstagramIngestDeps;
   eventId: string;
+  conversationTicketId: string | null;
 }): Promise<PersistResult> {
   const retried = await retryFailedInstagramOutbounds({
     store: input.store,
@@ -293,24 +306,46 @@ async function finishAlreadyProcessedInbound(input: {
   void retried;
 
   const snapshot = input.snapshot;
+  if (snapshot.ticketId && snapshot.ticketId !== input.conversationTicketId) {
+    const linked = await input.store.saveConversationSnapshot(
+      input.conversationId,
+      snapshot,
+      input.event.timestamp,
+      input.event.displayName ?? snapshot.collected.cachedUsername,
+    );
+    if (linked.outcome === "failed") {
+      await input.store.markWebhookEvent(
+        input.eventId,
+        WEBHOOK_STATUS_FAILED,
+        linked.errorCode,
+      );
+      return { outcome: "failed", errorCode: linked.errorCode };
+    }
+  }
+
   if (
-    (snapshot.state === "awaiting_post_completion" ||
-      snapshot.state === "ticket_open") &&
-    !snapshot.ticketId &&
-    Boolean(snapshot.collected.igIssueCategory) &&
-    Boolean(snapshot.collected.brandName) &&
-    Boolean(snapshot.collected.campaignMonth) &&
-    snapshot.collected.campaignMonthConfirmed
+    isRecoverableCreatorConfirmation(snapshot) ||
+    isIncompletePostCompletionWithoutTicket(snapshot)
   ) {
-    const applied = await applyInstagramEffects({
-      effects: [{ type: "create_ticket" }],
-      snapshotTicketId: null,
-      collected: snapshot.collected,
-      intakeSessionVersion: snapshot.intakeSessionVersion,
-      snapshotToPersist: snapshot,
-      lastMessageAt: input.event.timestamp,
-      displayName:
-        input.event.displayName ?? snapshot.collected.cachedUsername,
+    const recovered = reduceInstagramConversation(
+      { ...snapshot, lastProcessedExternalMessageId: null },
+      {
+        text: input.event.messageBody,
+        quickReplyPayload: input.event.quickReplyPayload ?? null,
+        timestamp: input.event.timestamp,
+        messageId: input.event.externalMessageId,
+      },
+    );
+    if (isSafeStuckPostCompletionRecovery(recovered)) {
+      const applied = await applyInstagramEffects({
+        effects: recovered.effects,
+        snapshotTicketId: recovered.snapshot.ticketId,
+        collected: recovered.snapshot.collected,
+        intakeSessionVersion: recovered.snapshot.intakeSessionVersion,
+        snapshotToPersist: recovered.snapshot,
+        lastMessageAt: input.event.timestamp,
+        displayName:
+          input.event.displayName ?? recovered.snapshot.collected.cachedUsername,
         expectedLastProcessedExternalMessageId:
           snapshot.lastProcessedExternalMessageId,
         ...instagramEffectArgs(
@@ -320,25 +355,26 @@ async function finishAlreadyProcessedInbound(input: {
           input.ingestDeps,
           withResolvedSendDeps(input.ingestDeps.sendDeps),
         ),
-    });
-    if (applied.ticketId && !applied.snapshotPersisted) {
-      await input.store.saveConversationSnapshot(
-        input.conversationId,
-        { ...snapshot, ticketId: applied.ticketId },
-        input.event.timestamp,
-        input.event.displayName ?? snapshot.collected.cachedUsername,
-      );
-    }
-    if (applied.retryableFailure) {
-      await input.store.markWebhookEvent(
-        input.eventId,
-        WEBHOOK_STATUS_FAILED,
-        applied.errorCode ?? "instagram_send_failed",
-      );
-      return {
-        outcome: "failed",
-        errorCode: applied.errorCode ?? "instagram_send_failed",
-      };
+      });
+      if (applied.retryableFailure) {
+        if (!applied.snapshotPersisted) {
+          await input.store.saveConversationSnapshot(
+            input.conversationId,
+            recovered.snapshot,
+            input.event.timestamp,
+            input.event.displayName ?? recovered.snapshot.collected.cachedUsername,
+          );
+        }
+        await input.store.markWebhookEvent(
+          input.eventId,
+          WEBHOOK_STATUS_FAILED,
+          applied.errorCode ?? "instagram_send_failed",
+        );
+        return {
+          outcome: "failed",
+          errorCode: applied.errorCode ?? "instagram_send_failed",
+        };
+      }
     }
   }
 
@@ -462,6 +498,7 @@ export async function ingestInstagramInboundMessage(
         snapshot,
         ingestDeps,
         eventId,
+        conversationTicketId: conversation.row.ticketId,
       });
       if (duplicate.outcome !== "failed") {
         timing?.mark("critical_path_completed");
@@ -565,18 +602,30 @@ export async function ingestInstagramInboundMessage(
         continue;
       }
 
-      if (applied.retryableFailure) {
-        const errorCode = applied.errorCode ?? "instagram_send_failed";
-        await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, errorCode);
-        return { outcome: "failed", errorCode };
-      }
-
       if (applied.ticketId) {
         reduced.snapshot.ticketId = applied.ticketId;
         if (reduced.snapshot.state !== "awaiting_post_completion") {
           reduced.snapshot.state =
             reduced.snapshot.state || "awaiting_post_completion";
         }
+      }
+
+      if (applied.retryableFailure) {
+        if (applied.ticketId && !applied.snapshotPersisted) {
+          const linked = await store.saveConversationSnapshot(
+            conversationRow.id,
+            reduced.snapshot,
+            event.timestamp,
+            event.displayName,
+          );
+          if (linked.outcome === "failed") {
+            await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, linked.errorCode);
+            return { outcome: "failed", errorCode: linked.errorCode };
+          }
+        }
+        const errorCode = applied.errorCode ?? "instagram_send_failed";
+        await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, errorCode);
+        return { outcome: "failed", errorCode };
       }
 
       if (!applied.snapshotPersisted) {

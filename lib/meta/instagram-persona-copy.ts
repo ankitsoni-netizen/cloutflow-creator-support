@@ -38,7 +38,7 @@ export const CREATOR_NEW_WORK_TITLE = "Work with Cloutflow";
 export const CREATOR_EXISTING_CAMPAIGN_TITLE = "Existing campaign";
 export const CREATOR_CAMPAIGN_ISSUE_TITLE = "Campaign issue";
 export const CREATOR_PAYMENT_ISSUE_TITLE = "Payment issue";
-export const CREATOR_TICKET_CONFIRM_TITLE = "Yes, raise it";
+export const CREATOR_TICKET_CONFIRM_TITLE = "Raise ticket";
 export const CREATOR_TICKET_EDIT_TITLE = "Edit details";
 export const FLOW_CANCEL_TITLE = "Cancel";
 export const FLOW_BACK_TITLE = "Go back";
@@ -149,23 +149,25 @@ export function creatorConfirmationText(input: {
   brandName: string;
   displayCampaignMonth: string;
   contactEmail: string;
-  issueDetails: string;
+  issueDetails?: string | null;
+  issueCategory?: string | null;
 }): string {
-  const lines = [
-    "Here is what I have.",
-    "",
-  ];
-  if (input.campaignName?.trim()) {
-    lines.push(`Campaign: ${input.campaignName}`);
+  void input.campaignName;
+  const lines = ["Here is what I have.", ""];
+  const issueCategory = input.issueCategory?.trim();
+  if (issueCategory) {
+    lines.push(`Issue type: ${issueCategory}`);
   }
   lines.push(
     `Brand: ${input.brandName}`,
     `Month: ${input.displayCampaignMonth}`,
     `Email: ${input.contactEmail}`,
-    `Issue: ${input.issueDetails}`,
-    "",
-    "Should I raise a support ticket with these details?",
   );
+  const issueDetails = input.issueDetails?.trim();
+  if (issueDetails) {
+    lines.push(`Issue: ${issueDetails}`);
+  }
+  lines.push("", "Should I raise a support ticket with these details?");
   return lines.join("\n");
 }
 

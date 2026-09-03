@@ -214,10 +214,10 @@ describe("WATI WhatsApp end-to-end parity with the shared Instagram persona mach
       details.snapshot,
       signal("Yes", { messageId: "mid.month.yes" }),
     );
-    expect(monthYes.snapshot.state).toBe("awaiting_post_completion");
+    expect(monthYes.snapshot.state).toBe("creator_confirmation");
     expect(
       monthYes.effects.filter((effect) => effect.type === "create_ticket"),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(monthYes.snapshot.collected.campaignName).toBeNull();
   });
 });

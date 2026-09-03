@@ -20,6 +20,7 @@ import {
   CREATOR_NEW_WORK_PAYLOAD,
   CREATOR_PAYMENT_ISSUE_PAYLOAD,
   CREATOR_REASON_TEXT,
+  CREATOR_TICKET_CONFIRM_PAYLOAD,
   FLOW_BACK_PAYLOAD,
   FLOW_BACK_TITLE,
   FLOW_CANCEL_PAYLOAD,
@@ -247,14 +248,26 @@ describe("Instagram persona routing state machine", () => {
       },
       { text: "Yes", messageId: "mid.month.yes" },
     ]);
-    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
-    expect(last.snapshot.collected.igIssueCategory).toBe("campaign");
-    expect(last.snapshot.collected.issueType).toBe("other");
-    expect(last.snapshot.collected.campaignMonth).toBe("2026-08-01");
-    expect(last.snapshot.collected.campaignName).toBeNull();
-    expect(last.snapshot.collected.brandName).toBe("Acme");
-    expect(last.snapshot.collected.email).toBe("riya@example.com");
-    expect(last.snapshot.state).toBe("awaiting_post_completion");
+    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(0);
+    expect(last.snapshot.state).toBe("creator_confirmation");
+    expect(sendTexts(last)[0]).toContain("Brand: Acme");
+    expect(sendTexts(last)[0]).toContain("Email: riya@example.com");
+    expect(sendTexts(last)[0]).not.toContain("Campaign:");
+    const raised = reduceInstagramConversation(
+      last.snapshot,
+      signal("Raise ticket", {
+        messageId: "mid.raise",
+        payload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+      }),
+    );
+    expect(raised.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
+    expect(raised.snapshot.collected.igIssueCategory).toBe("campaign");
+    expect(raised.snapshot.collected.issueType).toBe("other");
+    expect(raised.snapshot.collected.campaignMonth).toBe("2026-08-01");
+    expect(raised.snapshot.collected.campaignName).toBeNull();
+    expect(raised.snapshot.collected.brandName).toBe("Acme");
+    expect(raised.snapshot.collected.email).toBe("riya@example.com");
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
   });
 
   it("creates a payment-issue ticket after confirmation", () => {
@@ -270,11 +283,20 @@ describe("Instagram persona routing state machine", () => {
       { text: "Acme, Aug 2026, riya@example.com", messageId: "mid.4" },
       { text: "Yes", messageId: "mid.month.yes" },
     ]);
-    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
-    expect(last.snapshot.collected.igIssueCategory).toBe("payment");
-    expect(last.snapshot.collected.issueType).toBe("payment_delayed");
-    expect(last.snapshot.collected.campaignName).toBeNull();
-    expect(last.snapshot.state).toBe("awaiting_post_completion");
+    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(0);
+    expect(last.snapshot.state).toBe("creator_confirmation");
+    const raised = reduceInstagramConversation(
+      last.snapshot,
+      signal("Raise ticket", {
+        messageId: "mid.raise",
+        payload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+      }),
+    );
+    expect(raised.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
+    expect(raised.snapshot.collected.igIssueCategory).toBe("payment");
+    expect(raised.snapshot.collected.issueType).toBe("payment_delayed");
+    expect(raised.snapshot.collected.campaignName).toBeNull();
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
   });
 
   it("re-asks only missing campaign fields", () => {
@@ -313,8 +335,19 @@ describe("Instagram persona routing state machine", () => {
       filled.snapshot,
       signal("Yes", { messageId: "mid.month.yes" }),
     );
-    expect(monthYes.snapshot.state).toBe("awaiting_post_completion");
+    expect(monthYes.snapshot.state).toBe("creator_confirmation");
     expect(monthYes.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
+      0,
+    );
+    const raised = reduceInstagramConversation(
+      monthYes.snapshot,
+      signal("Raise ticket", {
+        messageId: "mid.raise",
+        payload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+      }),
+    );
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
+    expect(raised.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
       1,
     );
   });
@@ -336,11 +369,20 @@ describe("Instagram persona routing state machine", () => {
       { text: "Old Brand, 08/2026, old@example.com", messageId: "mid.4" },
       { text: "Yes", messageId: "mid.month.yes" },
     ]);
-    expect(last.snapshot.state).toBe("awaiting_post_completion");
+    expect(last.snapshot.state).toBe("creator_confirmation");
     expect(last.snapshot.collected.campaignName).toBeNull();
     expect(last.snapshot.collected.brandName).toBe("Old Brand");
     expect(last.snapshot.collected.email).toBe("old@example.com");
-    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
+    expect(last.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(0);
+    const raised = reduceInstagramConversation(
+      last.snapshot,
+      signal("Raise ticket", {
+        messageId: "mid.raise",
+        payload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+      }),
+    );
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
+    expect(raised.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(1);
   });
 
   it("cancel returns to the main menu without a ticket", () => {
@@ -451,7 +493,7 @@ describe("Instagram persona routing state machine", () => {
     expect(sendTexts(menu)[0]).toBe(personaWelcomeText(null));
   });
 
-  it("attaches follow-ups to an active ticket unless menu/restart or post-completion is used", () => {
+  it("attaches follow-ups to an active ticket, including restart", () => {
     const follow = reduceInstagramConversation(
       emptyConversationSnapshot({
         state: "ticket_open",
@@ -478,15 +520,14 @@ describe("Instagram persona routing state machine", () => {
       follow.snapshot,
       signal("restart", { messageId: "mid.restart" }),
     );
-    expect(restarted.snapshot.state).toBe("awaiting_persona");
+    expect(restarted.snapshot.state).toBe("ticket_open");
     expect(restarted.snapshot.ticketId).toBe("ticket-1");
-    expect(restarted.effects.some((effect) => effect.type === "notify_help_inbound")).toBe(
-      false,
-    );
+    expect(restarted.attachTicketId).toBe("ticket-1");
+    expect(restarted.effects).toEqual([{ type: "notify_help_inbound" }]);
   });
 
-  it("evaluates post-completion before the active-ticket shortcut", () => {
-    const result = reduceInstagramConversation(
+  it("keeps an active ticket on post-completion Main menu and honours I'm done", () => {
+    const menu = reduceInstagramConversation(
       emptyConversationSnapshot({
         state: "awaiting_post_completion",
         routingIntent: "creator_support",
@@ -499,11 +540,26 @@ describe("Instagram persona routing state machine", () => {
         payload: POST_MAIN_MENU_PAYLOAD,
       }),
     );
-    expect(result.snapshot.state).toBe("awaiting_persona");
-    expect(result.effects.some((effect) => effect.type === "notify_help_inbound")).toBe(
-      false,
+    expect(menu.snapshot.state).toBe("ticket_open");
+    expect(menu.attachTicketId).toBe("ticket-1");
+    expect(menu.effects).toEqual([{ type: "notify_help_inbound" }]);
+    expect(menu.snapshot.ticketId).toBe("ticket-1");
+
+    const done = reduceInstagramConversation(
+      emptyConversationSnapshot({
+        state: "awaiting_post_completion",
+        routingIntent: "creator_support",
+        ticketId: "ticket-1",
+        ticketStatus: "open",
+        intakeSessionVersion: 2,
+      }),
+      signal("I'm done", {
+        messageId: "mid.done",
+        payload: POST_DONE_PAYLOAD,
+      }),
     );
-    expect(result.snapshot.ticketId).toBe("ticket-1");
+    expect(done.snapshot.state).toBe("completed");
+    expect(done.snapshot.ticketId).toBe("ticket-1");
   });
 
   it("restarts legacy non-ticket chatbot rows at the persona menu", () => {
@@ -631,29 +687,14 @@ describe("Instagram persona routing state machine", () => {
     expect(result.snapshot.collected.igPersona).toBeNull();
   });
 
-  it("explains an active ticket when existing-campaign support is chosen from the menu", () => {
-    const menu = reduceInstagramConversation(
+  it("explains an active ticket when existing-campaign support is chosen with a linked ticket", () => {
+    const existing = reduceInstagramConversation(
       emptyConversationSnapshot({
-        state: "awaiting_post_completion",
+        state: "awaiting_creator_reason",
         ticketId: "ticket-1",
         ticketStatus: "open",
         ticketCode: "CF-2026-00001",
       }),
-      signal("menu", { messageId: "mid.menu" }),
-    );
-    expect(menu.snapshot.state).toBe("awaiting_persona");
-    expect(menu.snapshot.ticketId).toBe("ticket-1");
-    expect(menu.snapshot.ticketCode).toBe("CF-2026-00001");
-
-    const creator = reduceInstagramConversation(
-      menu.snapshot,
-      signal("I'm a creator", {
-        messageId: "mid.persona",
-        payload: PERSONA_CREATOR_PAYLOAD,
-      }),
-    );
-    const existing = reduceInstagramConversation(
-      creator.snapshot,
       signal("Existing campaign", {
         messageId: "mid.existing",
         payload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,

@@ -310,7 +310,7 @@ describe("applyInstagramEffects ticket creation", () => {
     expect(order.some((item) => item.includes("We've also sent"))).toBe(false);
     expect(qrSend).toHaveBeenCalled();
     const outbound = store.messages.find((message) =>
-      String(message.idempotencyKey ?? "").includes("awaiting_post_completion"),
+      String(message.idempotencyKey ?? "").includes("ticket_created:"),
     );
     expect(outbound?.externalMessageId).toBe("mid.out");
     expect(outbound?.deliveryStatus).toBe("sent");

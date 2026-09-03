@@ -2,6 +2,29 @@ import type { IntakeField } from "@/lib/meta/intake-validate";
 
 export type ChatbotIdempotencyPrefix = "ig" | "wa";
 
+/** New deterministic persona prompt keys so historical rows cannot suppress these messages. */
+export const PERSONA_PROMPT = {
+  monthConfirm: "month_confirm:v2",
+  monthConfirmCorrected: "month_confirm_corrected:v2",
+  monthConfirmReask: "month_confirm_reask:v2",
+  creatorConfirm: "creator_confirm:v2",
+  creatorEdit: "creator_campaign_edit:v2",
+  personaRecover: "persona_recover:v2",
+} as const;
+
+const PERSONA_STATE_PROMPT_KEYS: Record<string, string> = {
+  awaiting_month_confirmation: PERSONA_PROMPT.monthConfirm,
+  creator_confirmation: PERSONA_PROMPT.creatorConfirm,
+};
+
+export function personaStatePromptKey(
+  state: string,
+  retryMessageId?: string | null,
+): string {
+  const base = PERSONA_STATE_PROMPT_KEYS[state] ?? state;
+  return retryMessageId ? `${base}:retry:${retryMessageId}` : base;
+}
+
 export function chatbotOutboundIdempotencyKey(
   conversationId: string,
   intakeSessionVersion: number,

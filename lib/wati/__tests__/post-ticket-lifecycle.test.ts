@@ -9,6 +9,7 @@ import {
 import {
   CREATOR_CAMPAIGN_ISSUE_TITLE,
   CREATOR_EXISTING_CAMPAIGN_TITLE,
+  CREATOR_TICKET_CONFIRM_TITLE,
   PERSONA_CREATOR_TITLE,
 } from "@/lib/meta/instagram-persona-copy";
 import { ingestWhatsAppInboundMessage } from "@/lib/meta/whatsapp-ingest";
@@ -139,7 +140,7 @@ async function playCreatorIntake(
       whatsappMessageId: `wamid.${prefix}.campaign`,
     }),
   );
-  return sendWati(
+  await sendWati(
     store,
     watiTextPayload({
       waId,
@@ -147,6 +148,16 @@ async function playCreatorIntake(
       type: "button",
       buttonReply: { title: "Yes" },
       whatsappMessageId: `wamid.${prefix}.yes`,
+    }),
+  );
+  return sendWati(
+    store,
+    watiTextPayload({
+      waId,
+      text: CREATOR_TICKET_CONFIRM_TITLE,
+      type: "button",
+      buttonReply: { title: CREATOR_TICKET_CONFIRM_TITLE },
+      whatsappMessageId: `wamid.${prefix}.raise`,
     }),
   );
 }

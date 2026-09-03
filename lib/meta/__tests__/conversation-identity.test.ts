@@ -9,9 +9,11 @@ import {
   classifyLegacyIdentity,
   conversationLookupIds,
   conversationRowMatchesIdentity,
+  decidePhaseACanonicalIdentityPromotion,
   findActiveTicketForIdentity,
   findConversationForIdentity,
   instagramExternalConversationId,
+  isPhaseACanonicalNullIdentityRow,
   outboundIdentityAllowsReply,
   phaseAOutboundIdentityProven,
 } from "@/lib/meta/conversation-identity";
@@ -499,6 +501,70 @@ describe("allowOutboundReply", () => {
           ticketConversationId: "sender-a",
         }),
       ).toBe(false);
+    });
+  });
+});
+
+describe("Phase A canonical null-identity promotion eligibility", () => {
+  const phaseARow = {
+    channel: "instagram",
+    provider: null,
+    recipientAccountId: null,
+    identityStatus: null,
+    ticketId: null,
+    externalContactId: "sender-a",
+    externalConversationId: instagramExternalConversationId("page-1", "sender-a"),
+  };
+
+  it("accepts exactly one canonical null-identity row in Phase C", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(isPhaseACanonicalNullIdentityRow(phaseARow, identity)).toBe(true);
+      expect(
+        decidePhaseACanonicalIdentityPromotion([phaseARow], identity, {
+          hasCompetingTicketCandidate: false,
+        }),
+      ).toEqual({ outcome: "promote", row: phaseARow });
+    });
+  });
+
+  it("rejects sender-only, stamped, mismatched, and competing rows", () => {
+    runWithIdentitySchemaPhase("c", () => {
+      expect(
+        isPhaseACanonicalNullIdentityRow(
+          { ...phaseARow, externalConversationId: "sender-a" },
+          identity,
+        ),
+      ).toBe(false);
+      expect(
+        isPhaseACanonicalNullIdentityRow(
+          { ...phaseARow, identityStatus: "ambiguous" },
+          identity,
+        ),
+      ).toBe(false);
+      expect(
+        isPhaseACanonicalNullIdentityRow(
+          { ...phaseARow, externalContactId: "sender-b" },
+          identity,
+        ),
+      ).toBe(false);
+      expect(
+        decidePhaseACanonicalIdentityPromotion([phaseARow], identity, {
+          hasCompetingTicketCandidate: true,
+        }),
+      ).toEqual({ outcome: "reject" });
+      expect(
+        decidePhaseACanonicalIdentityPromotion(
+          [phaseARow, { ...phaseARow, id: "other", externalConversationId: "sender-a" }],
+          identity,
+          { hasCompetingTicketCandidate: false },
+        ),
+      ).toEqual({ outcome: "reject" });
+    });
+  });
+
+  it("does not promote in Phase A", () => {
+    runWithIdentitySchemaPhase("a", () => {
+      expect(isPhaseACanonicalNullIdentityRow(phaseARow, identity)).toBe(false);
     });
   });
 });

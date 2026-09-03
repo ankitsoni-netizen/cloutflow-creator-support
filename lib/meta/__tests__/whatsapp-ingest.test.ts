@@ -42,6 +42,7 @@ import {
   PERSONA_CREATOR_TITLE,
   PERSONA_OTHER_PAYLOAD,
   PERSONA_OTHER_TITLE,
+  CREATOR_TICKET_CONFIRM_TITLE,
   personaWelcomeText,
 } from "@/lib/meta/instagram-persona-copy";
 import {
@@ -2348,7 +2349,18 @@ describe("WATI ingest first-delivery conversation persistence", () => {
         whatsappMessageId: "wamid.wati.yes",
       }),
     );
-    expect(yesList.snapshot.state).toBe("awaiting_post_completion");
+    expect(yesList.snapshot.state).toBe("creator_confirmation");
+    expect(store.tickets).toHaveLength(0);
+    const raised = await sendWatiOnce(
+      store,
+      watiTextPayload({
+        text: CREATOR_TICKET_CONFIRM_TITLE,
+        type: "button",
+        buttonReply: { title: CREATOR_TICKET_CONFIRM_TITLE },
+        whatsappMessageId: "wamid.wati.raise",
+      }),
+    );
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
     expect(store.tickets).toHaveLength(1);
     expect(store.tickets[0]?.campaign_name).toBeNull();
   });

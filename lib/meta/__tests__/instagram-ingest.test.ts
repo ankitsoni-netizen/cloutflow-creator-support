@@ -12,11 +12,11 @@ import {
   CREATOR_ISSUE_CATEGORY_TEXT,
   CREATOR_PAYMENT_ISSUE_PAYLOAD,
   CREATOR_REASON_TEXT,
+  CREATOR_TICKET_CONFIRM_PAYLOAD,
   FLOW_BACK_PAYLOAD,
   INSTAGRAM_UNSUPPORTED_FALLBACK_TEXT,
   PERSONA_CREATOR_PAYLOAD,
   PERSONA_CREATOR_TITLE,
-  activeTicketAttachText,
   creatorTicketRaisedText,
   personaWelcomeText,
   withPostCompletionQuestion,
@@ -832,12 +832,24 @@ describe("ingestInstagramInboundMessage routing", () => {
       store,
       context,
     );
-    const created = await ingestInstagramInboundMessage(
+    const confirmed = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
         externalEventId: "mid.month.yes",
         externalMessageId: "mid.month.yes",
         messageBody: "Yes",
         quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
+      }),
+      store,
+      context,
+    );
+    expect(confirmed.outcome).toBe("stored");
+    expect(store.tickets).toHaveLength(0);
+    const created = await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.raise",
+        externalMessageId: "mid.raise",
+        messageBody: "Raise ticket",
+        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
       }),
       store,
       context,
@@ -860,10 +872,10 @@ describe("ingestInstagramInboundMessage routing", () => {
 
     const duplicate = await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.month.yes",
-        externalMessageId: "mid.month.yes",
-        messageBody: "Yes",
-        quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
+        externalEventId: "mid.raise",
+        externalMessageId: "mid.raise",
+        messageBody: "Raise ticket",
+        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
       }),
       store,
       context,
@@ -1808,6 +1820,31 @@ describe("Instagram DM reliability hardening", () => {
     ]);
     expect(first.outcome).toBe("stored");
     expect(second.outcome).toBe("stored");
+    expect(store.tickets).toHaveLength(0);
+    const [raiseFirst, raiseSecond] = await Promise.all([
+      ingestInstagramInboundMessage(
+        sampleInstagramEvent({
+          externalEventId: "mid.raise.a",
+          externalMessageId: "mid.raise.a",
+          messageBody: "Raise ticket",
+          quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+        }),
+        store,
+        context,
+      ),
+      ingestInstagramInboundMessage(
+        sampleInstagramEvent({
+          externalEventId: "mid.raise.b",
+          externalMessageId: "mid.raise.b",
+          messageBody: "Raise ticket",
+          quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+        }),
+        store,
+        context,
+      ),
+    ]);
+    expect(raiseFirst.outcome).toBe("stored");
+    expect(raiseSecond.outcome).toBe("stored");
     expect(store.tickets).toHaveLength(1);
     const raised = store.messages.filter(
       (message) =>
@@ -1818,7 +1855,7 @@ describe("Instagram DM reliability hardening", () => {
   });
 
   it("does not claim a second ticket after the active-ticket menu path", async () => {
-    const qrSend = vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
+    vi.spyOn(instagramSend, "sendInstagramQuickReplies").mockResolvedValue({
       ok: true,
       metaMessageId: "mid.prompt",
       recipientId: "12334",
@@ -1869,8 +1906,17 @@ describe("Instagram DM reliability hardening", () => {
       store,
       context,
     );
+    await ingestInstagramInboundMessage(
+      sampleInstagramEvent({
+        externalEventId: "mid.raise",
+        externalMessageId: "mid.raise",
+        messageBody: "Raise ticket",
+        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+      }),
+      store,
+      context,
+    );
     expect(store.tickets).toHaveLength(1);
-    const ticketCode = String(store.tickets[0]?.ticketCode);
 
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
@@ -1883,32 +1929,15 @@ describe("Instagram DM reliability hardening", () => {
     );
     await ingestInstagramInboundMessage(
       sampleInstagramEvent({
-        externalEventId: "mid.persona2",
-        externalMessageId: "mid.persona2",
-        messageBody: "I'm a creator",
-        quickReplyPayload: PERSONA_CREATOR_PAYLOAD,
+        externalEventId: "mid.hi.again",
+        externalMessageId: "mid.hi.again",
+        messageBody: "Hi",
       }),
       store,
       context,
     );
-    await ingestInstagramInboundMessage(
-      sampleInstagramEvent({
-        externalEventId: "mid.existing2",
-        externalMessageId: "mid.existing2",
-        messageBody: "Existing campaign",
-        quickReplyPayload: CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
-      }),
-      store,
-      context,
-    );
-    const attach = qrSend.mock.calls
-      .map((call) => call[0]?.text)
-      .filter(
-        (text): text is string =>
-          typeof text === "string" && text.includes(activeTicketAttachText(ticketCode)),
-      );
-    expect(attach.length).toBeGreaterThan(0);
     expect(store.tickets).toHaveLength(1);
+    expect(store.conversations[0]?.ticketId).toBe(store.tickets[0]?.id);
   });
 
   it("recovers a live stuck awaiting_route conversation to the persona menu", async () => {
@@ -2731,9 +2760,17 @@ describe("Instagram ingest first-delivery conversation persistence", () => {
       store,
       reply("mid.month.yes", "Yes", CAMPAIGN_MONTH_YES_PAYLOAD),
     );
-    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(yes.snapshot.state).toBe("creator_confirmation");
     expect(yes.snapshot.collected.campaignMonthConfirmed).toBe(true);
     expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
+    expect(store.tickets).toHaveLength(0);
+
+    const raised = await sendOnce(
+      store,
+      reply("mid.raise", "Raise ticket", CREATOR_TICKET_CONFIRM_PAYLOAD),
+    );
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
+    expect(raised.newOutboundCount).toBeGreaterThanOrEqual(1);
     expect(store.tickets).toHaveLength(1);
     expect(store.tickets[0]?.campaign_name).toBeNull();
     expect(store.tickets[0]?.brand_name).toBe("Acme");
@@ -2872,9 +2909,20 @@ describe("Instagram ingest first-delivery conversation persistence", () => {
         quickReplyPayload: CAMPAIGN_MONTH_YES_PAYLOAD,
       }),
     );
-    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(yes.snapshot.state).toBe("creator_confirmation");
     expect(yes.snapshot.collected.campaignMonthConfirmed).toBe(true);
     expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
+    expect(store.tickets).toHaveLength(0);
+    const raised = await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.raise",
+        externalMessageId: "mid.raise",
+        messageBody: "Raise ticket",
+        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+      }),
+    );
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
     expect(store.tickets).toHaveLength(1);
     expect(store.tickets[0]?.campaign_name).toBeNull();
     expect(corrected.snapshot.lastPromptKey).not.toBe(campaign.snapshot.lastPromptKey);
@@ -3061,9 +3109,20 @@ describe("Instagram ingest first-delivery conversation persistence", () => {
     );
     expect(events).toHaveLength(1);
     const yes = await sendOnce(store, events[0]!);
-    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(yes.snapshot.state).toBe("creator_confirmation");
+    expect(store.tickets).toHaveLength(0);
+    const raised = await sendOnce(
+      store,
+      sampleInstagramEvent({
+        externalEventId: "mid.raise",
+        externalMessageId: "mid.raise",
+        messageBody: "Raise ticket",
+        quickReplyPayload: CREATOR_TICKET_CONFIRM_PAYLOAD,
+      }),
+    );
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
     expect(store.tickets).toHaveLength(1);
     expect(store.tickets[0]?.campaign_name).toBeNull();
-    expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
+    expect(raised.newOutboundCount).toBeGreaterThanOrEqual(1);
   });
 });

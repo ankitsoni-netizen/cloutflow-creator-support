@@ -85,8 +85,13 @@ import {
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
   clearInstagramJourneyCollected,
+  originalInboundForTicket,
   type IntakeCollectedData,
 } from "@/lib/meta/intake-validate";
+import {
+  PERSONA_PROMPT,
+  personaStatePromptKey,
+} from "@/lib/meta/prompt-keys";
 import { formatCampaignMonthForDisplay } from "@/lib/tickets/map";
 import {
   campaignMonthConfirmationText,
@@ -134,7 +139,7 @@ export const INSTAGRAM_FLOW_BACK_TRANSITIONS: Readonly<
   creator_campaign_details: "awaiting_creator_issue_category",
   awaiting_month_confirmation: "creator_campaign_details",
   creator_issue_details: "creator_campaign_details",
-  creator_confirmation: "creator_issue_details",
+  creator_confirmation: "awaiting_month_confirmation",
   brand_action: "awaiting_persona",
   agency_details: "awaiting_persona",
   agency_confirmation: "agency_details",
@@ -263,8 +268,14 @@ export function postCompletionQuickReplies(): InstagramQuickReply[] {
 export function personaPromptKey(
   state: string,
   retryMessageId?: string | null,
+  promptKeyBase?: string | null,
 ): string {
-  return retryMessageId ? `${state}:retry:${retryMessageId}` : state;
+  if (promptKeyBase) {
+    return retryMessageId
+      ? `${promptKeyBase}:retry:${retryMessageId}`
+      : promptKeyBase;
+  }
+  return personaStatePromptKey(state, retryMessageId);
 }
 
 /** Navigation-specific prompt key so revisiting a state does not reuse the prior outbound row. */
@@ -282,6 +293,65 @@ function greetingName(snapshot: ConversationSnapshot): string | null {
 function hasActiveTicket(snapshot: ConversationSnapshot): boolean {
   return Boolean(
     snapshot.ticketId && isActiveTicketStatus(snapshot.ticketStatus),
+  );
+}
+
+function isStuckPostCompletionWithoutTicket(
+  snapshot: ConversationSnapshot,
+): boolean {
+  if (snapshot.state !== "awaiting_post_completion") return false;
+  if (snapshot.ticketId) return false;
+  return !hasActiveTicket(snapshot);
+}
+
+function isCompletedNonTicketPostCompletion(
+  snapshot: ConversationSnapshot,
+): boolean {
+  const collected = snapshot.collected;
+  if (collected.igCreatorReason === "new_work") return true;
+  return (
+    collected.igPersona === "brand" ||
+    collected.igPersona === "agency" ||
+    collected.igPersona === "other"
+  );
+}
+
+/** Broken Production rows after month Yes skipped Raise ticket. */
+export function isRecoverableCreatorConfirmation(
+  snapshot: ConversationSnapshot,
+): boolean {
+  if (!isStuckPostCompletionWithoutTicket(snapshot)) return false;
+  const collected = snapshot.collected;
+  return Boolean(
+    collected.igIssueCategory &&
+      collected.brandName &&
+      collected.campaignMonth &&
+      collected.email &&
+      collected.campaignMonthConfirmed,
+  );
+}
+
+/**
+ * Stuck creator-ticket intake with incomplete collected data. Brand / agency /
+ * other / apply-link completions stay on the post-completion question.
+ */
+export function isIncompletePostCompletionWithoutTicket(
+  snapshot: ConversationSnapshot,
+): boolean {
+  if (!isStuckPostCompletionWithoutTicket(snapshot)) return false;
+  if (isRecoverableCreatorConfirmation(snapshot)) return false;
+  return !isCompletedNonTicketPostCompletion(snapshot);
+}
+
+export function isSafeStuckPostCompletionRecovery(
+  result: MachineResult,
+): boolean {
+  if (result.effects.some((effect) => effect.type === "create_ticket")) {
+    return false;
+  }
+  return (
+    result.snapshot.state === "creator_confirmation" ||
+    result.snapshot.state === "awaiting_persona"
   );
 }
 
@@ -327,8 +397,13 @@ function sendQr(
   retry: boolean,
   inboundRoutingKind: MachineResult["inboundRoutingKind"] = "unclassified",
   extraEffects: MachineEffect[] = [],
+  promptKeyBase?: string,
 ): MachineResult {
-  const key = personaPromptKey(state, retry ? signal.messageId : null);
+  const key = personaPromptKey(
+    state,
+    retry ? signal.messageId : null,
+    promptKeyBase,
+  );
   return {
     snapshot: withActivity(snapshot, signal, {
       ...patch,
@@ -358,6 +433,7 @@ function sendText(
   state: string,
   retry: boolean,
   inboundRoutingKind: MachineResult["inboundRoutingKind"] = "unclassified",
+  promptKeyBase?: string,
 ): MachineResult {
   if (isInstagramFlowBackState(state)) {
     return sendQr(
@@ -369,9 +445,15 @@ function sendText(
       [],
       retry,
       inboundRoutingKind,
+      [],
+      promptKeyBase,
     );
   }
-  const key = personaPromptKey(state, retry ? signal.messageId : null);
+  const key = personaPromptKey(
+    state,
+    retry ? signal.messageId : null,
+    promptKeyBase,
+  );
   return {
     snapshot: withActivity(snapshot, signal, {
       ...patch,
@@ -415,6 +497,38 @@ export function startInstagramPersonaMenu(
     personaQuickReplies(),
     false,
     "unclassified",
+  );
+}
+
+export function recoverIncompletePostCompletionIntake(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+): MachineResult {
+  const collected = clearInstagramJourneyCollected(snapshot.collected, {
+    originalInboundText: signal.text,
+    originalInboundMessageId: signal.messageId,
+    routingSessionId: `rs_${signal.messageId}`,
+    cachedUsername:
+      snapshot.collected.cachedUsername ?? snapshot.suggestedSocialHandle,
+  });
+  return sendQr(
+    snapshot,
+    signal,
+    {
+      routingIntent: "unclassified",
+      currentIntakeField: null,
+      collected,
+      intakeSessionVersion: snapshot.intakeSessionVersion + 1,
+      ticketId: null,
+      ticketCode: null,
+    },
+    personaWelcomeText(greetingName({ ...snapshot, collected })),
+    "awaiting_persona",
+    personaQuickReplies(),
+    false,
+    "unclassified",
+    [],
+    PERSONA_PROMPT.personaRecover,
   );
 }
 
@@ -474,27 +588,72 @@ function otherContactFields(collected: IntakeCollectedData) {
   };
 }
 
+function creatorIssueCategoryLabel(collected: IntakeCollectedData): string | null {
+  if (collected.igIssueCategory === "payment") return "Payment issue";
+  if (collected.igIssueCategory === "campaign") return "Campaign issue";
+  return null;
+}
+
+function creatorIssueContext(collected: IntakeCollectedData): string | null {
+  const described = collected.issueDescription?.trim();
+  if (described) return described;
+  return originalInboundForTicket(collected);
+}
+
 function buildCreatorConfirmation(collected: IntakeCollectedData): string | null {
-  if (
-    !collected.brandName ||
-    !collected.campaignMonth ||
-    !collected.email ||
-    !collected.issueDescription
-  ) {
+  if (!collected.brandName || !collected.campaignMonth || !collected.email) {
     return null;
   }
-  const storedIssue = collected.issueDescription;
+  const storedIssue = creatorIssueContext(collected) ?? "";
   return truncateDisplayedIssue(
     (issueDetails) =>
       creatorConfirmationText({
-        campaignName: collected.campaignName,
+        campaignName: null,
         brandName: collected.brandName as string,
         displayCampaignMonth: formatCampaignMonthForDisplay(collected.campaignMonth),
         contactEmail: collected.email as string,
+        issueCategory: creatorIssueCategoryLabel(collected),
         issueDetails,
       }),
     storedIssue,
     INSTAGRAM_SAFE_MESSAGE_LENGTH,
+  );
+}
+
+function showCreatorConfirmation(
+  snapshot: ConversationSnapshot,
+  signal: InboundSignal,
+  collected: IntakeCollectedData,
+  retry: boolean,
+): MachineResult {
+  const confirmation = buildCreatorConfirmation(collected);
+  if (!confirmation) {
+    return sendText(
+      snapshot,
+      signal,
+      { collected, routingIntent: "creator_support" },
+      missingCreatorCampaignPrompt(creatorCampaignFields(collected)) ??
+        CREATOR_CAMPAIGN_DETAILS_TEXT,
+      "creator_campaign_details",
+      true,
+      "support",
+    );
+  }
+  return sendQr(
+    snapshot,
+    signal,
+    {
+      collected: { ...collected, campaignName: null },
+      routingIntent: "creator_support",
+      currentIntakeField: null,
+    },
+    confirmation,
+    "creator_confirmation",
+    creatorConfirmationQuickReplies(),
+    retry,
+    "support",
+    [],
+    PERSONA_PROMPT.creatorConfirm,
   );
 }
 
@@ -999,6 +1158,12 @@ function handleCreatorCampaignDetails(
     );
   }
   if (collected.campaignMonth && !collected.campaignMonthConfirmed) {
+    const previousKey = snapshot.lastPromptKey ?? "";
+    const corrected =
+      previousKey.startsWith(PERSONA_PROMPT.monthConfirm) ||
+      previousKey.startsWith(PERSONA_PROMPT.monthConfirmReask) ||
+      previousKey.startsWith(PERSONA_PROMPT.monthConfirmCorrected) ||
+      snapshot.state === "awaiting_month_confirmation";
     return sendQr(
       snapshot,
       signal,
@@ -1008,6 +1173,8 @@ function handleCreatorCampaignDetails(
       monthConfirmationQuickReplies(),
       true,
       "support",
+      [],
+      corrected ? PERSONA_PROMPT.monthConfirmCorrected : PERSONA_PROMPT.monthConfirm,
     );
   }
   if (missing) {
@@ -1021,7 +1188,18 @@ function handleCreatorCampaignDetails(
       "support",
     );
   }
-  return raiseCreatorTicket(snapshot, signal, collected);
+  if (collected.campaignMonthConfirmed) {
+    return showCreatorConfirmation(snapshot, signal, collected, true);
+  }
+  return sendText(
+    snapshot,
+    signal,
+    { collected, routingIntent: "creator_support" },
+    CREATOR_CAMPAIGN_DETAILS_TEXT,
+    "creator_campaign_details",
+    true,
+    "support",
+  );
 }
 
 function raiseCreatorTicket(
@@ -1080,7 +1258,7 @@ function handleMonthConfirmation(
         "support",
       );
     }
-    return raiseCreatorTicket(snapshot, signal, collected);
+    return showCreatorConfirmation(snapshot, signal, collected, true);
   }
   if (command === "flow_cancel") {
     return startInstagramPersonaMenu(snapshot, signal, { incrementSession: true });
@@ -1099,6 +1277,7 @@ function handleMonthConfirmation(
       "creator_campaign_details",
       true,
       "support",
+      PERSONA_PROMPT.monthConfirmReask,
     );
   }
   const month = snapshot.collected.campaignMonth;
@@ -1131,17 +1310,7 @@ function handleCreatorIssueDetails(
     );
   }
   const collected = { ...snapshot.collected, issueDescription: details };
-  const confirmation = buildCreatorConfirmation(collected);
-  return sendQr(
-    snapshot,
-    signal,
-    { collected, routingIntent: "creator_support" },
-    confirmation ?? CREATOR_ISSUE_DETAILS_TEXT,
-    "creator_confirmation",
-    creatorConfirmationQuickReplies(),
-    false,
-    "support",
-  );
+  return showCreatorConfirmation(snapshot, signal, collected, true);
 }
 
 function handleCreatorConfirmation(
@@ -1153,7 +1322,6 @@ function handleCreatorConfirmation(
     "creator_ticket_confirm",
     "creator_ticket_edit",
     "edit",
-    "yes",
     "flow_cancel",
   ];
   if (!commandAllowedAtState(command, allowed)) {
@@ -1187,22 +1355,13 @@ function handleCreatorConfirmation(
       { collected, routingIntent: "creator_support" },
       CREATOR_CAMPAIGN_DETAILS_TEXT,
       "creator_campaign_details",
-      false,
+      true,
       "support",
+      PERSONA_PROMPT.creatorEdit,
     );
   }
-  if (command === "creator_ticket_confirm" || command === "yes") {
-    return {
-      snapshot: withActivity(snapshot, signal, {
-        state: "awaiting_post_completion",
-        routingIntent: "creator_support",
-        currentIntakeField: null,
-      }),
-      effects: [{ type: "create_ticket" }],
-      attachTicketId: null,
-      inboundRoutingKind: "support",
-      processed: true,
-    };
+  if (command === "creator_ticket_confirm") {
+    return raiseCreatorTicket(snapshot, signal, snapshot.collected);
   }
   const text = buildCreatorConfirmation(snapshot.collected);
   return sendQr(
@@ -1482,6 +1641,13 @@ export function reduceInstagramPersonaConversation(
     return alreadyProcessed(snapshot);
   }
 
+  if (isRecoverableCreatorConfirmation(snapshot)) {
+    return showCreatorConfirmation(snapshot, signal, snapshot.collected, true);
+  }
+  if (isIncompletePostCompletionWithoutTicket(snapshot)) {
+    return recoverIncompletePostCompletionIntake(snapshot, signal);
+  }
+
   if (signal.unsupportedKind) {
     return sendText(
       snapshot,
@@ -1496,6 +1662,9 @@ export function reduceInstagramPersonaConversation(
 
   const global = isGlobalMenuOrRestart(signal.text, signal.quickReplyPayload);
   if (global) {
+    if (hasActiveTicket(snapshot)) {
+      return ticketFollowUp(snapshot, signal);
+    }
     return startInstagramPersonaMenu(snapshot, signal, { incrementSession: true });
   }
 
@@ -1517,6 +1686,12 @@ export function reduceInstagramPersonaConversation(
   );
 
   if (snapshot.state === "awaiting_post_completion") {
+    if (hasActiveTicket(snapshot)) {
+      if (command === "post_done") {
+        return handlePostCompletion(snapshot, signal, command);
+      }
+      return ticketFollowUp(snapshot, signal);
+    }
     return handlePostCompletion(snapshot, signal, command);
   }
 

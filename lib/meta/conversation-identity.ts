@@ -37,6 +37,8 @@ export type IdentityRecord = {
   external_conversation_id?: string | null;
   identityStatus?: string | null;
   identity_status?: string | null;
+  ticketId?: string | null;
+  ticket_id?: string | null;
 };
 
 function nonEmpty(value: unknown): string | null {
@@ -184,6 +186,58 @@ function recordRecipientAccountId(row: IdentityRecord): string | null {
 
 function recordIdentityStatus(row: IdentityRecord): string | null {
   return nonEmpty(row.identityStatus) ?? nonEmpty(row.identity_status);
+}
+
+function recordTicketId(row: IdentityRecord): string | null {
+  return nonEmpty(row.ticketId) ?? nonEmpty(row.ticket_id);
+}
+
+/**
+ * Phase A containment left identity columns null. Promote only the exact
+ * canonical conversation for the current verified webhook identity.
+ * Sender-only keys and any stamped status are ineligible.
+ */
+export function isPhaseACanonicalNullIdentityRow(
+  row: IdentityRecord,
+  identity: ConversationIdentity,
+): boolean {
+  if (!isIdentitySchemaPhaseC()) return false;
+  if (recordIdentityStatus(row)) return false;
+  if (nonEmpty(row.provider)) return false;
+  if (recordRecipientAccountId(row)) return false;
+  if (recordTicketId(row)) return false;
+  const channel = nonEmpty(row.channel);
+  if (channel && channel !== identity.channel) return false;
+  const contactId = recordContactId(row);
+  if (!contactId || contactId !== identity.externalContactId) return false;
+  const conversationId = recordConversationId(row);
+  const canonicalId = canonicalConversationIdFor(identity);
+  if (!conversationId || !canonicalId) return false;
+  if (conversationId === contactId) return false;
+  return conversationId === canonicalId;
+}
+
+export type PhaseACanonicalPromotionDecision<T> =
+  | { outcome: "promote"; row: T }
+  | { outcome: "reject" };
+
+/**
+ * Exactly one Phase A canonical null-identity row, no other contact-scoped
+ * conversation, and no competing ticket candidate.
+ */
+export function decidePhaseACanonicalIdentityPromotion<T extends IdentityRecord>(
+  rows: readonly T[],
+  identity: ConversationIdentity,
+  options: { hasCompetingTicketCandidate: boolean },
+): PhaseACanonicalPromotionDecision<T> {
+  if (!isIdentitySchemaPhaseC()) return { outcome: "reject" };
+  if (options.hasCompetingTicketCandidate) return { outcome: "reject" };
+  if (rows.length !== 1) return { outcome: "reject" };
+  const row = rows[0];
+  if (!row || !isPhaseACanonicalNullIdentityRow(row, identity)) {
+    return { outcome: "reject" };
+  }
+  return { outcome: "promote", row };
 }
 
 function identityRecipientAccountId(

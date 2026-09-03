@@ -195,7 +195,7 @@ describe("shared month confirmation in the conversation reducer", () => {
       signal("Acme, June 2026, riya@example.com", { messageId: "mid.4" }),
     );
     expect(awaiting.snapshot.lastPromptKey).toBe(
-      "awaiting_month_confirmation:retry:mid.4",
+      "month_confirm:v2:retry:mid.4",
     );
 
     const typed = reduceInstagramConversation(
@@ -207,9 +207,9 @@ describe("shared month confirmation in the conversation reducer", () => {
     expect(typed.snapshot.collected.email).toBe("riya@example.com");
     expect(typed.snapshot.collected.campaignName).toBeNull();
     expect(typed.snapshot.collected.campaignMonth).toBe("2026-06-01");
-    expect(typed.snapshot.state).toBe("awaiting_post_completion");
+    expect(typed.snapshot.state).toBe("creator_confirmation");
     expect(typed.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
-      1,
+      0,
     );
 
     const fromButton = reduceInstagramConversation(
@@ -230,10 +230,10 @@ describe("shared month confirmation in the conversation reducer", () => {
     expect(fromPostback.snapshot.state).toBe(typed.snapshot.state);
     expect(fromButton.snapshot.collected.campaignMonthConfirmed).toBe(true);
     expect(fromButton.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
-      1,
+      0,
     );
     expect(fromPostback.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
-      1,
+      0,
     );
   });
 
@@ -264,7 +264,7 @@ describe("shared month confirmation in the conversation reducer", () => {
     expect(typedNo.snapshot.collected.brandName).toBe("Acme");
 
     expect(denied.snapshot.lastPromptKey).toBe(
-      "creator_campaign_details:retry:mid.no",
+      "month_confirm_reask:v2:retry:mid.no",
     );
 
     const corrected = reduceInstagramConversation(
@@ -276,13 +276,13 @@ describe("shared month confirmation in the conversation reducer", () => {
     expect(corrected.snapshot.collected.email).toBe("riya@example.com");
     expect(sendText(corrected)).toBe(campaignMonthConfirmationText("2026-07-01"));
     expect(corrected.snapshot.lastPromptKey).toBe(
-      "awaiting_month_confirmation:retry:mid.july",
+      "month_confirm_corrected:v2:retry:mid.july",
     );
     expect(corrected.snapshot.lastPromptKey).not.toBe(awaiting.snapshot.lastPromptKey);
     expect(quickReplyTitles(corrected)).toEqual(expect.arrayContaining(["Yes", "No"]));
   });
 
-  it("creates exactly one ticket on repeated Yes at month confirmation", () => {
+  it("does not create a ticket on repeated month Yes", () => {
     const awaiting = reduceInstagramConversation(
       reachPaymentDetails().snapshot,
       signal("Acme, June 2026, riya@example.com", { messageId: "mid.4" }),
@@ -295,9 +295,9 @@ describe("shared month confirmation in the conversation reducer", () => {
       }),
     );
     expect(first.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
-      1,
+      0,
     );
-    expect(first.snapshot.state).toBe("awaiting_post_completion");
+    expect(first.snapshot.state).toBe("creator_confirmation");
     const second = reduceInstagramConversation(
       first.snapshot,
       signal("Yes", {
@@ -381,12 +381,12 @@ describe("shared month confirmation in the conversation reducer", () => {
     expect(igYes.snapshot.collected.campaignMonthConfirmed).toBe(true);
     expect(waYes.snapshot.collected.campaignMonthConfirmed).toBe(true);
     expect(igYes.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
-      1,
+      0,
     );
     expect(waYes.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
       1,
     );
-    expect(igYes.snapshot.state).toBe("awaiting_post_completion");
+    expect(igYes.snapshot.state).toBe("creator_confirmation");
     expect(waYes.snapshot.state).toBe("ticket_open");
     expect(igYes.snapshot.collected.campaignName).toBeNull();
     expect(waYes.snapshot.collected.campaignName).toBeNull();
@@ -501,6 +501,6 @@ describe("shared month confirmation in the conversation reducer", () => {
     expect(first.processed).toBe(true);
     expect(duplicate.processed).toBe(false);
     expect(duplicate.effects).toEqual([]);
-    expect(duplicate.snapshot.state).toBe("awaiting_post_completion");
+    expect(duplicate.snapshot.state).toBe("creator_confirmation");
   });
 });

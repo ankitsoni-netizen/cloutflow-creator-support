@@ -12,40 +12,23 @@ import type { InstagramOutboxDrainCounts, DrainClock } from "@/lib/meta/instagra
 import { emptyInstagramOutboxDrainCounts } from "@/lib/meta/instagram-outbox";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import type { DbTicket } from "@/lib/tickets/types";
+import {
+  INSTAGRAM_EMAIL_DRAIN_PURPOSES,
+  isInstagramEmailDrainPurpose,
+  isInstagramEmailTerminalError,
+  type InstagramEmailDrainPurpose,
+} from "@/lib/meta/email-drain-purposes";
 
 export const INSTAGRAM_EMAIL_DRAIN_BATCH = 2;
 export const INSTAGRAM_EMAIL_PENDING_STALE_MS = 60_000;
 export const INSTAGRAM_EMAIL_FAILED_BACKOFF_MS = 15_000;
 
-export const INSTAGRAM_EMAIL_DRAIN_PURPOSES = [
-  "instagram-ticket-confirmation",
-  "instagram-inbound-notify",
-  "instagram-agency-details",
-  "instagram-general-inquiry",
-] as const;
-
-export type InstagramEmailDrainPurpose =
-  (typeof INSTAGRAM_EMAIL_DRAIN_PURPOSES)[number];
-
-const EMAIL_TERMINAL_CODES = new Set([
-  "creator_email_invalid",
-  "support_inbox_missing",
-  "empty_reply",
-  "no_email_recipient",
-]);
-
-export function isInstagramEmailDrainPurpose(
-  purpose: string,
-): purpose is InstagramEmailDrainPurpose {
-  return (INSTAGRAM_EMAIL_DRAIN_PURPOSES as readonly string[]).includes(purpose);
-}
-
-export function isInstagramEmailTerminalError(
-  errorCode: string | null | undefined,
-): boolean {
-  const code = errorCode?.trim() ?? "";
-  return code.length > 0 && EMAIL_TERMINAL_CODES.has(code);
-}
+export {
+  INSTAGRAM_EMAIL_DRAIN_PURPOSES,
+  isInstagramEmailDrainPurpose,
+  isInstagramEmailTerminalError,
+  type InstagramEmailDrainPurpose,
+};
 
 function formatTranscript(
   rows: Array<{ direction: string; messageBody: string }>,
@@ -101,10 +84,11 @@ async function sendReconstructedInstagramEmail(input: {
   conversationId: string | null;
   loadTicket: (id: string) => Promise<DbTicket | null>;
 }): Promise<InstagramMailResult> {
-  if (
-    input.purpose === "instagram-ticket-confirmation" ||
-    input.purpose === "instagram-inbound-notify"
-  ) {
+    if (
+      input.purpose === "instagram-ticket-confirmation" ||
+      input.purpose === "whatsapp-ticket-confirmation" ||
+      input.purpose === "instagram-inbound-notify"
+    ) {
     if (!input.ticketId) {
       return { outcome: "failed", errorCode: "email_send_failed" };
     }
@@ -118,7 +102,10 @@ async function sendReconstructedInstagramEmail(input: {
           ticketId: input.ticketId,
         })
       : [];
-    if (input.purpose === "instagram-ticket-confirmation") {
+    if (
+      input.purpose === "instagram-ticket-confirmation" ||
+      input.purpose === "whatsapp-ticket-confirmation"
+    ) {
       return sendInstagramTicketConfirmationEmail({
         ticket,
         transcriptText: formatTranscript(transcriptRows),

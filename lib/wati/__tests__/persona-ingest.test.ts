@@ -13,6 +13,7 @@ import {
 import {
   CREATOR_CAMPAIGN_ISSUE_TITLE,
   CREATOR_EXISTING_CAMPAIGN_TITLE,
+  CREATOR_TICKET_CONFIRM_TITLE,
   PERSONA_AGENCY_PAYLOAD,
   PERSONA_AGENCY_TITLE,
   PERSONA_BRAND_PAYLOAD,
@@ -323,14 +324,26 @@ describe("WATI persona ingest parity with Instagram", () => {
       }),
     );
     expect(yes.result.outcome).toBe("stored");
-    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(yes.snapshot.state).toBe("creator_confirmation");
+    expect(store.tickets).toHaveLength(0);
+    const raised = await sendWati(
+      store,
+      watiTextPayload({
+        text: CREATOR_TICKET_CONFIRM_TITLE,
+        type: "button",
+        buttonReply: { title: CREATOR_TICKET_CONFIRM_TITLE },
+        whatsappMessageId: "wamid.raise",
+      }),
+    );
+    expect(raised.result.outcome).toBe("stored");
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
     expect(store.tickets).toHaveLength(1);
     expect(store.tickets[0]?.campaign_name).toBeNull();
     expect(store.tickets[0]?.brand_name).toBe("Acme");
     expect(store.tickets[0]?.campaign_month).toBe("2026-08-01");
     expect(store.tickets[0]?.creator_email).toBe("riya@example.com");
     expect(store.tickets[0]?.source_channel).toBe("whatsapp");
-    expect(yes.newOutboundCount).toBeGreaterThanOrEqual(1);
+    expect(raised.newOutboundCount).toBeGreaterThanOrEqual(1);
   });
 
   it("matches Instagram month No → corrected month → Yes", async () => {
@@ -407,7 +420,18 @@ describe("WATI persona ingest parity with Instagram", () => {
         whatsappMessageId: "wamid.yes",
       }),
     );
-    expect(yes.snapshot.state).toBe("awaiting_post_completion");
+    expect(yes.snapshot.state).toBe("creator_confirmation");
+    expect(store.tickets).toHaveLength(0);
+    const raised = await sendWati(
+      store,
+      watiTextPayload({
+        text: CREATOR_TICKET_CONFIRM_TITLE,
+        type: "button",
+        buttonReply: { title: CREATOR_TICKET_CONFIRM_TITLE },
+        whatsappMessageId: "wamid.raise",
+      }),
+    );
+    expect(raised.snapshot.state).toBe("awaiting_post_completion");
     expect(store.tickets).toHaveLength(1);
   });
 

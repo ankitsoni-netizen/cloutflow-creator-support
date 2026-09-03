@@ -9,15 +9,22 @@ import {
   IDENTITY_MISSING,
   conversationLookupIds,
   conversationIdentityFromLookup,
+  decidePhaseACanonicalIdentityPromotion,
   findActiveTicketForIdentity,
   findConversationForIdentity,
   outboundIdentityAllowsReply,
+  type ConversationIdentity,
   type ConversationLookupIdentity,
 } from "@/lib/meta/conversation-identity";
 import {
   IDENTITY_SCHEMA_UNAVAILABLE,
   isIdentitySchemaPhaseC,
 } from "@/lib/meta/identity-schema-phase";
+import {
+  INSTAGRAM_EMAIL_DRAIN_PURPOSES,
+  isInstagramEmailDrainPurpose,
+  isInstagramEmailTerminalError,
+} from "@/lib/meta/email-drain-purposes";
 import {
   isCompatibleInstagramOutboundDuplicate,
   instagramOutboundAddressesAreAssigned,
@@ -153,6 +160,14 @@ export type InstagramIngestStore = Omit<
     externalConversationId: string,
     lookup?: ConversationLookupIdentity,
   ): Promise<InstagramConversationRow | null | { errorCode: string }>;
+  promoteEligiblePhaseACanonicalIdentity(
+    identity: ConversationIdentity,
+  ): Promise<
+    | { outcome: "promoted"; row: InstagramConversationRow }
+    | { outcome: "already_promoted"; row: InstagramConversationRow }
+    | { outcome: "not_found" }
+    | { outcome: "not_eligible"; errorCode: string }
+  >;
   insertConversation(input: {
     channel: "instagram" | "whatsapp";
     externalConversationId: string;
@@ -702,6 +717,120 @@ export function createSupabaseInstagramStore(
       }
       return contactRow;
     },
+    async promoteEligiblePhaseACanonicalIdentity(identity) {
+      if (!isIdentitySchemaPhaseC()) {
+        return { outcome: "not_found" as const };
+      }
+      const ticket = await this.findActiveInstagramTicket({
+        externalConversationId: identity.externalConversationId,
+        externalContactId: identity.externalContactId,
+        sourceChannel: identity.channel,
+        provider: identity.provider,
+        recipientAccountId: identity.recipientAccountId,
+      });
+      const byContact = await supabase
+        .from("channel_conversations")
+        .select(conversationSelect())
+        .eq("channel", identity.channel)
+        .eq("external_contact_id", identity.externalContactId)
+        .limit(5);
+      if (byContact.error) {
+        if (byContact.error.code === "42703") {
+          return {
+            outcome: "not_eligible" as const,
+            errorCode: IDENTITY_SCHEMA_UNAVAILABLE,
+          };
+        }
+        return {
+          outcome: "not_eligible" as const,
+          errorCode: "conversation_lookup_failed",
+        };
+      }
+      const contactRows = (byContact.data ?? []).map((row) =>
+        mapConversationRow(row as Record<string, unknown>),
+      );
+      if (contactRows.length === 0) {
+        return { outcome: "not_found" as const };
+      }
+      const decision = decidePhaseACanonicalIdentityPromotion(
+        contactRows,
+        identity,
+        { hasCompetingTicketCandidate: ticket !== null },
+      );
+      if (decision.outcome !== "promote") {
+        return {
+          outcome: "not_eligible" as const,
+          errorCode: IDENTITY_AMBIGUOUS,
+        };
+      }
+      const candidate = decision.row;
+      const updated = await supabase
+        .from("channel_conversations")
+        .update({
+          provider: identity.provider,
+          recipient_account_id: identity.recipientAccountId,
+          identity_status: "unambiguous",
+        })
+        .eq("id", candidate.id)
+        .eq("channel", identity.channel)
+        .eq("external_contact_id", identity.externalContactId)
+        .eq("external_conversation_id", identity.externalConversationId)
+        .is("ticket_id", null)
+        .is("provider", null)
+        .is("recipient_account_id", null)
+        .is("identity_status", null)
+        .select(conversationSelect())
+        .maybeSingle();
+      if (updated.error) {
+        if (isUniqueViolation(updated.error)) {
+          return {
+            outcome: "not_eligible" as const,
+            errorCode: IDENTITY_AMBIGUOUS,
+          };
+        }
+        if (updated.error.code === "42703") {
+          return {
+            outcome: "not_eligible" as const,
+            errorCode: IDENTITY_SCHEMA_UNAVAILABLE,
+          };
+        }
+        return {
+          outcome: "not_eligible" as const,
+          errorCode: "conversation_update_failed",
+        };
+      }
+      if (updated.data?.id) {
+        return {
+          outcome: "promoted" as const,
+          row: mapConversationRow(updated.data as Record<string, unknown>),
+        };
+      }
+      const reread = await supabase
+        .from("channel_conversations")
+        .select(conversationSelect())
+        .eq("id", candidate.id)
+        .maybeSingle();
+      if (reread.error || !reread.data?.id) {
+        return {
+          outcome: "not_eligible" as const,
+          errorCode: IDENTITY_AMBIGUOUS,
+        };
+      }
+      const current = mapConversationRow(reread.data as Record<string, unknown>);
+      if (
+        current.identityStatus === "unambiguous" &&
+        current.provider === identity.provider &&
+        current.recipientAccountId === identity.recipientAccountId &&
+        current.externalContactId === identity.externalContactId &&
+        current.externalConversationId === identity.externalConversationId
+      ) {
+        return { outcome: "already_promoted" as const, row: current };
+      }
+      return {
+        outcome: "not_eligible" as const,
+        errorCode: IDENTITY_AMBIGUOUS,
+      };
+    },
     async insertConversation(input) {
       if (!input.externalContactId.trim() || !input.externalConversationId.trim()) {
         return { outcome: "failed", errorCode: IDENTITY_MISSING };
@@ -1014,11 +1143,7 @@ export function createSupabaseInstagramStore(
         identity,
         sourceChannel,
         (row) =>
-          ["open", "in_progress", "waiting"].includes(String(row.status ?? "")) &&
-          (!isIdentitySchemaPhaseC() ||
-            outboundIdentityAllowsReply(
-              (row.identity_status as string | null | undefined) ?? null,
-            )),
+          ["open", "in_progress", "waiting"].includes(String(row.status ?? "")),
       );
       if (matched && "errorCode" in matched) {
         return { errorCode: String(matched.errorCode) };
@@ -1362,12 +1487,7 @@ export function createSupabaseInstagramStore(
           "id, ticket_id, conversation_id, purpose, delivery_status, error_code, updated_at",
         )
         .in("delivery_status", ["pending", "failed", "skipped"])
-        .in("purpose", [
-          "instagram-ticket-confirmation",
-          "instagram-inbound-notify",
-          "instagram-agency-details",
-          "instagram-general-inquiry",
-        ])
+        .in("purpose", [...INSTAGRAM_EMAIL_DRAIN_PURPOSES])
         .order("created_at", { ascending: true })
         .limit(Math.max(1, input.limit));
       if (error || !data) return { errorCode: "email_outbox_lookup_failed" };
@@ -1391,9 +1511,13 @@ export function createSupabaseInstagramStore(
         return { outcome: "failed", errorCode: "email_outbox_lookup_failed" };
       }
       const status = String(current.data.delivery_status ?? "");
+      const purpose = String(current.data.purpose ?? "");
+      if (isInstagramEmailTerminalError(current.data.error_code as string | null)) {
+        return { outcome: "skipped" };
+      }
       if (
         !["pending", "failed", "skipped"].includes(status) ||
-        !String(current.data.purpose ?? "").startsWith("instagram-")
+        !isInstagramEmailDrainPurpose(purpose)
       ) {
         return { outcome: "skipped" };
       }
@@ -1549,13 +1673,20 @@ export function createSupabaseInstagramStore(
       }
       const existing = await supabase
         .from("channel_email_deliveries")
-        .select("id, delivery_status")
+        .select("id, delivery_status, error_code")
         .eq("idempotency_key", input.idempotencyKey)
         .maybeSingle();
       if (existing.error || !existing.data?.id) {
         return { outcome: "failed", errorCode: "email_outbox_lookup_failed" };
       }
       const status = String(existing.data.delivery_status ?? "pending");
+      if (isInstagramEmailTerminalError(existing.data.error_code as string | null)) {
+        return {
+          outcome: "duplicate",
+          id: existing.data.id as string,
+          deliveryStatus: status,
+        };
+      }
       if (status === "failed" || status === "skipped") {
         const reclaimed = await supabase
           .from("channel_email_deliveries")

@@ -1,10 +1,12 @@
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { applyReserveInstagramOutboundAndSnapshot } from "@/lib/meta/instagram-reserve";
 import { instagramMemoryOutbox, instagramMemoryEmailOutbox } from "@/lib/meta/__tests__/instagram-memory-outbox";
+import { isInstagramEmailTerminalError } from "@/lib/meta/email-drain-purposes";
 import {
   IDENTITY_AMBIGUOUS,
   IDENTITY_MISSING,
   conversationIdentityFromLookup,
+  decidePhaseACanonicalIdentityPromotion,
   findActiveTicketForIdentity,
   findConversationForIdentity,
   outboundIdentityAllowsReply,
@@ -124,6 +126,75 @@ export function createMemoryChatbotStore(
         return { errorCode: IDENTITY_AMBIGUOUS };
       }
       return mappedConversation(matched);
+    },
+    async promoteEligiblePhaseACanonicalIdentity(identity: ConversationIdentity) {
+      if (!isIdentitySchemaPhaseC()) {
+        return { outcome: "not_found" as const };
+      }
+      const schemaError = requireExpandedSchema();
+      if (schemaError) {
+        return { outcome: "not_eligible" as const, errorCode: schemaError.errorCode };
+      }
+      const ticket = await store.findActiveInstagramTicket({
+        externalConversationId: identity.externalConversationId,
+        externalContactId: identity.externalContactId,
+        sourceChannel: identity.channel,
+        provider: identity.provider,
+        recipientAccountId: identity.recipientAccountId,
+      });
+      const contactRows = conversations.filter(
+        (row) =>
+          row.channel === identity.channel &&
+          String(row.externalContactId ?? "") === identity.externalContactId,
+      );
+      if (contactRows.length === 0) {
+        return { outcome: "not_found" as const };
+      }
+      const decision = decidePhaseACanonicalIdentityPromotion(
+        contactRows,
+        identity,
+        { hasCompetingTicketCandidate: ticket !== null },
+      );
+      if (decision.outcome !== "promote") {
+        return {
+          outcome: "not_eligible" as const,
+          errorCode: IDENTITY_AMBIGUOUS,
+        };
+      }
+      const row = decision.row;
+      const stillEligible =
+        row.identityStatus == null &&
+        (row.provider == null || String(row.provider).trim() === "") &&
+        (row.recipientAccountId == null ||
+          String(row.recipientAccountId).trim() === "") &&
+        row.ticketId == null &&
+        row.externalConversationId === identity.externalConversationId &&
+        row.externalContactId === identity.externalContactId;
+      if (stillEligible) {
+        row.provider = identity.provider;
+        row.recipientAccountId = identity.recipientAccountId;
+        row.identityStatus = "unambiguous";
+        return {
+          outcome: "promoted" as const,
+          row: mappedConversation(row),
+        };
+      }
+      if (
+        row.identityStatus === "unambiguous" &&
+        row.provider === identity.provider &&
+        row.recipientAccountId === identity.recipientAccountId &&
+        row.externalContactId === identity.externalContactId &&
+        row.externalConversationId === identity.externalConversationId
+      ) {
+        return {
+          outcome: "already_promoted" as const,
+          row: mappedConversation(row),
+        };
+      }
+      return {
+        outcome: "not_eligible" as const,
+        errorCode: IDENTITY_AMBIGUOUS,
+      };
     },
     async insertConversation(input: Record<string, unknown>) {
       const schemaError = requireExpandedSchema();
@@ -280,12 +351,7 @@ export function createMemoryChatbotStore(
         identity,
         channel,
         (ticket) =>
-          ["open", "in_progress", "waiting"].includes(String(ticket.status)) &&
-          (!isIdentitySchemaPhaseC() ||
-            outboundIdentityAllowsReply(
-              (ticket.identity_status as string | null | undefined) ??
-                (ticket.identityStatus as string | null | undefined),
-            )),
+          ["open", "in_progress", "waiting"].includes(String(ticket.status)),
       );
       if (matched && "errorCode" in matched) return matched;
       if (!matched) return null;
@@ -340,12 +406,7 @@ export function createMemoryChatbotStore(
           identity,
           channel,
           (ticket) =>
-            ["open", "in_progress", "waiting"].includes(String(ticket.status)) &&
-            (!isIdentitySchemaPhaseC() ||
-              outboundIdentityAllowsReply(
-                (ticket.identity_status as string | null | undefined) ??
-                  (ticket.identityStatus as string | null | undefined),
-              )),
+            ["open", "in_progress", "waiting"].includes(String(ticket.status)),
         );
         if (existing && "errorCode" in existing) {
           return { outcome: "failed" as const, errorCode: existing.errorCode };
@@ -633,6 +694,13 @@ export function createMemoryChatbotStore(
       const duplicate = emails.find((row) => row.idempotencyKey === input.idempotencyKey);
       if (duplicate) {
         const status = String(duplicate.deliveryStatus ?? "pending");
+        if (isInstagramEmailTerminalError(duplicate.errorCode as string | null)) {
+          return {
+            outcome: "duplicate" as const,
+            id: duplicate.id as string,
+            deliveryStatus: status,
+          };
+        }
         if (status === "failed" || status === "skipped") {
           duplicate.deliveryStatus = "pending";
           duplicate.errorCode = null;
