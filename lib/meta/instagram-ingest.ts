@@ -16,6 +16,11 @@ import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import { IDENTITY_AMBIGUOUS, IDENTITY_MISSING, channelIdentityFromInbound, type ConversationIdentity } from "@/lib/meta/conversation-identity";
 import { promotePhaseACanonicalIdentityIfEligible } from "@/lib/meta/phase-a-canonical-promotion";
 import {
+  bindActiveTicketToWorkingSnapshot,
+  POST_TICKET_STATE,
+  resolveActiveTicketForConversation,
+} from "@/lib/meta/ticket-finalization";
+import {
   lookupInstagramUsername,
   trackUsernameLookup,
   type TrackedUsernameLookup,
@@ -126,44 +131,12 @@ async function ticketStatusFor(
   | { ticketId: string | null; status: string | null; ticketCode: string | null }
   | { errorCode: string }
 > {
-  const found = await store.findActiveInstagramTicket({
-    externalConversationId: identity.externalConversationId,
-    externalContactId: identity.externalContactId,
-    sourceChannel: identity.channel,
-    provider: identity.provider,
-    recipientAccountId: identity.recipientAccountId,
+  return resolveActiveTicketForConversation({
+    store,
+    identity,
+    conversationTicketId,
+    sourceChannel: identity.channel === "whatsapp" ? "whatsapp" : "instagram",
   });
-  if (found && "errorCode" in found) return { errorCode: found.errorCode };
-
-  if (conversationTicketId) {
-    const linked = await store.getTicket(conversationTicketId);
-    if (linked && "errorCode" in linked) return { errorCode: linked.errorCode };
-    if (linked && isActiveTicketStatus(linked.status)) {
-      if (found && found.id === linked.id) {
-        return {
-          ticketId: linked.id,
-          status: linked.status,
-          ticketCode: linked.ticketCode ?? found.ticketCode ?? null,
-        };
-      }
-      if (!found) {
-        return { ticketId: null, status: null, ticketCode: null };
-      }
-    }
-  }
-
-  if (found && isActiveTicketStatus(found.status)) {
-    return {
-      ticketId: found.id,
-      status: found.status,
-      ticketCode: found.ticketCode ?? null,
-    };
-  }
-  return {
-    ticketId: null,
-    status: found?.status ?? null,
-    ticketCode: found?.ticketCode ?? null,
-  };
 }
 
 function withResolvedSendDeps(sendDeps?: InstagramSendDeps): InstagramSendDeps {
@@ -278,6 +251,11 @@ function hydrateWorkingSnapshot(
   snapshot.ticketId = ticketInfo.ticketId;
   snapshot.ticketStatus = ticketInfo.status;
   snapshot.ticketCode = ticketInfo.ticketCode;
+  const bound = bindActiveTicketToWorkingSnapshot(snapshot, ticketInfo);
+  snapshot.state = bound.state;
+  snapshot.ticketId = bound.ticketId;
+  snapshot.ticketStatus = bound.ticketStatus;
+  snapshot.ticketCode = bound.ticketCode;
   if (!snapshot.suggestedSocialHandle) {
     snapshot.suggestedSocialHandle = event.displayName;
   }
@@ -306,7 +284,11 @@ async function finishAlreadyProcessedInbound(input: {
   void retried;
 
   const snapshot = input.snapshot;
-  if (snapshot.ticketId && snapshot.ticketId !== input.conversationTicketId) {
+  if (
+    snapshot.ticketId &&
+    (snapshot.ticketId !== input.conversationTicketId ||
+      snapshot.state === POST_TICKET_STATE)
+  ) {
     const linked = await input.store.saveConversationSnapshot(
       input.conversationId,
       snapshot,
@@ -324,8 +306,9 @@ async function finishAlreadyProcessedInbound(input: {
   }
 
   if (
-    isRecoverableCreatorConfirmation(snapshot) ||
-    isIncompletePostCompletionWithoutTicket(snapshot)
+    !snapshot.ticketId &&
+    (isRecoverableCreatorConfirmation(snapshot) ||
+      isIncompletePostCompletionWithoutTicket(snapshot))
   ) {
     const recovered = reduceInstagramConversation(
       { ...snapshot, lastProcessedExternalMessageId: null },
@@ -604,10 +587,14 @@ export async function ingestInstagramInboundMessage(
 
       if (applied.ticketId) {
         reduced.snapshot.ticketId = applied.ticketId;
-        if (reduced.snapshot.state !== "awaiting_post_completion") {
-          reduced.snapshot.state =
-            reduced.snapshot.state || "awaiting_post_completion";
-        }
+        reduced.snapshot.ticketCode =
+          applied.ticketCode ?? reduced.snapshot.ticketCode;
+        reduced.snapshot.ticketStatus =
+          reduced.snapshot.ticketStatus &&
+          isActiveTicketStatus(reduced.snapshot.ticketStatus)
+            ? reduced.snapshot.ticketStatus
+            : "open";
+        reduced.snapshot.state = POST_TICKET_STATE;
       }
 
       if (applied.retryableFailure) {

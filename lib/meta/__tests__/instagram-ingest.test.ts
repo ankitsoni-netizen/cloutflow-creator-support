@@ -455,6 +455,10 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
           id: message.id as string,
           messageBody: String(message.messageBody ?? ""),
           purpose: (message.purpose as string | null) ?? null,
+          rawPayload: message.rawPayload ?? message.raw_payload ?? null,
+          recipientExternalId:
+            (message.recipientExternalId as string | null) ?? null,
+          deliveryStatus: String(message.deliveryStatus ?? ""),
         }));
     },
     ...instagramMemoryOutbox(messages),
@@ -2883,7 +2887,7 @@ describe("Instagram ingest first-delivery conversation persistence", () => {
         quickReplyPayload: CAMPAIGN_MONTH_NO_PAYLOAD,
       }),
     );
-    expect(no.snapshot.state).toBe("creator_campaign_details");
+    expect(no.snapshot.state).toBe("awaiting_month_confirmation");
     expect(no.snapshot.collected.campaignMonth).toBeNull();
     expect(no.newOutboundCount).toBe(1);
 

@@ -10,6 +10,7 @@ import "server-only";
  * - WATI_CHANNEL_PHONE_NUMBER
  * - WATI_CONVERSATION_TARGET_MODE (channel_recipient | recipient; unset defaults)
  * - WATI_WEBHOOK_SECRET
+ * - WATI_OUTBOX_DRAIN_SECRET (internal drain route only; never a send credential)
  */
 
 export const WATI_ENV = {

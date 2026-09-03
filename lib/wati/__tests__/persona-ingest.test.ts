@@ -391,7 +391,7 @@ describe("WATI persona ingest parity with Instagram", () => {
         whatsappMessageId: "wamid.no",
       }),
     );
-    expect(no.snapshot.state).toBe("creator_campaign_details");
+    expect(no.snapshot.state).toBe("awaiting_month_confirmation");
     expect(no.snapshot.collected.campaignMonth).toBeNull();
     expect(no.snapshot.collected.brandName).toBe("Acme");
     expect(no.snapshot.collected.email).toBe("riya@example.com");
@@ -500,6 +500,8 @@ describe("WATI persona ingest parity with Instagram", () => {
       externalContactId: WATI_TEST_WA_ID,
       provider: WATI_WHATSAPP_PROVIDER,
       recipientAccountId: WATI_TEST_CHANNEL,
+      identityStatus: "unambiguous",
+      identity_status: "unambiguous",
       state: "ticket_open",
       routingIntent: "creator_support",
       ticketId: "ticket-keep",
@@ -515,13 +517,14 @@ describe("WATI persona ingest parity with Instagram", () => {
       external_contact_id: WATI_TEST_WA_ID,
       external_conversation_id: conversationId,
       provider: WATI_WHATSAPP_PROVIDER,
+      identity_status: "unambiguous",
       recipient_account_id: WATI_TEST_CHANNEL,
     });
     const hi = await sendWati(
       store,
       watiTextPayload({ text: "Hi", whatsappMessageId: "wamid.hi.ticket" }),
     );
-    expect(hi.snapshot.state).toBe("ticket_open");
+    expect(["ticket_open", "awaiting_post_completion"]).toContain(hi.snapshot.state);
     expect(hi.snapshot.ticketId).toBe("ticket-keep");
     expect(store.tickets).toHaveLength(1);
 

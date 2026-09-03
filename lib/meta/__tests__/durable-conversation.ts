@@ -33,10 +33,26 @@ type ReservableStore = ConversationPersistence & {
   }) => Promise<unknown>;
 };
 
+type WatiReservableStore = ConversationPersistence & {
+  reserveWatiOutboundAndSnapshot: (input: {
+    snapshot: ConversationSnapshot;
+  }) => Promise<unknown>;
+};
+
 function hasOutboundReserve(store: ConversationPersistence): store is ReservableStore {
   return (
     "reserveOutboundAndSnapshot" in store &&
     typeof (store as ReservableStore).reserveOutboundAndSnapshot === "function"
+  );
+}
+
+function hasWatiOutboundReserve(
+  store: ConversationPersistence,
+): store is WatiReservableStore {
+  return (
+    "reserveWatiOutboundAndSnapshot" in store &&
+    typeof (store as WatiReservableStore).reserveWatiOutboundAndSnapshot ===
+      "function"
   );
 }
 
@@ -81,6 +97,19 @@ export function withDurableConversationPersistence<T extends ConversationPersist
   if (hasOutboundReserve(store)) {
     const reserve = store.reserveOutboundAndSnapshot.bind(store);
     store.reserveOutboundAndSnapshot = async (input) => {
+      const collected = collectedFromRecord(
+        cloneJson(collectedToRecord(input.snapshot.collected)),
+      );
+      return reserve({
+        ...input,
+        snapshot: cloneJson({ ...input.snapshot, collected }),
+      });
+    };
+  }
+
+  if (hasWatiOutboundReserve(store)) {
+    const reserve = store.reserveWatiOutboundAndSnapshot.bind(store);
+    store.reserveWatiOutboundAndSnapshot = async (input) => {
       const collected = collectedFromRecord(
         cloneJson(collectedToRecord(input.snapshot.collected)),
       );

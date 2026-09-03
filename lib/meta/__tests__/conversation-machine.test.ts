@@ -1099,6 +1099,19 @@ describe("Instagram FLOW_BACK / Go back", () => {
     expect(revised.snapshot.collected.campaignName).toBeNull();
     expect(revised.snapshot.collected.email).toBe("riya@example.com");
     assertNoSideEffects(revised);
+
+    const backToCategory = reduceInstagramConversation(
+      back.snapshot,
+      signal("back", { messageId: "mid.back.details" }),
+    );
+    expect(backToCategory.snapshot.state).toBe("awaiting_creator_issue_category");
+    expect(backToCategory.snapshot.collected.igPersona).toBe("creator");
+    expect(backToCategory.snapshot.collected.igCreatorReason).toBe("existing_campaign");
+    expect(backToCategory.snapshot.collected.igIssueCategory).toBe("campaign");
+    expect(backToCategory.snapshot.collected.brandName).toBeNull();
+    expect(backToCategory.snapshot.collected.campaignMonth).toBeNull();
+    expect(backToCategory.snapshot.collected.campaignMonthConfirmed).toBe(false);
+    expect(backToCategory.snapshot.collected.email).toBeNull();
   });
 
   it("uses a navigation prompt key distinct from the original state prompt", () => {

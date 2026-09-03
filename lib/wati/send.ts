@@ -142,7 +142,10 @@ export function buildWatiChannelScopedTarget(
   });
 }
 
-function classifyWatiHttpError(status: number): WhatsAppSendFailure {
+function classifyWatiHttpError(
+  status: number,
+  operation: "text" | "buttons" | "list" = "text",
+): WhatsAppSendFailure {
   let errorCode = "wati_send_failed";
   if (status === 401) errorCode = "http_401";
   else if (status === 403) errorCode = "http_403";
@@ -156,7 +159,32 @@ function classifyWatiHttpError(status: number): WhatsAppSendFailure {
     retryable: status === 429 || status >= 500,
     messagingWindowExpired: false,
     httpStatus: status,
+    operation,
   };
+}
+
+export type WatiLifecycleStage =
+  | "pre_ticket"
+  | "final_summary"
+  | "post_ticket_closing";
+
+/** Sanitized webhook/error code. Never includes token, URL, recipient, or text. */
+export function classifyWatiSendFailureCode(input: {
+  operation: "text" | "buttons" | "list";
+  httpStatus: number | null;
+  retryable: boolean;
+  stage: WatiLifecycleStage;
+}): string {
+  const statusPart =
+    input.httpStatus == null
+      ? "network"
+      : input.httpStatus >= 500
+        ? "http_5xx"
+        : input.httpStatus === 429
+          ? "http_429"
+          : `http_${input.httpStatus}`;
+  const retryPart = input.retryable ? "retryable" : "terminal";
+  return `wati_${input.operation}_${statusPart}_${retryPart}_${input.stage}`;
 }
 
 async function readLimitedJson(
@@ -296,6 +324,7 @@ async function postWatiJson(options: {
   config: WatiSendConfig;
   recipientId: string;
   deps?: WatiSendDeps;
+  operation: "text" | "buttons" | "list";
 }): Promise<WhatsAppSendResult> {
   const requestBody = JSON.stringify(options.body);
   if (
@@ -308,6 +337,7 @@ async function postWatiJson(options: {
       retryable: false,
       messagingWindowExpired: false,
       httpStatus: null,
+      operation: options.operation,
     };
   }
 
@@ -333,10 +363,11 @@ async function postWatiJson(options: {
         retryable: response.status >= 500 || response.status === 429,
         messagingWindowExpired: false,
         httpStatus: response.status,
+        operation: options.operation,
       };
     }
     if (!response.ok) {
-      return classifyWatiHttpError(response.status);
+      return classifyWatiHttpError(response.status, options.operation);
     }
     return {
       ok: true,
@@ -351,6 +382,7 @@ async function postWatiJson(options: {
       retryable: true,
       messagingWindowExpired: false,
       httpStatus: null,
+      operation: options.operation,
     };
   } finally {
     clearTimeout(timer);
@@ -404,6 +436,7 @@ export async function sendWatiSessionText(options: {
     config: prepared.config,
     recipientId: prepared.recipientId,
     deps: options.deps,
+    operation: "text",
   });
 }
 
@@ -454,5 +487,6 @@ export async function sendWatiInteractiveMessage(options: {
     config: prepared.config,
     recipientId: prepared.recipientId,
     deps: options.deps,
+    operation: plan.kind,
   });
 }

@@ -852,6 +852,35 @@ function routingKindForSnapshot(
   return "unclassified";
 }
 
+function collectedAfterFlowBack(
+  fromState: string,
+  collected: IntakeCollectedData,
+): IntakeCollectedData {
+  if (fromState === "creator_campaign_details") {
+    return {
+      ...collected,
+      campaignName: null,
+      brandName: null,
+      campaignMonth: null,
+      campaignMonthConfirmed: false,
+      email: null,
+    };
+  }
+  if (fromState === "awaiting_creator_issue_category") {
+    return {
+      ...collected,
+      igIssueCategory: null,
+      issueDescription: null,
+      campaignName: null,
+      brandName: null,
+      campaignMonth: null,
+      campaignMonthConfirmed: false,
+      email: null,
+    };
+  }
+  return collected;
+}
+
 function handleFlowBack(
   snapshot: ConversationSnapshot,
   signal: InboundSignal,
@@ -859,8 +888,10 @@ function handleFlowBack(
   const targetState = INSTAGRAM_FLOW_BACK_TRANSITIONS[snapshot.state];
   if (!targetState) return null;
 
+  const collected = collectedAfterFlowBack(snapshot.state, snapshot.collected);
   const prompt = instagramPromptForState({
     ...snapshot,
+    collected,
     state: targetState,
   });
   if (!prompt) return null;
@@ -869,6 +900,7 @@ function handleFlowBack(
   return {
     snapshot: withActivity(snapshot, signal, {
       state: targetState,
+      collected,
       lastPromptKey: key,
     }),
     effects: [
@@ -1274,11 +1306,14 @@ function handleMonthConfirmation(
       signal,
       { collected, routingIntent: "creator_support" },
       CAMPAIGN_MONTH_REASK_TEXT,
-      "creator_campaign_details",
+      "awaiting_month_confirmation",
       true,
       "support",
       PERSONA_PROMPT.monthConfirmReask,
     );
+  }
+  if (!snapshot.collected.campaignMonth && (!command || command === "edit")) {
+    return handleCreatorCampaignDetails(snapshot, signal);
   }
   const month = snapshot.collected.campaignMonth;
   return sendQr(
@@ -1687,6 +1722,9 @@ export function reduceInstagramPersonaConversation(
 
   if (snapshot.state === "awaiting_post_completion") {
     if (hasActiveTicket(snapshot)) {
+      if (command === "creator_ticket_confirm") {
+        return raiseCreatorTicket(snapshot, signal, snapshot.collected);
+      }
       if (command === "post_done") {
         return handlePostCompletion(snapshot, signal, command);
       }

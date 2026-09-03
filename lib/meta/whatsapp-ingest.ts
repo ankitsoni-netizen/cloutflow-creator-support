@@ -22,7 +22,13 @@ import {
   channelIdentityFromInbound,
   type ConversationIdentity,
 } from "@/lib/meta/conversation-identity";
+import { CONVERSATION_STATE_CONFLICT } from "@/lib/meta/instagram-reserve";
 import { promotePhaseACanonicalIdentityIfEligible } from "@/lib/meta/phase-a-canonical-promotion";
+import {
+  bindActiveTicketToWorkingSnapshot,
+  POST_TICKET_STATE,
+  resolveActiveTicketForConversation,
+} from "@/lib/meta/ticket-finalization";
 import {
   snapshotFromConversationRow,
   type InstagramConversationRow,
@@ -53,6 +59,26 @@ function suggestedPhoneFromWaId(waId: string): string | null {
 
 function usesWatiPersonaMachine(provider: string): boolean {
   return provider === WATI_WHATSAPP_PROVIDER;
+}
+
+function workingWhatsAppSnapshot(
+  row: InstagramConversationRow,
+  ticketInfo: {
+    ticketId: string | null;
+    status: string | null;
+    ticketCode: string | null;
+  },
+  event: NormalizedMetaInboundText,
+) {
+  const snapshot = bindActiveTicketToWorkingSnapshot(
+    snapshotFromConversationRow(row, ticketInfo.status, event.displayName),
+    ticketInfo,
+  );
+  snapshot.suggestedPhone = suggestedPhoneFromWaId(event.externalContactId);
+  if (!snapshot.suggestedSocialHandle) {
+    snapshot.suggestedSocialHandle = event.displayName;
+  }
+  return snapshot;
 }
 
 async function upsertConversation(
@@ -120,32 +146,15 @@ async function ticketStatusFor(
   identity: ConversationIdentity,
   conversationTicketId: string | null,
 ): Promise<
-  | { ticketId: string | null; status: string | null }
+  | { ticketId: string | null; status: string | null; ticketCode: string | null }
   | { errorCode: string }
 > {
-  const found = await store.findActiveInstagramTicket({
-    externalConversationId: identity.externalConversationId,
-    externalContactId: identity.externalContactId,
+  return resolveActiveTicketForConversation({
+    store,
+    identity,
+    conversationTicketId,
     sourceChannel: "whatsapp",
-    provider: identity.provider,
-    recipientAccountId: identity.recipientAccountId,
   });
-  if (found && "errorCode" in found) return { errorCode: found.errorCode };
-
-  if (conversationTicketId) {
-    const linked = await store.getTicket(conversationTicketId);
-    if (linked && "errorCode" in linked) return { errorCode: linked.errorCode };
-    if (linked && isActiveTicketStatus(linked.status)) {
-      if (found && found.id === linked.id) {
-        return { ticketId: linked.id, status: linked.status };
-      }
-      if (!found) return { ticketId: null, status: null };
-    }
-  }
-  if (found && isActiveTicketStatus(found.status)) {
-    return { ticketId: found.id, status: found.status };
-  }
-  return { ticketId: null, status: found?.status ?? null };
 }
 
 function whatsappEffectArgs(
@@ -371,17 +380,8 @@ export async function ingestWhatsAppInboundMessage(
       return { outcome: "failed", errorCode: inbound.errorCode };
     }
 
-    const snapshot = snapshotFromConversationRow(
-      conversation.row,
-      ticketInfo.status,
-      event.displayName,
-    );
-    snapshot.ticketId = ticketInfo.ticketId;
-    snapshot.ticketStatus = ticketInfo.status;
-    snapshot.suggestedPhone = suggestedPhoneFromWaId(event.externalContactId);
-    if (!snapshot.suggestedSocialHandle) {
-      snapshot.suggestedSocialHandle = event.displayName;
-    }
+    let conversationRow = conversation.row;
+    let snapshot = workingWhatsAppSnapshot(conversationRow, ticketInfo, event);
 
     const watiPersona = usesWatiPersonaMachine(event.provider);
 
@@ -438,7 +438,7 @@ export async function ingestWhatsAppInboundMessage(
       return media;
     }
 
-    const reduced = watiPersona
+    let reduced = watiPersona
       ? reduceInstagramConversation(snapshot, {
           text: event.messageBody,
           quickReplyPayload: event.quickReplyPayload ?? null,
@@ -477,7 +477,12 @@ export async function ingestWhatsAppInboundMessage(
         );
         return { outcome: "failed", errorCode: "whatsapp_send_failed" };
       }
-      if (watiPersona && snapshot.ticketId && snapshot.ticketId !== conversation.row.ticketId) {
+      if (
+        watiPersona &&
+        snapshot.ticketId &&
+        (snapshot.ticketId !== conversation.row.ticketId ||
+          snapshot.state === POST_TICKET_STATE)
+      ) {
         const linked = await store.saveConversationSnapshot(
           conversation.row.id,
           snapshot,
@@ -491,6 +496,7 @@ export async function ingestWhatsAppInboundMessage(
       }
       if (
         watiPersona &&
+        !snapshot.ticketId &&
         (isRecoverableCreatorConfirmation(snapshot) ||
           isIncompletePostCompletionWithoutTicket(snapshot))
       ) {
@@ -509,17 +515,24 @@ export async function ingestWhatsAppInboundMessage(
             snapshotTicketId: recovered.snapshot.ticketId,
             collected: recovered.snapshot.collected,
             intakeSessionVersion: recovered.snapshot.intakeSessionVersion,
+            snapshotToPersist: recovered.snapshot,
+            lastMessageAt: event.timestamp,
+            displayName: event.displayName,
+            expectedLastProcessedExternalMessageId:
+              snapshot.lastProcessedExternalMessageId,
             ...whatsappEffectArgs(event, store, conversation.row.id, ingestDeps),
           });
-          const saved = await store.saveConversationSnapshot(
-            conversation.row.id,
-            recovered.snapshot,
-            event.timestamp,
-            event.displayName,
-          );
-          if (saved.outcome === "failed") {
-            await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
-            return { outcome: "failed", errorCode: saved.errorCode };
+          if (!applied.snapshotPersisted && !watiPersona) {
+            const saved = await store.saveConversationSnapshot(
+              conversation.row.id,
+              recovered.snapshot,
+              event.timestamp,
+              event.displayName,
+            );
+            if (saved.outcome === "failed") {
+              await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
+              return { outcome: "failed", errorCode: saved.errorCode };
+            }
           }
           if (applied.retryableFailure) {
             await store.markWebhookEvent(
@@ -574,73 +587,154 @@ export async function ingestWhatsAppInboundMessage(
       return { outcome: "duplicate" };
     }
 
-    if (reduced.attachTicketId) {
-      reduced.snapshot.ticketId = reduced.attachTicketId;
-    }
-    if (reduced.inboundRoutingKind !== "unclassified") {
-      await store.markMessagesRoutingKind({
-        conversationId: conversation.row.id,
-        fromKind: "unclassified",
-        toKind: reduced.inboundRoutingKind,
-      });
-    }
-
-    const applied = await applyWhatsAppEffects({
-      effects: reduced.effects,
-      snapshotTicketId: reduced.snapshot.ticketId,
-      collected: reduced.snapshot.collected,
-      intakeSessionVersion: reduced.snapshot.intakeSessionVersion,
-      ...whatsappEffectArgs(event, store, conversation.row.id, ingestDeps),
-    });
-
-    if (applied.ticketId) {
-      reduced.snapshot.ticketId = applied.ticketId;
-      if (watiPersona) {
-        if (reduced.snapshot.state !== "awaiting_post_completion") {
-          reduced.snapshot.state =
-            reduced.snapshot.state || "awaiting_post_completion";
-        }
-      } else {
-        reduced.snapshot.state = "ticket_open";
+    const maxAttempts = watiPersona ? 5 : 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (attempt > 0) {
+        reduced = watiPersona
+          ? reduceInstagramConversation(snapshot, {
+              text: event.messageBody,
+              quickReplyPayload: event.quickReplyPayload ?? null,
+              timestamp: event.timestamp,
+              messageId: event.externalMessageId,
+              unsupportedKind:
+                event.unsupportedKind ??
+                (event.messageType === "unsupported" ? "unsupported" : null),
+            })
+          : reduceChannelConversation(
+              snapshot,
+              {
+                text: event.messageBody,
+                quickReplyPayload: event.quickReplyPayload ?? null,
+                timestamp: event.timestamp,
+                messageId: event.externalMessageId,
+              },
+              WHATSAPP_INTAKE_COPY,
+            );
       }
-    }
 
-    if (applied.retryableFailure) {
-      if (watiPersona && applied.ticketId) {
-        const linked = await store.saveConversationSnapshot(
-          conversation.row.id,
+      if (reduced.attachTicketId) {
+        reduced.snapshot.ticketId = reduced.attachTicketId;
+      }
+      if (attempt === 0 && reduced.inboundRoutingKind !== "unclassified") {
+        await store.markMessagesRoutingKind({
+          conversationId: conversationRow.id,
+          fromKind: "unclassified",
+          toKind: reduced.inboundRoutingKind,
+        });
+      }
+
+      const applied = await applyWhatsAppEffects({
+        effects: reduced.effects,
+        snapshotTicketId: reduced.snapshot.ticketId,
+        collected: reduced.snapshot.collected,
+        intakeSessionVersion: reduced.snapshot.intakeSessionVersion,
+        snapshotToPersist: reduced.snapshot,
+        lastMessageAt: event.timestamp,
+        displayName: event.displayName,
+        expectedLastProcessedExternalMessageId:
+          snapshot.lastProcessedExternalMessageId,
+        ...whatsappEffectArgs(event, store, conversationRow.id, ingestDeps),
+      });
+
+      if (
+        watiPersona &&
+        applied.errorCode === CONVERSATION_STATE_CONFLICT &&
+        attempt + 1 < maxAttempts
+      ) {
+        const fresh = await store.getConversation(
+          identity.channel,
+          identity.externalConversationId,
+          {
+            externalContactId: identity.externalContactId,
+            provider: identity.provider,
+            recipientAccountId: identity.recipientAccountId,
+          },
+        );
+        if (!fresh || "errorCode" in fresh) {
+          await store.markWebhookEvent(
+            eventId,
+            WEBHOOK_STATUS_FAILED,
+            fresh && "errorCode" in fresh
+              ? fresh.errorCode
+              : "conversation_lookup_failed",
+          );
+          return {
+            outcome: "failed",
+            errorCode:
+              fresh && "errorCode" in fresh
+                ? fresh.errorCode
+                : "conversation_lookup_failed",
+          };
+        }
+        const reloadedTicket = await ticketStatusFor(
+          store,
+          identity,
+          fresh.ticketId,
+        );
+        if ("errorCode" in reloadedTicket) {
+          await store.markWebhookEvent(
+            eventId,
+            WEBHOOK_STATUS_FAILED,
+            reloadedTicket.errorCode,
+          );
+          return { outcome: "failed", errorCode: reloadedTicket.errorCode };
+        }
+        conversationRow = fresh;
+        snapshot = workingWhatsAppSnapshot(fresh, reloadedTicket, event);
+        continue;
+      }
+
+      if (applied.ticketId) {
+        reduced.snapshot.ticketId = applied.ticketId;
+        reduced.snapshot.ticketCode =
+          applied.ticketCode ?? reduced.snapshot.ticketCode;
+        reduced.snapshot.ticketStatus =
+          reduced.snapshot.ticketStatus &&
+          isActiveTicketStatus(reduced.snapshot.ticketStatus)
+            ? reduced.snapshot.ticketStatus
+            : "open";
+        if (watiPersona) {
+          reduced.snapshot.state = POST_TICKET_STATE;
+        } else {
+          reduced.snapshot.state = "ticket_open";
+        }
+      }
+
+      if (applied.retryableFailure) {
+        const errorCode = applied.errorCode ?? "whatsapp_send_failed";
+        await store.markWebhookEvent(
+          eventId,
+          WEBHOOK_STATUS_FAILED,
+          errorCode,
+        );
+        return { outcome: "failed", errorCode };
+      }
+
+      if (!applied.snapshotPersisted && !watiPersona) {
+        const saved = await store.saveConversationSnapshot(
+          conversationRow.id,
           reduced.snapshot,
           event.timestamp,
           event.displayName,
         );
-        if (linked.outcome === "failed") {
-          await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, linked.errorCode);
-          return { outcome: "failed", errorCode: linked.errorCode };
+        if (saved.outcome === "failed") {
+          await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
+          return { outcome: "failed", errorCode: saved.errorCode };
         }
       }
-      await store.markWebhookEvent(
-        eventId,
-        WEBHOOK_STATUS_FAILED,
-        "whatsapp_send_failed",
-      );
-      return { outcome: "failed", errorCode: "whatsapp_send_failed" };
+
+      await store.markWebhookEvent(eventId, "completed");
+      return {
+        outcome: inbound.outcome === "duplicate" ? "duplicate" : "stored",
+      };
     }
 
-    const saved = await store.saveConversationSnapshot(
-      conversation.row.id,
-      reduced.snapshot,
-      event.timestamp,
-      event.displayName,
+    await store.markWebhookEvent(
+      eventId,
+      WEBHOOK_STATUS_FAILED,
+      CONVERSATION_STATE_CONFLICT,
     );
-    if (saved.outcome === "failed") {
-      await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, saved.errorCode);
-      return { outcome: "failed", errorCode: saved.errorCode };
-    }
-
-    await store.markWebhookEvent(eventId, "completed");
-    return {
-      outcome: inbound.outcome === "duplicate" ? "duplicate" : "stored",
-    };
+    return { outcome: "failed", errorCode: CONVERSATION_STATE_CONFLICT };
   } catch {
     try {
       await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, "unexpected_failure");

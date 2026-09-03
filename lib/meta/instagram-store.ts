@@ -31,7 +31,9 @@ import {
   parseReserveRpcError,
   shouldFallbackReserveRpc,
 } from "@/lib/meta/instagram-reserve";
+import { parseWatiReserveRpcError } from "@/lib/wati/reserve";
 import { isInstagramTerminalSendError } from "@/lib/meta/instagram-send";
+import { isWatiTerminalSendError } from "@/lib/wati/outbox-errors";
 import {
   durableInstagramOutboundPayload,
   type SanitizedInstagramOutboundPayload,
@@ -193,6 +195,17 @@ export type InstagramIngestStore = Omit<
     | { outcome: "reserved"; outbounds: ReservedOutboundRow[] }
     | { outcome: "failed"; errorCode: string }
   >;
+  reserveWatiOutboundAndSnapshot(input: {
+    conversationId: string;
+    snapshot: ConversationSnapshot;
+    lastMessageAt: string;
+    displayName: string | null;
+    expectedLastProcessedExternalMessageId: string | null;
+    outbounds: OutboundReserveInput[];
+  }): Promise<
+    | { outcome: "reserved"; outbounds: ReservedOutboundRow[] }
+    | { outcome: "failed"; errorCode: string }
+  >;
   saveConversationSnapshot(
     id: string,
     snapshot: ConversationSnapshot,
@@ -240,6 +253,7 @@ export type InstagramIngestStore = Omit<
     idempotencyKey: string;
     purpose: string;
     commentId?: string | null;
+    rawPayload?: unknown;
   }  ): Promise<
     | { outcome: "claimed"; id: string }
     | {
@@ -303,6 +317,9 @@ export type InstagramIngestStore = Omit<
       id: string;
       messageBody: string;
       purpose: string | null;
+      rawPayload?: unknown;
+      recipientExternalId?: string | null;
+      deliveryStatus?: string;
     }>
   >;
   listDueInstagramOutbounds(
@@ -330,6 +347,23 @@ export type InstagramIngestStore = Omit<
     | { outcome: "failed"; errorCode: string }
   >;
   claimInstagramOutboundSend(input: {
+    id: string;
+    now: string;
+    maxAttempts: number;
+  }): Promise<
+    | { outcome: "claimed"; attemptCount: number }
+    | { outcome: "skipped" }
+    | { outcome: "failed"; errorCode: string }
+  >;
+  listDueWatiOutbounds(
+    conversationId: string,
+    nowIso: string,
+  ): Promise<DueInstagramOutboundRow[] | { errorCode: string }>;
+  listDueWatiOutboxBatch(input: {
+    nowIso: string;
+    limit: number;
+  }): Promise<DueInstagramOutboundRow[] | { errorCode: string }>;
+  claimWatiOutboundSend(input: {
     id: string;
     now: string;
     maxAttempts: number;
@@ -441,35 +475,33 @@ function mapDueInstagramOutboundRow(
   };
 }
 
-function isDueInstagramOutboundRecord(
+function isDueOutboundRecord(
   row: Record<string, unknown>,
   now: number,
-  maxAttempts = INSTAGRAM_OUTBOX_MAX_ATTEMPTS_DEFAULT,
+  maxAttempts: number,
+  isTerminal: (code: string | null) => boolean,
 ): boolean {
   const attempts = Number(row.delivery_attempt_count ?? 0) || 0;
   const nextAt = row.next_attempt_at ? Date.parse(String(row.next_attempt_at)) : 0;
   const due = !row.next_attempt_at || (!Number.isNaN(nextAt) && nextAt <= now);
-  const terminal = isInstagramTerminalSendError(
-    (row.delivery_error_code as string | null) ?? null,
-  );
+  const terminal = isTerminal((row.delivery_error_code as string | null) ?? null);
   return attempts < maxAttempts && due && !terminal;
 }
 
-function durableReservePayload(outbound: OutboundReserveInput) {
-  return durableInstagramOutboundPayload({
-    text: outbound.messageBody,
-    rawPayload: outbound.rawPayload,
-  });
-}
-
-async function listDueInstagramRows(
+async function listDueChannelOutboundRows(
   supabase: SupabaseClient,
-  input: { conversationId?: string; nowIso: string; limit: number },
+  input: {
+    channel: "instagram" | "whatsapp";
+    conversationId?: string;
+    nowIso: string;
+    limit: number;
+    isTerminal: (code: string | null) => boolean;
+  },
 ): Promise<DueInstagramOutboundRow[] | { errorCode: string }> {
   let query = supabase
     .from("channel_messages")
     .select(DUE_OUTBOUND_SELECT)
-    .eq("channel", "instagram")
+    .eq("channel", input.channel)
     .eq("direction", "outbound")
     .in("delivery_status", ["pending", "failed"])
     .neq("purpose", "staff_reply")
@@ -484,7 +516,7 @@ async function listDueInstagramRows(
       let fallbackQuery = supabase
         .from("channel_messages")
         .select(DUE_OUTBOUND_SELECT_LEGACY)
-        .eq("channel", "instagram")
+        .eq("channel", input.channel)
         .eq("direction", "outbound")
         .in("delivery_status", ["pending", "failed"])
         .neq("purpose", "staff_reply")
@@ -505,8 +537,44 @@ async function listDueInstagramRows(
   }
   const now = Date.parse(input.nowIso);
   return (data ?? [])
-    .filter((row) => isDueInstagramOutboundRecord(row as Record<string, unknown>, now))
+    .filter((row) =>
+      isDueOutboundRecord(
+        row as Record<string, unknown>,
+        now,
+        INSTAGRAM_OUTBOX_MAX_ATTEMPTS_DEFAULT,
+        input.isTerminal,
+      ),
+    )
     .map((row) => mapDueInstagramOutboundRow(row as Record<string, unknown>));
+}
+
+async function listDueInstagramRows(
+  supabase: SupabaseClient,
+  input: { conversationId?: string; nowIso: string; limit: number },
+): Promise<DueInstagramOutboundRow[] | { errorCode: string }> {
+  return listDueChannelOutboundRows(supabase, {
+    ...input,
+    channel: "instagram",
+    isTerminal: isInstagramTerminalSendError,
+  });
+}
+
+async function listDueWatiRows(
+  supabase: SupabaseClient,
+  input: { conversationId?: string; nowIso: string; limit: number },
+): Promise<DueInstagramOutboundRow[] | { errorCode: string }> {
+  return listDueChannelOutboundRows(supabase, {
+    ...input,
+    channel: "whatsapp",
+    isTerminal: isWatiTerminalSendError,
+  });
+}
+
+function durableReservePayload(outbound: OutboundReserveInput) {
+  return durableInstagramOutboundPayload({
+    text: outbound.messageBody,
+    rawPayload: outbound.rawPayload,
+  });
 }
 
 export function snapshotFromConversationRow(
@@ -1090,6 +1158,61 @@ export function createSupabaseInstagramStore(
 
       return { outcome: "reserved", outbounds: reserved };
     },
+    async reserveWatiOutboundAndSnapshot(input) {
+      const rpc = await supabase.rpc("reserve_wati_outbound_and_snapshot", {
+        p_conversation_id: input.conversationId,
+        p_state: input.snapshot.state,
+        p_routing_intent: input.snapshot.routingIntent,
+        p_current_intake_field: input.snapshot.currentIntakeField,
+        p_last_prompt_key: input.snapshot.lastPromptKey,
+        p_last_activity_at: input.snapshot.lastActivityAt ?? input.lastMessageAt,
+        p_last_processed_external_message_id:
+          input.snapshot.lastProcessedExternalMessageId,
+        p_expected_last_processed_external_message_id:
+          input.expectedLastProcessedExternalMessageId,
+        p_collected_data: collectedToRecord(input.snapshot.collected),
+        p_ticket_id: input.snapshot.ticketId,
+        p_intake_session_version: input.snapshot.intakeSessionVersion,
+        p_last_message_at: input.lastMessageAt,
+        p_display_name: input.displayName,
+        p_outbounds: input.outbounds.map((outbound) => ({
+          channel: "whatsapp",
+          sender_address: outbound.senderAddress ?? null,
+          recipient_external_id: outbound.recipientExternalId,
+          message_body: outbound.messageBody,
+          idempotency_key: outbound.idempotencyKey,
+          purpose: outbound.purpose,
+          ticket_id: outbound.ticketId ?? null,
+          routing_kind: outbound.routingKind ?? "support",
+          raw_payload: durableReservePayload(outbound),
+        })),
+      });
+      const rpcCode = parseWatiReserveRpcError(rpc.error);
+      if (rpcCode) {
+        return { outcome: "failed", errorCode: rpcCode };
+      }
+      if (rpc.error) {
+        return { outcome: "failed", errorCode: "outbound_reserve_failed" };
+      }
+      const raw = rpc.data;
+      const rawOutbounds =
+        raw && typeof raw === "object" && !Array.isArray(raw)
+          ? (raw as Record<string, unknown>).outbounds
+          : null;
+      const normalized =
+        Array.isArray(rawOutbounds)
+          ? rawOutbounds.map((row) => {
+              if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+              const record = row as Record<string, unknown>;
+              return { ...record, id: String(record.id ?? "") };
+            })
+          : rawOutbounds;
+      const parsed = parseReservedOutbounds({ outbounds: normalized });
+      if (!parsed) {
+        return { outcome: "failed", errorCode: "outbound_reserve_failed" };
+      }
+      return { outcome: "reserved", outbounds: parsed };
+    },
     async getTicket(id) {
       const { data, error } = await supabase
         .from("tickets")
@@ -1255,6 +1378,7 @@ export function createSupabaseInstagramStore(
           purpose: input.purpose,
           comment_id: input.commentId ?? null,
           routing_kind: "support",
+          raw_payload: input.rawPayload ?? null,
         })
         .select("id")
         .single();
@@ -1433,7 +1557,9 @@ export function createSupabaseInstagramStore(
     async listRetryableOutbounds(conversationId) {
       const { data, error } = await supabase
         .from("channel_messages")
-        .select("id, message_body, purpose")
+        .select(
+          "id, message_body, purpose, raw_payload, recipient_external_id, delivery_status",
+        )
         .eq("conversation_id", conversationId)
         .eq("direction", "outbound")
         .in("delivery_status", ["pending", "failed"])
@@ -1444,6 +1570,10 @@ export function createSupabaseInstagramStore(
         id: row.id as string,
         messageBody: String(row.message_body ?? ""),
         purpose: (row.purpose as string | null) ?? null,
+        rawPayload: row.raw_payload ?? null,
+        recipientExternalId:
+          (row.recipient_external_id as string | null) ?? null,
+        deliveryStatus: String(row.delivery_status ?? ""),
       }));
     },
     async listDueInstagramOutbounds(conversationId, nowIso) {
@@ -1456,6 +1586,19 @@ export function createSupabaseInstagramStore(
     },
     async listDueInstagramOutboxBatch(input) {
       return listDueInstagramRows(supabase, {
+        nowIso: input.nowIso,
+        limit: input.limit,
+      });
+    },
+    async listDueWatiOutbounds(conversationId, nowIso) {
+      return listDueWatiRows(supabase, {
+        conversationId,
+        nowIso,
+        limit: 100,
+      });
+    },
+    async listDueWatiOutboxBatch(input) {
+      return listDueWatiRows(supabase, {
         nowIso: input.nowIso,
         limit: input.limit,
       });
@@ -1604,6 +1747,74 @@ export function createSupabaseInstagramStore(
           next_attempt_at: leaseUntil,
         })
         .eq("id", input.id)
+        .eq("delivery_attempt_count", attempts)
+        .in("delivery_status", ["pending", "failed"])
+        .or(`next_attempt_at.is.null,next_attempt_at.lte.${input.now}`)
+        .select("id")
+        .maybeSingle();
+      if (claimed.error?.code === "42703") {
+        return { outcome: "skipped" };
+      }
+      if (claimed.error || !claimed.data?.id) {
+        return { outcome: "skipped" };
+      }
+      return { outcome: "claimed", attemptCount: nextCount };
+    },
+    async claimWatiOutboundSend(input) {
+      const rpc = await supabase.rpc("claim_wati_outbound_send", {
+        p_id: input.id,
+        p_now: input.now,
+        p_max_attempts: input.maxAttempts,
+      });
+      if (!rpc.error && rpc.data && typeof rpc.data === "object" && !Array.isArray(rpc.data)) {
+        const record = rpc.data as Record<string, unknown>;
+        if (record.outcome === "skipped") return { outcome: "skipped" };
+        if (record.outcome === "claimed") {
+          return {
+            outcome: "claimed",
+            attemptCount: Number(record.attempt_count ?? 1) || 1,
+          };
+        }
+      }
+      const current = await supabase
+        .from("channel_messages")
+        .select(
+          "id, delivery_status, delivery_error_code, delivery_attempt_count, next_attempt_at, purpose, channel, direction",
+        )
+        .eq("id", input.id)
+        .maybeSingle();
+      if (current.error || !current.data?.id) {
+        if (current.error?.code === "42703") {
+          return { outcome: "skipped" };
+        }
+        return { outcome: "failed", errorCode: "outbound_lookup_failed" };
+      }
+      const row = current.data;
+      const attempts = Number(row.delivery_attempt_count ?? 0) || 0;
+      const nextAt = row.next_attempt_at ? Date.parse(String(row.next_attempt_at)) : 0;
+      const now = Date.parse(input.now);
+      if (
+        row.direction !== "outbound" ||
+        row.channel !== "whatsapp" ||
+        row.purpose === "staff_reply" ||
+        !["pending", "failed"].includes(String(row.delivery_status)) ||
+        attempts >= input.maxAttempts ||
+        isWatiTerminalSendError((row.delivery_error_code as string | null) ?? null) ||
+        (row.next_attempt_at && !Number.isNaN(nextAt) && nextAt > now)
+      ) {
+        return { outcome: "skipped" };
+      }
+      const nextCount = attempts + 1;
+      const leaseUntil = new Date(now + 60_000).toISOString();
+      const claimed = await supabase
+        .from("channel_messages")
+        .update({
+          delivery_attempt_count: nextCount,
+          last_attempt_at: input.now,
+          next_attempt_at: leaseUntil,
+        })
+        .eq("id", input.id)
+        .eq("channel", "whatsapp")
         .eq("delivery_attempt_count", attempts)
         .in("delivery_status", ["pending", "failed"])
         .or(`next_attempt_at.is.null,next_attempt_at.lte.${input.now}`)

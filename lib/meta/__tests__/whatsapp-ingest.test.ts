@@ -23,6 +23,8 @@ import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
 import * as instagramTicketMail from "@/lib/email/instagram-ticket-mail";
 import type { DbTicket } from "@/lib/tickets/types";
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
+import { watiMemoryOutbox } from "@/lib/meta/__tests__/wati-memory-outbox";
+import { applyReserveWatiOutboundAndSnapshot } from "@/lib/wati/reserve";
 import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
 import { emptyIntakeCollected } from "@/lib/meta/intake-validate";
 import {
@@ -301,11 +303,20 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
     async markOutboundMessage(id: string, patch: Record<string, unknown>) {
       const row = messages.find((message) => message.id === id);
       if (!row) return;
-      row.deliveryStatus = patch.deliveryStatus;
+      row.outboundClaimed = false;
+      Object.assign(row, patch);
+      if (patch.deliveryStatus !== undefined) row.deliveryStatus = patch.deliveryStatus;
       if (patch.externalMessageId !== undefined) {
         row.externalMessageId = patch.externalMessageId;
       }
-      row.deliveryErrorCode = patch.deliveryErrorCode ?? null;
+      if (patch.deliveryErrorCode !== undefined) {
+        row.deliveryErrorCode = patch.deliveryErrorCode;
+      }
+      if (patch.nextAttemptAt !== undefined) row.nextAttemptAt = patch.nextAttemptAt;
+      if (patch.lastAttemptAt !== undefined) row.lastAttemptAt = patch.lastAttemptAt;
+      if (patch.deliveryAttemptCount !== undefined) {
+        row.deliveryAttemptCount = patch.deliveryAttemptCount;
+      }
     },
     async findOutboundByExternalMessageId(externalMessageId: string) {
       const row = messages.find(
@@ -405,10 +416,114 @@ function createMemoryInstagramStore(): InstagramIngestStore & {
           id: message.id as string,
           messageBody: String(message.messageBody ?? ""),
           purpose: (message.purpose as string | null) ?? null,
+          rawPayload: message.rawPayload ?? message.raw_payload ?? null,
+          recipientExternalId:
+            (message.recipientExternalId as string | null) ?? null,
+          deliveryStatus: String(message.deliveryStatus ?? ""),
         }));
     },
+    ...watiMemoryOutbox(messages),
     async reserveOutboundAndSnapshot() {
       return { outcome: "failed" as const, errorCode: "not_used_for_whatsapp" };
+    },
+    async reserveWatiOutboundAndSnapshot(input: {
+      conversationId: string;
+      snapshot: Record<string, unknown> & {
+        lastProcessedExternalMessageId?: string | null;
+        lastActivityAt?: string | null;
+        state?: string;
+        routingIntent?: string | null;
+        currentIntakeField?: string | null;
+        lastPromptKey?: string | null;
+        collected?: unknown;
+        ticketId?: string | null;
+        intakeSessionVersion?: number;
+      };
+      lastMessageAt: string;
+      displayName: string | null;
+      expectedLastProcessedExternalMessageId?: string | null;
+      outbounds: Array<Record<string, unknown>>;
+    }) {
+      const row = conversations.find(
+        (conversation) => conversation.id === input.conversationId,
+      );
+      const result = applyReserveWatiOutboundAndSnapshot({
+        conversation: row
+          ? {
+              id: String(row.id),
+              lastProcessedExternalMessageId:
+                (row.lastProcessedExternalMessageId as string | null) ?? null,
+              displayName: (row.displayName as string | null) ?? null,
+              channel: (row.channel as string | null) ?? "whatsapp",
+              provider: (row.provider as string | null) ?? "wati",
+            }
+          : null,
+        expectedLastProcessedExternalMessageId:
+          input.expectedLastProcessedExternalMessageId ?? null,
+        snapshot: input.snapshot as Parameters<
+          typeof applyReserveWatiOutboundAndSnapshot
+        >[0]["snapshot"],
+        lastMessageAt: input.lastMessageAt,
+        displayName: input.displayName,
+        outbounds: input.outbounds.map((outbound) => ({
+          channel: "whatsapp" as const,
+          recipientExternalId: String(outbound.recipientExternalId ?? ""),
+          senderAddress: (outbound.senderAddress as string | null) ?? null,
+          messageBody: String(outbound.messageBody ?? ""),
+          idempotencyKey: String(outbound.idempotencyKey ?? ""),
+          purpose: String(outbound.purpose ?? "prompt"),
+          ticketId: (outbound.ticketId as string | null) ?? null,
+          routingKind: (outbound.routingKind as string | null) ?? "support",
+          rawPayload: outbound.rawPayload ?? null,
+        })),
+        existingMessages: messages
+          .filter((message) => message.idempotencyKey)
+          .map((message) => ({
+            id: String(message.id),
+            conversationId: String(message.conversationId ?? ""),
+            channel: String(message.channel ?? "whatsapp"),
+            direction: "outbound" as const,
+            senderName: "Cloutflow",
+            senderAddress: (message.senderAddress as string | null) ?? null,
+            recipientExternalId:
+              (message.recipientExternalId as string | null) ?? null,
+            messageBody: String(message.messageBody ?? ""),
+            purpose: (message.purpose as string | null) ?? null,
+            ticketId: (message.ticketId as string | null) ?? null,
+            idempotencyKey: String(message.idempotencyKey),
+            deliveryStatus: String(message.deliveryStatus ?? "pending"),
+            routingKind: (message.routingKind as string | null) ?? "support",
+            rawPayload: message.rawPayload ?? null,
+          })),
+        nextId,
+      });
+      if (result.outcome === "failed") {
+        return { outcome: "failed" as const, errorCode: result.errorCode };
+      }
+      if (row) {
+        row.lastMessageAt = result.conversation.lastMessageAt;
+        row.lastActivityAt = result.conversation.lastActivityAt;
+        row.state = result.conversation.state;
+        row.routingIntent = result.conversation.routingIntent;
+        row.currentIntakeField = result.conversation.currentIntakeField;
+        row.lastPromptKey = result.conversation.lastPromptKey;
+        row.lastProcessedExternalMessageId =
+          result.conversation.lastProcessedExternalMessageId;
+        row.collectedData = result.conversation.collectedData;
+        row.ticketId = result.conversation.ticketId;
+        row.intakeSessionVersion = result.conversation.intakeSessionVersion;
+        if (result.conversation.displayName) {
+          row.displayName = result.conversation.displayName;
+        }
+      }
+      for (const message of result.insertedMessages) {
+        messages.push({
+          ...message,
+          deliveryAttemptCount: 0,
+          nextAttemptAt: null,
+        });
+      }
+      return { outcome: "reserved" as const, outbounds: result.outbounds };
     },
     async claimEmailDelivery(input: Record<string, unknown>) {
       const duplicate = emails.find((row) => row.idempotencyKey === input.idempotencyKey);

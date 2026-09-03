@@ -32,6 +32,7 @@ export type WhatsAppSendFailure = {
   retryable: boolean;
   messagingWindowExpired: boolean;
   httpStatus: number | null;
+  operation?: "text" | "buttons" | "list";
 };
 
 export type WhatsAppSendResult = WhatsAppSendSuccess | WhatsAppSendFailure;

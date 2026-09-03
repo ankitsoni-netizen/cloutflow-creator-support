@@ -5,8 +5,10 @@ import {
   channelTicketCreatedKey,
   channelTicketEmailSentKey,
   chatbotOutboundIdempotencyKey,
+  isCreatorConfirmPromptKey,
   isSameSessionPrompt,
   parseChatbotIdempotencyKey,
+  PERSONA_PROMPT,
 } from "@/lib/meta/prompt-keys";
 
 describe("chatbot outbound idempotency keys", () => {
@@ -58,5 +60,11 @@ describe("chatbot outbound idempotency keys", () => {
     expect(channelTicketEmailSentKey("ig", "ticket-1")).toBe(
       "ticket_email_sent:ticket-1",
     );
+    expect(channelCrmReplyKey("ig", "c1")).toBe("ig:crm:c1");
+    expect(isCreatorConfirmPromptKey(PERSONA_PROMPT.creatorConfirm)).toBe(true);
+    expect(
+      isCreatorConfirmPromptKey(`${PERSONA_PROMPT.creatorConfirm}:retry:mid.1`),
+    ).toBe(true);
+    expect(isCreatorConfirmPromptKey("ticket_created:ticket-1")).toBe(false);
   });
 });

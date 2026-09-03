@@ -12,13 +12,17 @@ import {
 } from "@/lib/meta/routing-copy";
 import {
   creatorTicketRaisedText,
-  activeTicketAttachText,
   withPostCompletionQuestion,
 } from "@/lib/meta/instagram-persona-copy";
 import { postCompletionQuickReplies } from "@/lib/meta/instagram-persona-machine";
 import { scheduleAfterResponse } from "@/lib/meta/after-response";
 import { drainInstagramOutbox } from "@/lib/meta/instagram-outbox";
 import { durableInstagramOutboundPayload } from "@/lib/meta/instagram-outbound-payload";
+import {
+  drainWatiConversationOutbox,
+  persistWatiSendResult,
+  WATI_OUTBOX_MAX_ATTEMPTS,
+} from "@/lib/wati/outbox";
 import { timeInstagramMetric, type InstagramTimingSession } from "@/lib/meta/timing";
 import {
   finishInstagramAttending,
@@ -35,6 +39,11 @@ import {
   type WhatsAppProviderSendDeps,
 } from "@/lib/meta/whatsapp-provider";
 import { mapIntakeToInstagramTicketInsert, stampWatiTicketIdentity, dbTicketFromIntakeInsert } from "@/lib/meta/instagram-ticket";
+import {
+  bindCommittedTicketSnapshot,
+  INTAKE_STATES_BLOCKED_AFTER_TICKET,
+} from "@/lib/meta/ticket-finalization";
+import { classifyWatiSendFailureCode } from "@/lib/wati/send";
 import { conversationIdentityFromLookup } from "@/lib/meta/conversation-identity";
 import type {
   InstagramIngestStore,
@@ -47,6 +56,7 @@ import {
 import {
   channelOutboundKey,
   channelTicketCreatedKey,
+  isCreatorConfirmPromptKey,
   isSameSessionPrompt,
   type ChatbotIdempotencyPrefix,
 } from "@/lib/meta/prompt-keys";
@@ -93,6 +103,10 @@ export type ApplyEffectsResult = {
   retryableFailure: boolean;
   snapshotPersisted: boolean;
   errorCode?: string;
+  created?: boolean;
+  conversationLinked?: boolean;
+  closingReserved?: boolean;
+  emailClaimed?: boolean;
 };
 
 function releaseInstagramAttending(
@@ -106,6 +120,28 @@ function releaseInstagramAttending(
 
 function prefixFor(channel: ChannelEffectChannel): ChatbotIdempotencyPrefix {
   return channel === "whatsapp" ? "wa" : "ig";
+}
+
+function isFinalOutboundDelivery(status: string | null | undefined): boolean {
+  return status === "sent" || status === "delivered" || status === "read";
+}
+
+function dropObsoleteCreatorConfirmSends(
+  effects: MachineSendEffect[],
+  ticketId: string | null,
+): MachineSendEffect[] {
+  if (!ticketId) return effects;
+  return effects.filter((effect) => !isCreatorConfirmPromptKey(effect.promptKey));
+}
+
+async function existingClosingDeliveryStatus(
+  store: InstagramIngestStore,
+  idempotencyKey: string,
+): Promise<string | null> {
+  if (typeof store.findOutboundByIdempotencyKey !== "function") return null;
+  const existing = await store.findOutboundByIdempotencyKey(idempotencyKey);
+  if (!existing || "errorCode" in existing) return null;
+  return existing.deliveryStatus;
 }
 
 async function sendChannelMessage(
@@ -148,7 +184,13 @@ async function dispatchSend(
   ticketId: string | null,
   intakeSessionVersion: number,
   channel: ChannelEffectChannel,
-): Promise<{ retryableFailure: boolean }> {
+): Promise<{
+  retryableFailure: boolean;
+  outboundClaimed: boolean;
+  errorCode?: string;
+  httpStatus?: number | null;
+  operation?: "text" | "buttons" | "list";
+}> {
   const prefix = prefixFor(channel);
   const idempotencyKey = channelOutboundKey(
     prefix,
@@ -165,9 +207,14 @@ async function dispatchSend(
     messageBody: effect.text,
     idempotencyKey,
     purpose: effect.promptKey.split(":")[0] ?? "prompt",
+    rawPayload: durableInstagramOutboundPayload({
+      text: effect.text,
+      quickReplies:
+        effect.type === "send_quick_replies" ? effect.quickReplies : undefined,
+    }),
   });
   if (claimed.outcome === "failed") {
-    return { retryableFailure: true };
+    return { retryableFailure: true, outboundClaimed: false };
   }
   if (claimed.outcome === "duplicate") {
     const sameSession =
@@ -181,21 +228,56 @@ async function dispatchSend(
           prefix,
         }));
     if (!sameSession) {
-      return { retryableFailure: true };
+      return { retryableFailure: true, outboundClaimed: true };
     }
     if (
       claimed.deliveryStatus === "sent" ||
       claimed.deliveryStatus === "delivered" ||
       claimed.deliveryStatus === "read"
     ) {
-      return { retryableFailure: false };
+      return { retryableFailure: false, outboundClaimed: true };
     }
     if (claimed.deliveryStatus !== "failed") {
-      return { retryableFailure: false };
+      return { retryableFailure: false, outboundClaimed: true };
     }
   }
 
   const outboundId = claimed.id;
+  if (channel === "whatsapp" && typeof deps.store.claimWatiOutboundSend === "function") {
+    const now = new Date();
+    const leased = await deps.store.claimWatiOutboundSend({
+      id: outboundId,
+      now: now.toISOString(),
+      maxAttempts: WATI_OUTBOX_MAX_ATTEMPTS,
+    });
+    if (leased.outcome === "failed") {
+      return { retryableFailure: true, outboundClaimed: true };
+    }
+    if (leased.outcome !== "claimed") {
+      return { retryableFailure: false, outboundClaimed: true };
+    }
+    const result = await sendChannelMessage(effect, deps, channel);
+    const kind = await persistWatiSendResult(
+      deps.store,
+      outboundId,
+      result,
+      leased.attemptCount,
+      now,
+    );
+    if (kind === "sent") {
+      return { retryableFailure: false, outboundClaimed: true };
+    }
+    return {
+      retryableFailure: kind === "retryable",
+      outboundClaimed: true,
+      errorCode: result.ok ? undefined : result.errorCode,
+      httpStatus: result.ok ? undefined : result.httpStatus,
+      operation: result.ok
+        ? undefined
+        : (result as { operation?: "text" | "buttons" | "list" }).operation,
+    };
+  }
+
   const result = await sendChannelMessage(effect, deps, channel);
 
   if (result.ok) {
@@ -204,14 +286,20 @@ async function dispatchSend(
       externalMessageId: result.metaMessageId,
       deliveryErrorCode: null,
     });
-    return { retryableFailure: false };
+    return { retryableFailure: false, outboundClaimed: true };
   }
 
   await deps.store.markOutboundMessage(outboundId, {
     deliveryStatus: "failed",
     deliveryErrorCode: result.errorCode,
   });
-  return { retryableFailure: true };
+  return {
+    retryableFailure: true,
+    outboundClaimed: true,
+    errorCode: result.errorCode,
+    httpStatus: result.httpStatus,
+    operation: (result as { operation?: "text" | "buttons" | "list" }).operation,
+  };
 }
 
 async function loadCreatedTicket(
@@ -480,11 +568,11 @@ async function applyInstagramCriticalPath(
     ? { ...options.snapshotToPersist }
     : null;
   const lastMessageAt = options.lastMessageAt ?? new Date().toISOString();
-  const sendEffects: MachineSendEffect[] = [];
+  let sendEffects: MachineSendEffect[] = [];
   const routingUpdates: Array<{ fromKind: string; toKind: "collaboration" | "support" }> =
     [];
-  let createdTicket = false;
   let notifyHelp = false;
+  let postCommitSnapshotSaved = false;
   const queuedInternalEmails: Array<{ purpose: "agency" | "other" }> = [];
 
   for (const effect of options.effects) {
@@ -521,35 +609,62 @@ async function applyInstagramCriticalPath(
       }
       ticketId = created.ticketId;
       ticketCode = created.ticketCode;
-      createdTicket = created.created && Boolean(created.ticketId);
       if (snapshot && created.ticketId) {
-        const ackKey = created.created
-          ? channelTicketCreatedKey("ig", created.ticketId)
-          : `${channelTicketCreatedKey("ig", created.ticketId)}:reuse`;
-        snapshot = {
-          ...snapshot,
+        const ackKey = channelTicketCreatedKey("ig", created.ticketId);
+        snapshot = bindCommittedTicketSnapshot(snapshot, {
           ticketId: created.ticketId,
           ticketCode: created.ticketCode,
-          state: "awaiting_post_completion",
           lastPromptKey: ackKey,
-        };
+        });
+        const linked = await deps.store.saveConversationSnapshot(
+          deps.conversationId,
+          snapshot,
+          lastMessageAt,
+          options.displayName ?? null,
+        );
+        if (linked.outcome === "failed") {
+          await releaseInstagramAttending(options.attending);
+          return {
+            ticketId: created.ticketId,
+            ticketCode: created.ticketCode,
+            retryableFailure: true,
+            snapshotPersisted: false,
+            errorCode: "conversation_update_failed",
+            created: created.created,
+            conversationLinked: false,
+          };
+        }
+        postCommitSnapshotSaved = true;
       }
       if (created.ticketCode && created.ticketId) {
-        sendEffects.push({
-          type: "send_quick_replies",
-          text: withPostCompletionQuestion(
-            created.created
-              ? creatorTicketRaisedText(created.ticketCode)
-              : activeTicketAttachText(created.ticketCode),
-          ),
-          promptKey: created.created
-            ? channelTicketCreatedKey("ig", created.ticketId)
-            : `${channelTicketCreatedKey("ig", created.ticketId)}:reuse`,
-          quickReplies: postCompletionQuickReplies(),
-        });
+        const ackKey = channelTicketCreatedKey("ig", created.ticketId);
+        const closingKey = channelOutboundKey(
+          "ig",
+          deps.conversationId,
+          options.intakeSessionVersion,
+          ackKey,
+        );
+        const existingStatus = await existingClosingDeliveryStatus(
+          deps.store,
+          closingKey,
+        );
+        if (!isFinalOutboundDelivery(existingStatus)) {
+          if (!existingStatus) {
+            sendEffects.push({
+              type: "send_quick_replies",
+              text: withPostCompletionQuestion(
+                creatorTicketRaisedText(created.ticketCode),
+              ),
+              promptKey: ackKey,
+              quickReplies: postCompletionQuickReplies(),
+            });
+          }
+        }
       }
     }
   }
+
+  sendEffects = dropObsoleteCreatorConfirmSends(sendEffects, ticketId);
 
   if (snapshot) {
     if (
@@ -564,7 +679,7 @@ async function applyInstagramCriticalPath(
         ticketId,
         ticketCode,
         retryableFailure: true,
-        snapshotPersisted: false,
+        snapshotPersisted: Boolean(ticketId && snapshot),
         errorCode: "outbound_address_invalid",
       };
     }
@@ -577,8 +692,11 @@ async function applyInstagramCriticalPath(
           snapshot,
           lastMessageAt,
           displayName: options.displayName ?? null,
-          expectedLastProcessedExternalMessageId:
-            options.expectedLastProcessedExternalMessageId ?? null,
+          expectedLastProcessedExternalMessageId: postCommitSnapshotSaved
+            ? (snapshot.lastProcessedExternalMessageId ??
+              options.expectedLastProcessedExternalMessageId ??
+              null)
+            : (options.expectedLastProcessedExternalMessageId ?? null),
           outbounds: sendEffects.map((effect) => ({
             channel: "instagram" as const,
             recipientExternalId: deps.recipientId,
@@ -678,7 +796,7 @@ async function applyInstagramCriticalPath(
         toKind: update.toKind,
       });
     }
-    if (createdTicket && ticketId) {
+    if (ticketId) {
       await runInstagramTicketBackground({
         options,
         ticketId,
@@ -725,12 +843,19 @@ export async function applyInstagramEffects(
   if (channel === "instagram") {
     return applyInstagramCriticalPath(options);
   }
+  if (options.event.provider === WATI_WHATSAPP_PROVIDER) {
+    return applyWatiCriticalPath(options);
+  }
 
   let ticketId = options.snapshotTicketId;
   let ticketCode: string | null = null;
+  let snapshotPersisted = false;
 
   for (const effect of options.effects) {
     if (effect.type === "send_text" || effect.type === "send_quick_replies") {
+      if (ticketId && isCreatorConfirmPromptKey(effect.promptKey)) {
+        continue;
+      }
       const sent = await dispatchSend(
         effect,
         options.deps,
@@ -799,60 +924,98 @@ export async function applyInstagramEffects(
           : null);
 
       const confirmCode = created.ticketCode ?? mailTicket?.ticket_code ?? "";
+      const watiAckKey = created.ticketId
+        ? channelTicketCreatedKey("wa", created.ticketId)
+        : "";
+
+      if (isWati && created.ticketId && options.snapshotToPersist) {
+        const postSnapshot = bindCommittedTicketSnapshot(options.snapshotToPersist, {
+          ticketId: created.ticketId,
+          ticketCode: created.ticketCode,
+          lastPromptKey: watiAckKey,
+        });
+        const linked = await options.deps.store.saveConversationSnapshot(
+          options.deps.conversationId,
+          postSnapshot,
+          options.lastMessageAt ??
+            postSnapshot.lastActivityAt ??
+            new Date().toISOString(),
+          options.displayName ?? null,
+        );
+        snapshotPersisted = linked.outcome !== "failed";
+        if (!snapshotPersisted) {
+          return {
+            ticketId,
+            ticketCode,
+            retryableFailure: true,
+            snapshotPersisted: false,
+            errorCode: "conversation_update_failed",
+            created: created.created,
+            conversationLinked: false,
+          };
+        }
+      }
+
+      let emailClaimed = false;
+      let emailSent = false;
+      if (mailTicket && created.ticketId) {
+        const transcriptRows = await options.deps.store.listSupportTranscript({
+          conversationId: options.deps.conversationId,
+          ticketId: created.ticketId,
+        });
+        emailSent = await deliverChannelTicketConfirmationEmail({
+          store: options.deps.store,
+          ticket: mailTicket,
+          conversationId: options.deps.conversationId,
+          ticketId: created.ticketId,
+          purpose: "whatsapp-ticket-confirmation",
+          transcriptText: formatTranscript(transcriptRows),
+        });
+        emailClaimed = true;
+      }
+
       let dmFailed = false;
+      let outboundClaimed = false;
+      let sendErrorCode: string | undefined;
+      let confirmSendHttpStatus: number | null = null;
+      let confirmSendOperation: "text" | "buttons" | "list" | undefined;
       if (isWati) {
         if (confirmCode && created.ticketId) {
-          const watiAckKey = created.created
-            ? channelTicketCreatedKey("wa", created.ticketId)
-            : `${channelTicketCreatedKey("wa", created.ticketId)}:reuse`;
-          const confirmSend = await dispatchSend(
-            {
-              type: "send_quick_replies",
-              text: withPostCompletionQuestion(
-                created.created
-                  ? creatorTicketRaisedText(confirmCode)
-                  : activeTicketAttachText(confirmCode),
-              ),
-              promptKey: watiAckKey,
-              quickReplies: postCompletionQuickReplies(),
-            },
-            options.deps,
-            created.ticketId,
+          const closingKey = channelOutboundKey(
+            "wa",
+            options.deps.conversationId,
             options.intakeSessionVersion,
-            channel,
+            watiAckKey,
           );
-          dmFailed = confirmSend.retryableFailure;
-        }
-        if (mailTicket && created.ticketId) {
-          const transcriptRows = await options.deps.store.listSupportTranscript({
-            conversationId: options.deps.conversationId,
-            ticketId: created.ticketId,
-          });
-          await deliverChannelTicketConfirmationEmail({
-            store: options.deps.store,
-            ticket: mailTicket,
-            conversationId: options.deps.conversationId,
-            ticketId: created.ticketId,
-            purpose: "whatsapp-ticket-confirmation",
-            transcriptText: formatTranscript(transcriptRows),
-          });
+          const existingStatus = await existingClosingDeliveryStatus(
+            options.deps.store,
+            closingKey,
+          );
+          if (isFinalOutboundDelivery(existingStatus)) {
+            outboundClaimed = true;
+          } else {
+            const confirmSend = await dispatchSend(
+              {
+                type: "send_quick_replies",
+                text: withPostCompletionQuestion(
+                  creatorTicketRaisedText(confirmCode),
+                ),
+                promptKey: watiAckKey,
+                quickReplies: postCompletionQuickReplies(),
+              },
+              options.deps,
+              created.ticketId,
+              options.intakeSessionVersion,
+              channel,
+            );
+            dmFailed = confirmSend.retryableFailure;
+            outboundClaimed = confirmSend.outboundClaimed;
+            sendErrorCode = confirmSend.errorCode;
+            confirmSendHttpStatus = confirmSend.httpStatus ?? null;
+            confirmSendOperation = confirmSend.operation;
+          }
         }
       } else {
-        let emailSent = false;
-        if (mailTicket && created.ticketId) {
-          const transcriptRows = await options.deps.store.listSupportTranscript({
-            conversationId: options.deps.conversationId,
-            ticketId: created.ticketId,
-          });
-          emailSent = await deliverChannelTicketConfirmationEmail({
-            store: options.deps.store,
-            ticket: mailTicket,
-            conversationId: options.deps.conversationId,
-            ticketId: created.ticketId,
-            purpose: "whatsapp-ticket-confirmation",
-            transcriptText: formatTranscript(transcriptRows),
-          });
-        }
         const firstName = firstNameFromFullName(
           mailTicket?.creator_name ?? options.collected.creatorName ?? "",
         );
@@ -871,11 +1034,32 @@ export async function applyInstagramEffects(
             channel,
           );
           dmFailed = confirmSend.retryableFailure;
+          outboundClaimed = confirmSend.outboundClaimed;
+          sendErrorCode = confirmSend.errorCode;
         }
       }
 
       if (dmFailed) {
-        return { ticketId, ticketCode, retryableFailure: true, snapshotPersisted: false };
+        const operation =
+          isWati ? ("buttons" as const) : ("text" as const);
+        return {
+          ticketId,
+          ticketCode,
+          retryableFailure: true,
+          snapshotPersisted,
+          created: created.created,
+          conversationLinked: snapshotPersisted,
+          closingReserved: outboundClaimed,
+          emailClaimed,
+          errorCode: isWati
+            ? classifyWatiSendFailureCode({
+                operation: confirmSendOperation ?? operation,
+                httpStatus: confirmSendHttpStatus ?? null,
+                retryable: true,
+                stage: "post_ticket_closing",
+              })
+            : sendErrorCode ?? "whatsapp_send_failed",
+        };
       }
       continue;
     }
@@ -909,7 +1093,335 @@ export async function applyInstagramEffects(
     }
   }
 
-  return { ticketId, ticketCode, retryableFailure: false, snapshotPersisted: false };
+  return { ticketId, ticketCode, retryableFailure: false, snapshotPersisted };
+}
+
+async function applyWatiCriticalPath(
+  options: ApplyEffectsOptions,
+): Promise<ApplyEffectsResult> {
+  const deps = options.deps;
+  const snapshot = options.snapshotToPersist
+    ? { ...options.snapshotToPersist }
+    : null;
+  let ticketId = options.snapshotTicketId;
+  let ticketCode: string | null = null;
+  let sendEffects: MachineSendEffect[] = [];
+  const routingUpdates: Array<{ fromKind: string; toKind: "collaboration" | "support" }> =
+    [];
+  let notifyHelp = false;
+  let createdTicket = false;
+  let shouldSendConfirmationEmail = false;
+  const lastMessageAt = options.lastMessageAt ?? new Date().toISOString();
+
+  for (const effect of options.effects) {
+    if (effect.type === "send_text" || effect.type === "send_quick_replies") {
+      if (ticketId && isCreatorConfirmPromptKey(effect.promptKey)) continue;
+      sendEffects.push(effect);
+      continue;
+    }
+    if (effect.type === "mark_unclassified_as") {
+      routingUpdates.push({ fromKind: "unclassified", toKind: effect.routingKind });
+      continue;
+    }
+    if (effect.type === "notify_help_inbound") {
+      notifyHelp = true;
+      continue;
+    }
+    if (effect.type === "create_ticket") {
+      const created = await createTicketIfNeeded({ ...options, channel: "whatsapp" });
+      if (created.retryableFailure) {
+        return {
+          ticketId: created.ticketId,
+          ticketCode: created.ticketCode,
+          retryableFailure: true,
+          snapshotPersisted: false,
+        };
+      }
+      ticketId = created.ticketId;
+      ticketCode = created.ticketCode;
+      createdTicket = created.created;
+      shouldSendConfirmationEmail = true;
+      await deps.store.linkSupportMessagesToTicket({
+        conversationId: deps.conversationId,
+        ticketId: created.ticketId as string,
+      });
+      const watiAckKey = created.ticketId
+        ? channelTicketCreatedKey("wa", created.ticketId)
+        : "";
+      if (snapshot && created.ticketId) {
+        Object.assign(
+          snapshot,
+          bindCommittedTicketSnapshot(snapshot, {
+            ticketId: created.ticketId,
+            ticketCode: created.ticketCode,
+            lastPromptKey: watiAckKey,
+          }),
+        );
+      }
+      if (created.ticketCode && created.ticketId) {
+        const closingKey = channelOutboundKey(
+          "wa",
+          deps.conversationId,
+          options.intakeSessionVersion,
+          watiAckKey,
+        );
+        const existingStatus = await existingClosingDeliveryStatus(
+          deps.store,
+          closingKey,
+        );
+        if (!isFinalOutboundDelivery(existingStatus)) {
+          sendEffects.push({
+            type: "send_quick_replies",
+            text: withPostCompletionQuestion(
+              creatorTicketRaisedText(created.ticketCode),
+            ),
+            promptKey: watiAckKey,
+            quickReplies: postCompletionQuickReplies(),
+          });
+        }
+      }
+    }
+  }
+
+  sendEffects = dropObsoleteCreatorConfirmSends(sendEffects, ticketId);
+
+  if (snapshot && ticketId && snapshot.state !== "completed") {
+    if (
+      createdTicket ||
+      INTAKE_STATES_BLOCKED_AFTER_TICKET.has(snapshot.state) ||
+      snapshot.state === "ticket_open"
+    ) {
+      const ackKey = channelTicketCreatedKey("wa", ticketId);
+      Object.assign(
+        snapshot,
+        bindCommittedTicketSnapshot(snapshot, {
+          ticketId,
+          ticketCode: ticketCode ?? snapshot.ticketCode,
+          lastPromptKey:
+            snapshot.lastPromptKey &&
+            !isCreatorConfirmPromptKey(snapshot.lastPromptKey)
+              ? snapshot.lastPromptKey
+              : ackKey,
+        }),
+      );
+    }
+  }
+
+  if (!snapshot) {
+    if (sendEffects.length > 0) {
+      return {
+        ticketId,
+        ticketCode,
+        retryableFailure: true,
+        snapshotPersisted: false,
+        errorCode: "conversation_update_failed",
+      };
+    }
+    await scheduleWatiOutboxDrain(options);
+    return { ticketId, ticketCode, retryableFailure: false, snapshotPersisted: false };
+  }
+
+  if (typeof deps.store.reserveWatiOutboundAndSnapshot !== "function") {
+    return {
+      ticketId,
+      ticketCode,
+      retryableFailure: true,
+      snapshotPersisted: false,
+      errorCode: "outbound_reserve_failed",
+    };
+  }
+
+  const reserved = await deps.store.reserveWatiOutboundAndSnapshot({
+    conversationId: deps.conversationId,
+    snapshot,
+    lastMessageAt,
+    displayName: options.displayName ?? null,
+    expectedLastProcessedExternalMessageId:
+      options.expectedLastProcessedExternalMessageId ?? null,
+    outbounds: sendEffects.map((effect) => ({
+      channel: "whatsapp" as const,
+      recipientExternalId: deps.recipientId,
+      senderAddress: options.event.recipientAccountId ?? deps.recipientId,
+      messageBody: effect.text,
+      idempotencyKey: channelOutboundKey(
+        "wa",
+        deps.conversationId,
+        options.intakeSessionVersion,
+        effect.promptKey,
+      ),
+      purpose: effect.promptKey.split(":")[0] ?? "prompt",
+      ticketId,
+      routingKind: "support",
+      rawPayload: durableInstagramOutboundPayload({
+        text: effect.text,
+        quickReplies:
+          effect.type === "send_quick_replies" ? effect.quickReplies : undefined,
+      }),
+    })),
+  });
+
+  if (reserved.outcome === "failed") {
+    return {
+      ticketId,
+      ticketCode,
+      retryableFailure: reserved.errorCode !== OUTBOUND_IDEMPOTENCY_CONFLICT,
+      snapshotPersisted: false,
+      errorCode: reserved.errorCode,
+      created: createdTicket,
+      conversationLinked: false,
+    };
+  }
+
+  let emailClaimed = false;
+  if (shouldSendConfirmationEmail && ticketId) {
+    const ticket = await loadCreatedTicket(ticketId, deps.loadTicket);
+    const mailTicket =
+      ticket ??
+      (ticketId && ticketCode
+        ? dbTicketFromIntakeInsert({
+            id: ticketId,
+            ticketCode,
+            insert: stampWatiTicketIdentity(
+              mapIntakeToInstagramTicketInsert({
+                collected: options.collected,
+                externalContactId: options.event.externalContactId,
+                externalConversationId: options.event.externalConversationId,
+                sourceChannel: "whatsapp",
+                recipientAccountId: options.event.recipientAccountId ?? null,
+              }),
+              {
+                provider: WATI_WHATSAPP_PROVIDER,
+                recipientAccountId: options.event.recipientAccountId ?? "",
+              },
+            ),
+          })
+        : null);
+    if (mailTicket) {
+      const transcriptRows = await deps.store.listSupportTranscript({
+        conversationId: deps.conversationId,
+        ticketId,
+      });
+      await deliverChannelTicketConfirmationEmail({
+        store: deps.store,
+        ticket: mailTicket,
+        conversationId: deps.conversationId,
+        ticketId,
+        purpose: "whatsapp-ticket-confirmation",
+        transcriptText: formatTranscript(transcriptRows),
+      });
+      emailClaimed = true;
+    }
+  }
+
+  const newlyReserved = reserved.outbounds.filter(
+    (row) =>
+      row.deliveryStatus !== "sent" &&
+      row.deliveryStatus !== "delivered" &&
+      row.deliveryStatus !== "read",
+  );
+  let sendFailed = false;
+  let confirmSendHttpStatus: number | null = null;
+  let confirmSendOperation: "text" | "buttons" | "list" | undefined;
+  if (newlyReserved.length > 0) {
+    const drained = await drainWatiConversationOutbox({
+      store: deps.store,
+      recipientId: deps.recipientId,
+      conversationId: deps.conversationId,
+      sendDeps: deps.sendDeps,
+      reserved: reserved.outbounds,
+      effects: sendEffects,
+    });
+    sendFailed = drained.retryableFailure;
+    if (sendFailed) {
+      confirmSendHttpStatus = 500;
+      confirmSendOperation = "buttons";
+    }
+  }
+
+  if (notifyHelp && ticketId) {
+    const ticket = await loadCreatedTicket(ticketId, deps.loadTicket);
+    if (ticket) {
+      const claim = await deps.store.claimEmailDelivery({
+        ticketId,
+        conversationId: deps.conversationId,
+        purpose: "whatsapp-inbound-notify",
+        idempotencyKey: `email:wa-inbound:${ticketId}:${options.inboundMessageId}`,
+      });
+      if (claim.outcome === "claimed") {
+        const mail = await import("@/lib/email/instagram-ticket-mail");
+        const mailed = await mail.sendInstagramInboundHelpNotification({
+          ticket,
+          messagePreview: options.inboundText,
+          channelLabel: "WhatsApp",
+        });
+        await deps.store.markEmailDelivery(claim.id, {
+          deliveryStatus:
+            mailed.outcome === "sent"
+              ? "sent"
+              : mailed.outcome === "skipped"
+                ? "skipped"
+                : "failed",
+          brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
+          errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
+        });
+      }
+    }
+  }
+
+  for (const update of routingUpdates) {
+    await deps.store.markMessagesRoutingKind({
+      conversationId: deps.conversationId,
+      fromKind: update.fromKind,
+      toKind: update.toKind,
+    });
+  }
+
+  await scheduleWatiOutboxDrain(options);
+
+  if (sendFailed) {
+    return {
+      ticketId,
+      ticketCode,
+      retryableFailure: true,
+      snapshotPersisted: true,
+      created: createdTicket,
+      conversationLinked: true,
+      closingReserved: newlyReserved.length > 0 || reserved.outbounds.length > 0,
+      emailClaimed,
+      errorCode: classifyWatiSendFailureCode({
+        operation: confirmSendOperation ?? "buttons",
+        httpStatus: confirmSendHttpStatus,
+        retryable: true,
+        stage: shouldSendConfirmationEmail ? "post_ticket_closing" : "pre_ticket",
+      }),
+    };
+  }
+
+  return {
+    ticketId,
+    ticketCode,
+    retryableFailure: false,
+    snapshotPersisted: true,
+    created: createdTicket,
+    conversationLinked: true,
+    closingReserved: reserved.outbounds.length > 0,
+    emailClaimed,
+  };
+}
+
+function scheduleWatiOutboxDrain(options: ApplyEffectsOptions): Promise<void> {
+  return scheduleAfterResponse(async () => {
+    try {
+      await drainWatiConversationOutbox({
+        store: options.deps.store,
+        recipientId: options.deps.recipientId,
+        conversationId: options.deps.conversationId,
+        sendDeps: options.deps.sendDeps,
+      });
+    } catch {
+      // Reserved pending/failed rows remain recoverable by the outbox.
+    }
+  });
 }
 
 export async function applyWhatsAppEffects(
@@ -931,27 +1443,10 @@ export async function retryFailedInstagramOutbounds(
     });
     return { retryableFailure: false };
   }
-  const failed = await deps.store.listFailedOutbounds(deps.conversationId);
-  let retryableFailure = false;
-  for (const row of failed) {
-    const result = await sendWhatsAppProviderText({
-      recipientId: deps.recipientId,
-      text: row.messageBody,
-      deps: deps.sendDeps,
-    });
-    if (result.ok) {
-      await deps.store.markOutboundMessage(row.id, {
-        deliveryStatus: "sent",
-        externalMessageId: result.metaMessageId,
-        deliveryErrorCode: null,
-      });
-      continue;
-    }
-    await deps.store.markOutboundMessage(row.id, {
-      deliveryStatus: "failed",
-      deliveryErrorCode: result.errorCode,
-    });
-    if (result.retryable) retryableFailure = true;
-  }
-  return { retryableFailure };
+  return drainWatiConversationOutbox({
+    store: deps.store,
+    recipientId: deps.recipientId,
+    conversationId: deps.conversationId,
+    sendDeps: deps.sendDeps,
+  });
 }

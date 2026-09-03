@@ -8,7 +8,6 @@ import {
 } from "@/lib/meta/instagram-sender-actions";
 import { emptyConversationSnapshot } from "@/lib/meta/conversation-machine";
 import {
-  activeTicketAttachText,
   creatorTicketRaisedText,
   withPostCompletionQuestion,
   personaWelcomeText,
@@ -17,6 +16,7 @@ import type { DbTicket } from "@/lib/tickets/types";
 import * as instagramSend from "@/lib/meta/instagram-send";
 import * as instagramMail from "@/lib/email/instagram-ticket-mail";
 import { instagramMemoryOutbox } from "@/lib/meta/__tests__/instagram-memory-outbox";
+import { watiMemoryOutbox } from "@/lib/meta/__tests__/wati-memory-outbox";
 
 function dbTicket(overrides: Partial<DbTicket> = {}): DbTicket {
   return {
@@ -207,6 +207,18 @@ function memoryStore(): InstagramIngestStore & {
       });
       return { outcome: "claimed" as const, id };
     },
+    async findOutboundByIdempotencyKey(idempotencyKey: string) {
+      const row = messages.find((message) => message.idempotencyKey === idempotencyKey);
+      if (!row) return null;
+      return {
+        id: row.id as string,
+        externalMessageId: (row.externalMessageId as string | null) ?? null,
+        deliveryStatus: String(row.deliveryStatus ?? ""),
+        idempotencyKey: (row.idempotencyKey as string | null) ?? null,
+        recipientExternalId: (row.recipientExternalId as string | null) ?? null,
+        conversationId: (row.conversationId as string | null) ?? null,
+      };
+    },
     async markOutboundMessage(id: string, patch: Record<string, unknown>) {
       const row = messages.find((message) => message.id === id);
       if (!row) return;
@@ -214,6 +226,7 @@ function memoryStore(): InstagramIngestStore & {
       Object.assign(row, patch);
     },
     ...instagramMemoryOutbox(messages),
+    ...watiMemoryOutbox(messages),
     async claimEmailDelivery(input: Record<string, unknown>) {
       const duplicate = emails.find((row) => row.idempotencyKey === input.idempotencyKey);
       if (duplicate) {
@@ -404,10 +417,10 @@ describe("applyInstagramEffects ticket creation", () => {
     expect(store.tickets[0]?.id).toBe("ticket-existing");
     expect(instagramSend.sendInstagramQuickReplies).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: withPostCompletionQuestion(activeTicketAttachText("CF-2026-00001")),
+        text: withPostCompletionQuestion(creatorTicketRaisedText("CF-2026-00001")),
       }),
     );
-    expect(instagramMail.sendInstagramTicketConfirmationEmail).not.toHaveBeenCalled();
+    expect(instagramMail.sendInstagramTicketConfirmationEmail).toHaveBeenCalledTimes(1);
   });
 
   it("finishes typing once from the after() owner even when drain setup throws", async () => {

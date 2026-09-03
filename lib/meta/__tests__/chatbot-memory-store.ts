@@ -1,6 +1,8 @@
 import type { InstagramIngestStore } from "@/lib/meta/instagram-store";
 import { applyReserveInstagramOutboundAndSnapshot } from "@/lib/meta/instagram-reserve";
+import { applyReserveWatiOutboundAndSnapshot } from "@/lib/wati/reserve";
 import { instagramMemoryOutbox, instagramMemoryEmailOutbox } from "@/lib/meta/__tests__/instagram-memory-outbox";
+import { watiMemoryOutbox } from "@/lib/meta/__tests__/wati-memory-outbox";
 import { isInstagramEmailTerminalError } from "@/lib/meta/email-drain-purposes";
 import {
   IDENTITY_AMBIGUOUS,
@@ -579,9 +581,14 @@ export function createMemoryChatbotStore(
           id: message.id as string,
           messageBody: String(message.messageBody ?? ""),
           purpose: (message.purpose as string | null) ?? null,
+          rawPayload: message.rawPayload ?? message.raw_payload ?? null,
+          recipientExternalId:
+            (message.recipientExternalId as string | null) ?? null,
+          deliveryStatus: String(message.deliveryStatus ?? ""),
         }));
     },
     ...instagramMemoryOutbox(messages),
+    ...watiMemoryOutbox(messages),
     ...instagramMemoryEmailOutbox(emails),
     async getConversationEmailContext(conversationId: string) {
       const row = conversations.find((conversation) => conversation.id === conversationId);
@@ -647,6 +654,105 @@ export function createMemoryChatbotStore(
             id: String(message.id),
             conversationId: String(message.conversationId ?? ""),
             channel: String(message.channel ?? "instagram"),
+            direction: "outbound" as const,
+            senderName: "Cloutflow",
+            senderAddress: (message.senderAddress as string | null) ?? null,
+            recipientExternalId:
+              (message.recipientExternalId as string | null) ?? null,
+            messageBody: String(message.messageBody ?? ""),
+            purpose: (message.purpose as string | null) ?? null,
+            ticketId: (message.ticketId as string | null) ?? null,
+            idempotencyKey: String(message.idempotencyKey),
+            deliveryStatus: String(message.deliveryStatus ?? "pending"),
+            routingKind: (message.routingKind as string | null) ?? "support",
+            rawPayload: message.rawPayload ?? null,
+          })),
+        nextId,
+      });
+      if (result.outcome === "failed") {
+        return { outcome: "failed" as const, errorCode: result.errorCode };
+      }
+      if (row) {
+        row.lastMessageAt = result.conversation.lastMessageAt;
+        row.lastActivityAt = result.conversation.lastActivityAt;
+        row.state = result.conversation.state;
+        row.routingIntent = result.conversation.routingIntent;
+        row.currentIntakeField = result.conversation.currentIntakeField;
+        row.lastPromptKey = result.conversation.lastPromptKey;
+        row.lastProcessedExternalMessageId =
+          result.conversation.lastProcessedExternalMessageId;
+        row.collectedData = result.conversation.collectedData;
+        row.ticketId = result.conversation.ticketId;
+        row.intakeSessionVersion = result.conversation.intakeSessionVersion;
+        if (result.conversation.displayName) {
+          row.displayName = result.conversation.displayName;
+        }
+      }
+      for (const message of result.insertedMessages) {
+        messages.push({
+          ...message,
+          deliveryAttemptCount: 0,
+          nextAttemptAt: null,
+        });
+      }
+      return { outcome: "reserved" as const, outbounds: result.outbounds };
+    },
+    async reserveWatiOutboundAndSnapshot(input: {
+      conversationId: string;
+      snapshot: Record<string, unknown> & {
+        lastProcessedExternalMessageId?: string | null;
+        lastActivityAt?: string | null;
+        state?: string;
+        routingIntent?: string | null;
+        currentIntakeField?: string | null;
+        lastPromptKey?: string | null;
+        collected?: unknown;
+        ticketId?: string | null;
+        intakeSessionVersion?: number;
+      };
+      lastMessageAt: string;
+      displayName: string | null;
+      expectedLastProcessedExternalMessageId?: string | null;
+      outbounds: Array<Record<string, unknown>>;
+    }) {
+      const row = conversations.find(
+        (conversation) => conversation.id === input.conversationId,
+      );
+      const result = applyReserveWatiOutboundAndSnapshot({
+        conversation: row
+          ? {
+              id: String(row.id),
+              lastProcessedExternalMessageId:
+                (row.lastProcessedExternalMessageId as string | null) ?? null,
+              displayName: (row.displayName as string | null) ?? null,
+              channel: (row.channel as string | null) ?? "whatsapp",
+              provider: (row.provider as string | null) ?? "wati",
+            }
+          : null,
+        expectedLastProcessedExternalMessageId:
+          input.expectedLastProcessedExternalMessageId ?? null,
+        snapshot: input.snapshot as Parameters<
+          typeof applyReserveWatiOutboundAndSnapshot
+        >[0]["snapshot"],
+        lastMessageAt: input.lastMessageAt,
+        displayName: input.displayName,
+        outbounds: input.outbounds.map((outbound) => ({
+          channel: "whatsapp" as const,
+          recipientExternalId: String(outbound.recipientExternalId ?? ""),
+          senderAddress: (outbound.senderAddress as string | null) ?? null,
+          messageBody: String(outbound.messageBody ?? ""),
+          idempotencyKey: String(outbound.idempotencyKey ?? ""),
+          purpose: String(outbound.purpose ?? "prompt"),
+          ticketId: (outbound.ticketId as string | null) ?? null,
+          routingKind: (outbound.routingKind as string | null) ?? "support",
+          rawPayload: outbound.rawPayload ?? null,
+        })),
+        existingMessages: messages
+          .filter((message) => message.idempotencyKey)
+          .map((message) => ({
+            id: String(message.id),
+            conversationId: String(message.conversationId ?? ""),
+            channel: String(message.channel ?? "whatsapp"),
             direction: "outbound" as const,
             senderName: "Cloutflow",
             senderAddress: (message.senderAddress as string | null) ?? null,

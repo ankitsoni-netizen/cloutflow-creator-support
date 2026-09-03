@@ -25,6 +25,13 @@ export function personaStatePromptKey(
   return retryMessageId ? `${base}:retry:${retryMessageId}` : base;
 }
 
+export function isCreatorConfirmPromptKey(promptKey: string): boolean {
+  return (
+    promptKey === PERSONA_PROMPT.creatorConfirm ||
+    promptKey.startsWith(`${PERSONA_PROMPT.creatorConfirm}:`)
+  );
+}
+
 export function chatbotOutboundIdempotencyKey(
   conversationId: string,
   intakeSessionVersion: number,
