@@ -34,6 +34,17 @@ import {
   ticketCreatedWithoutEmailText,
 } from "@/lib/meta/routing-copy";
 import {
+  PERSONA_AGENCY_PAYLOAD,
+  PERSONA_AGENCY_TITLE,
+  PERSONA_BRAND_PAYLOAD,
+  PERSONA_BRAND_TITLE,
+  PERSONA_CREATOR_PAYLOAD,
+  PERSONA_CREATOR_TITLE,
+  PERSONA_OTHER_PAYLOAD,
+  PERSONA_OTHER_TITLE,
+  personaWelcomeText,
+} from "@/lib/meta/instagram-persona-copy";
+import {
   chatbotOutboundIdempotencyKey,
   intakeEffectType,
 } from "@/lib/meta/prompt-keys";
@@ -1680,7 +1691,7 @@ describe("mapIntakeToWhatsAppTicketInsert", () => {
 });
 
 describe("WATI interactive ingest parity", () => {
-  it("sends native WATI buttons on the first routing prompt and does not also send text", async () => {
+  it("sends native WATI interactives on the persona menu and does not also send text", async () => {
     process.env.WHATSAPP_PROVIDER = "wati";
     const interactive = vi
       .spyOn(watiSend, "sendWatiInteractiveMessage")
@@ -1696,25 +1707,40 @@ describe("WATI interactive ingest parity", () => {
       sampleWhatsAppEvent({
         provider: "wati",
         externalEventId: "messageReceived:wamid.first",
+        messageBody: "Hi",
       }),
       store,
       context,
     );
     expect(result.outcome).toBe("stored");
-    expect(store.conversations[0]?.state).toBe("awaiting_route");
+    expect(store.conversations[0]?.state).toBe("awaiting_persona");
     expect(interactive).toHaveBeenCalledTimes(1);
     expect(interactive.mock.calls[0]?.[0]).toMatchObject({
-      text: WHATSAPP_ROUTING_QUESTION_TEXT,
+      text: personaWelcomeText("Riya Sharma"),
       quickReplies: expect.arrayContaining([
-        expect.objectContaining({ title: "Campaign / Collab" }),
-        expect.objectContaining({ title: "Creator Support" }),
+        expect.objectContaining({
+          title: PERSONA_CREATOR_TITLE,
+          payload: PERSONA_CREATOR_PAYLOAD,
+        }),
+        expect.objectContaining({
+          title: PERSONA_BRAND_TITLE,
+          payload: PERSONA_BRAND_PAYLOAD,
+        }),
+        expect.objectContaining({
+          title: PERSONA_AGENCY_TITLE,
+          payload: PERSONA_AGENCY_PAYLOAD,
+        }),
+        expect.objectContaining({
+          title: PERSONA_OTHER_TITLE,
+          payload: PERSONA_OTHER_PAYLOAD,
+        }),
       ]),
     });
     expect(text).not.toHaveBeenCalled();
     expect(metaButtons).not.toHaveBeenCalled();
   });
 
-  it("advances Creator Support from a WATI interactive title with no Instagram payload", async () => {
+  it("advances I'm a creator from a WATI interactive title with no Instagram payload", async () => {
     process.env.WHATSAPP_PROVIDER = "wati";
     vi.spyOn(watiSend, "sendWatiInteractiveMessage").mockResolvedValue({
       ok: true,
@@ -1731,6 +1757,7 @@ describe("WATI interactive ingest parity", () => {
       sampleWhatsAppEvent({
         provider: "wati",
         externalEventId: "messageReceived:wamid.first",
+        messageBody: "Hi",
       }),
       store,
       context,
@@ -1741,15 +1768,17 @@ describe("WATI interactive ingest parity", () => {
         externalEventId: "messageReceived:wamid.btn",
         externalMessageId: "wamid.btn",
         messageType: "interactive",
-        messageBody: "Creator Support",
+        messageBody: PERSONA_CREATOR_TITLE,
         quickReplyPayload: null,
       }),
       store,
       context,
     );
     expect(routed.outcome).toBe("stored");
-    expect(store.conversations[0]?.state).toBe("support_intake");
-    expect(store.conversations[0]?.currentIntakeField).toBe("creator_details");
+    expect(store.conversations[0]?.state).toBe("awaiting_creator_reason");
+    expect(store.conversations[0]?.collectedData).toMatchObject({
+      igPersona: "creator",
+    });
     expect(store.tickets).toHaveLength(0);
   });
 
@@ -2261,7 +2290,7 @@ describe("WATI ingest first-delivery conversation persistence", () => {
         whatsappMessageId: "wamid.wati.hi",
       }),
     );
-    expect(hi.snapshot.state).toBe("awaiting_route");
+    expect(hi.snapshot.state).toBe("awaiting_persona");
     expect(hi.newOutboundCount).toBe(1);
 
     const button = await sendWatiOnce(
@@ -2270,24 +2299,23 @@ describe("WATI ingest first-delivery conversation persistence", () => {
         text: null,
         type: "button",
         buttonReply: {
-          title: "Creator Support",
+          title: PERSONA_CREATOR_TITLE,
         },
         whatsappMessageId: "wamid.wati.btn",
       }),
     );
-    expect(button.snapshot.state).toBe("support_intake");
-    expect(button.snapshot.currentIntakeField).toBe("creator_details");
-    expect(button.newOutboundCount).toBeGreaterThanOrEqual(1);
+    expect(button.snapshot.state).toBe("awaiting_creator_reason");
+    expect(button.snapshot.collected.igPersona).toBe("creator");
+    expect(button.newOutboundCount).toBe(1);
 
     const typed = await sendWatiOnce(
       store,
       watiTextPayload({
-        text: "Riya Sharma, riya@example.com",
+        text: "Existing campaign",
         whatsappMessageId: "wamid.wati.creator",
       }),
     );
-    expect(typed.snapshot.currentIntakeField).toBe("platform_details");
-    expect(typed.snapshot.collected.creatorName).toBe("Riya Sharma");
+    expect(typed.snapshot.state).toBe("awaiting_creator_issue_category");
     expect(typed.newOutboundCount).toBe(1);
 
     const list = await sendWatiOnce(
@@ -2295,20 +2323,21 @@ describe("WATI ingest first-delivery conversation persistence", () => {
       watiTextPayload({
         text: null,
         type: "list",
-        listReply: { title: "Instagram, @riya_creates" },
+        listReply: { title: "Campaign issue" },
         whatsappMessageId: "wamid.wati.platform",
       }),
     );
-    expect(list.snapshot.currentIntakeField).toBe("campaign_details");
+    expect(list.snapshot.state).toBe("creator_campaign_details");
 
     const campaign = await sendWatiOnce(
       store,
       watiTextPayload({
-        text: "Acme, August 2026",
+        text: "Acme, August 2026, riya@example.com",
         whatsappMessageId: "wamid.wati.campaign",
       }),
     );
     expect(campaign.snapshot.state).toBe("awaiting_month_confirmation");
+    expect(campaign.snapshot.collected.campaignName).toBeNull();
 
     const yesList = await sendWatiOnce(
       store,
@@ -2319,7 +2348,8 @@ describe("WATI ingest first-delivery conversation persistence", () => {
         whatsappMessageId: "wamid.wati.yes",
       }),
     );
-    expect(yesList.snapshot.state).toBe("ticket_open");
+    expect(yesList.snapshot.state).toBe("awaiting_post_completion");
     expect(store.tickets).toHaveLength(1);
+    expect(store.tickets[0]?.campaign_name).toBeNull();
   });
 });

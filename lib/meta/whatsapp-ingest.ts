@@ -1,11 +1,15 @@
 import "server-only";
 
 import { WEBHOOK_STATUS_FAILED } from "@/lib/meta/constants";
-import { reduceChannelConversation } from "@/lib/meta/conversation-machine";
+import {
+  reduceChannelConversation,
+  reduceInstagramConversation,
+} from "@/lib/meta/conversation-machine";
 import {
   applyWhatsAppEffects,
   retryFailedInstagramOutbounds,
 } from "@/lib/meta/instagram-effects";
+import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
 import { isActiveTicketStatus } from "@/lib/meta/instagram-ticket";
 import {
   IDENTITY_MISSING,
@@ -38,6 +42,10 @@ export type WhatsAppIngestDeps = {
 
 function suggestedPhoneFromWaId(waId: string): string | null {
   return parseIntakePhone(waId)?.normalized ?? parseIntakePhone(`+${waId}`)?.normalized ?? null;
+}
+
+function usesWatiPersonaMachine(provider: string): boolean {
+  return provider === WATI_WHATSAPP_PROVIDER;
 }
 
 async function upsertConversation(
@@ -355,7 +363,9 @@ export async function ingestWhatsAppInboundMessage(
       snapshot.suggestedSocialHandle = event.displayName;
     }
 
-    if (event.messageType === "unsupported") {
+    const watiPersona = usesWatiPersonaMachine(event.provider);
+
+    if (event.messageType === "unsupported" && !watiPersona) {
       if (isActiveTicketStatus(ticketInfo.status) && ticketInfo.ticketId) {
         const applied = await applyWhatsAppEffects({
           effects: [{ type: "notify_help_inbound" }],
@@ -408,16 +418,26 @@ export async function ingestWhatsAppInboundMessage(
       return media;
     }
 
-    const reduced = reduceChannelConversation(
-      snapshot,
-      {
-        text: event.messageBody,
-        quickReplyPayload: event.quickReplyPayload ?? null,
-        timestamp: event.timestamp,
-        messageId: event.externalMessageId,
-      },
-      WHATSAPP_INTAKE_COPY,
-    );
+    const reduced = watiPersona
+      ? reduceInstagramConversation(snapshot, {
+          text: event.messageBody,
+          quickReplyPayload: event.quickReplyPayload ?? null,
+          timestamp: event.timestamp,
+          messageId: event.externalMessageId,
+          unsupportedKind:
+            event.unsupportedKind ??
+            (event.messageType === "unsupported" ? "unsupported" : null),
+        })
+      : reduceChannelConversation(
+          snapshot,
+          {
+            text: event.messageBody,
+            quickReplyPayload: event.quickReplyPayload ?? null,
+            timestamp: event.timestamp,
+            messageId: event.externalMessageId,
+          },
+          WHATSAPP_INTAKE_COPY,
+        );
 
     if (inbound.outcome === "duplicate" && !reduced.processed) {
       const retried = await retryFailedInstagramOutbounds(
@@ -510,7 +530,14 @@ export async function ingestWhatsAppInboundMessage(
 
     if (applied.ticketId) {
       reduced.snapshot.ticketId = applied.ticketId;
-      reduced.snapshot.state = "ticket_open";
+      if (watiPersona) {
+        if (reduced.snapshot.state !== "awaiting_post_completion") {
+          reduced.snapshot.state =
+            reduced.snapshot.state || "awaiting_post_completion";
+        }
+      } else {
+        reduced.snapshot.state = "ticket_open";
+      }
     }
 
     const saved = await store.saveConversationSnapshot(

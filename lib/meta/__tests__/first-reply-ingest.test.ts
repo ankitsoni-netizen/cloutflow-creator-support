@@ -364,48 +364,46 @@ describe("first-reply DM ingest persistence", () => {
         whatsappMessageId: "wamid.wati.hi",
       }),
     );
-    expect(hi.state).toBe("awaiting_route");
+    expect(hi.state).toBe("awaiting_persona");
 
     const button = await sendWatiOnce(
       watiTextPayload({
         text: null,
         type: "button",
-        buttonReply: { title: "Creator Support" },
+        buttonReply: { title: PERSONA_CREATOR_TITLE },
         whatsappMessageId: "wamid.wati.btn",
       }),
     );
-    expect(button.state).toBe("support_intake");
-    expect(button.currentIntakeField).toBe("creator_details");
+    expect(button.state).toBe("awaiting_creator_reason");
+    expect(button.collected.igPersona).toBe("creator");
 
     const typed = await sendWatiOnce(
       watiTextPayload({
-        text: "Riya Sharma, riya@example.com",
+        text: "Existing campaign",
         whatsappMessageId: "wamid.wati.creator",
       }),
     );
-    expect(typed.currentIntakeField).toBe("platform_details");
+    expect(typed.state).toBe("awaiting_creator_issue_category");
 
     const list = await sendWatiOnce(
       watiTextPayload({
         text: null,
         type: "list",
-        listReply: { title: "Instagram, @riya_creates" },
+        listReply: { title: "Campaign issue" },
         whatsappMessageId: "wamid.wati.platform",
       }),
     );
-    expect(list.currentIntakeField).toBe("campaign_details");
+    expect(list.state).toBe("creator_campaign_details");
 
     const campaign = await sendWatiOnce(
       watiTextPayload({
-        text: CAMPAIGN_COMPLETE_TEXT,
+        text: "Acme, August 2026, riya@example.com",
         whatsappMessageId: "wamid.wati.campaign",
       }),
     );
-    expect(campaign.state).not.toBe("support_intake");
-    expect(
-      campaign.collected.campaignName === "Summer Drop" ||
-        campaign.collected.brandName === "Acme",
-    ).toBe(true);
+    expect(campaign.state).toBe("awaiting_month_confirmation");
+    expect(campaign.collected.brandName).toBe("Acme");
+    expect(campaign.collected.campaignName).toBeNull();
   });
 
   it("accepts an Instagram postback title/payload on first delivery", async () => {

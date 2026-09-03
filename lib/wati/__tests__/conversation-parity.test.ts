@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   emptyConversationSnapshot,
-  reduceChannelConversation,
   reduceInstagramConversation,
   type MachineResult,
 } from "@/lib/meta/conversation-machine";
@@ -9,19 +8,17 @@ import {
   CREATOR_CAMPAIGN_ISSUE_PAYLOAD,
   CREATOR_EXISTING_CAMPAIGN_PAYLOAD,
   CREATOR_ISSUE_CATEGORY_TEXT,
+  PERSONA_AGENCY_PAYLOAD,
+  PERSONA_AGENCY_TITLE,
+  PERSONA_BRAND_PAYLOAD,
+  PERSONA_BRAND_TITLE,
   PERSONA_CREATOR_PAYLOAD,
+  PERSONA_CREATOR_TITLE,
+  PERSONA_OTHER_PAYLOAD,
+  PERSONA_OTHER_TITLE,
+  personaWelcomeText,
 } from "@/lib/meta/instagram-persona-copy";
-import {
-  INTAKE_CANCELLED_TEXT,
-  INTAKE_RESTARTED_TEXT,
-  PLATFORM_DETAILS_PROMPT_TEXT,
-  ROUTE_COLLABORATION_PAYLOAD,
-  ROUTE_CREATOR_SUPPORT_PAYLOAD,
-  ROUTING_CLARIFY_TEXT,
-  WHATSAPP_CREATOR_DETAILS_PROMPT_TEXT,
-  WHATSAPP_INTAKE_COPY,
-  WHATSAPP_ROUTING_QUESTION_TEXT,
-} from "@/lib/meta/routing-copy";
+import { personaQuickReplies } from "@/lib/meta/instagram-persona-machine";
 
 function signal(
   text: string,
@@ -48,10 +45,7 @@ function quickReplyTitles(result: MachineResult): string[] {
   return (effect.quickReplies ?? []).map((reply) => reply.title);
 }
 
-function assertSameChoice(
-  wati: MachineResult,
-  instagram: MachineResult,
-) {
+function assertSameChoice(wati: MachineResult, instagram: MachineResult) {
   expect(wati.snapshot.state).toBe(instagram.snapshot.state);
   expect(wati.snapshot.routingIntent).toBe(instagram.snapshot.routingIntent);
   expect(wati.snapshot.currentIntakeField).toBe(
@@ -64,144 +58,103 @@ function assertSameChoice(
   );
 }
 
-describe("WATI WhatsApp end-to-end parity with the shared conversation machine", () => {
-  it("covers routing, intake, re-prompt, ticket, restart, cancel, and follow-up", () => {
-    const start = emptyConversationSnapshot({
-      suggestedPhone: "+16315551181",
-    });
-    const first = reduceChannelConversation(
-      start,
-      signal("Need help with a campaign", { messageId: "wamid.first" }),
-      WHATSAPP_INTAKE_COPY,
+describe("WATI WhatsApp end-to-end parity with the shared Instagram persona machine", () => {
+  it("starts at the Instagram persona menu and treats typed, button, and list titles the same as payloads", () => {
+    const first = reduceInstagramConversation(
+      emptyConversationSnapshot(),
+      signal("Hi", { messageId: "wamid.first" }),
     );
-    expect(first.snapshot.state).toBe("awaiting_route");
-    expect(sendText(first)).toBe(WHATSAPP_ROUTING_QUESTION_TEXT);
-    expect(quickReplyTitles(first)).toEqual([
-      "Campaign / Collab",
-      "Creator Support",
-    ]);
-
-    const collabFromPayload = reduceChannelConversation(
-      first.snapshot,
-      signal("Campaign / Collab", {
-        messageId: "ig.collab",
-        payload: ROUTE_COLLABORATION_PAYLOAD,
-      }),
-      WHATSAPP_INTAKE_COPY,
+    expect(first.snapshot.state).toBe("awaiting_persona");
+    expect(sendText(first)).toBe(personaWelcomeText(null));
+    expect(quickReplyTitles(first)).toEqual(
+      personaQuickReplies().map((reply) => reply.title),
     );
-    const collabFromWati = reduceChannelConversation(
-      first.snapshot,
-      signal("Campaign / Collab", { messageId: "wati.collab" }),
-      WHATSAPP_INTAKE_COPY,
-    );
-    assertSameChoice(collabFromWati, collabFromPayload);
-    expect(collabFromWati.snapshot.state).toBe("collaboration");
-    expect(collabFromWati.effects.some((effect) => effect.type === "create_ticket")).toBe(
+    expect(first.effects.some((effect) => effect.type === "create_ticket")).toBe(
       false,
     );
 
-    const supportFromPayload = reduceChannelConversation(
+    const creatorFromPayload = reduceInstagramConversation(
       first.snapshot,
-      signal("Creator Support", {
-        messageId: "ig.support",
-        payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+      signal(PERSONA_CREATOR_TITLE, {
+        messageId: "ig.creator",
+        payload: PERSONA_CREATOR_PAYLOAD,
       }),
-      WHATSAPP_INTAKE_COPY,
     );
-    const supportFromButton = reduceChannelConversation(
+    const creatorFromButton = reduceInstagramConversation(
       first.snapshot,
-      signal("Creator Support", { messageId: "wati.button" }),
-      WHATSAPP_INTAKE_COPY,
+      signal(PERSONA_CREATOR_TITLE, { messageId: "wati.button" }),
     );
-    const supportFromList = reduceChannelConversation(
+    const creatorFromList = reduceInstagramConversation(
       first.snapshot,
-      signal("Creator Support", { messageId: "wati.list" }),
-      WHATSAPP_INTAKE_COPY,
+      signal(PERSONA_CREATOR_TITLE, { messageId: "wati.list" }),
     );
-    const supportTyped = reduceChannelConversation(
+    const creatorTyped = reduceInstagramConversation(
       first.snapshot,
-      signal("Creator Support", { messageId: "wati.typed" }),
-      WHATSAPP_INTAKE_COPY,
+      signal(PERSONA_CREATOR_TITLE, { messageId: "wati.typed" }),
     );
-    assertSameChoice(supportFromButton, supportFromPayload);
-    assertSameChoice(supportFromList, supportFromPayload);
-    assertSameChoice(supportTyped, supportFromPayload);
-    expect(supportFromButton.snapshot.state).toBe("support_intake");
-    expect(sendText(supportFromButton)).toBe(WHATSAPP_CREATOR_DETAILS_PROMPT_TEXT);
+    assertSameChoice(creatorFromButton, creatorFromPayload);
+    assertSameChoice(creatorFromList, creatorFromPayload);
+    assertSameChoice(creatorTyped, creatorFromPayload);
+    expect(creatorFromButton.snapshot.state).toBe("awaiting_creator_reason");
 
-    const unclear = reduceChannelConversation(
+    const brand = reduceInstagramConversation(
       first.snapshot,
-      signal("maybe later", { messageId: "wamid.unclear" }),
-      WHATSAPP_INTAKE_COPY,
+      signal(PERSONA_BRAND_TITLE, { messageId: "wati.brand" }),
     );
-    expect(sendText(unclear)).toBe(ROUTING_CLARIFY_TEXT);
-    expect(quickReplyTitles(unclear)).toEqual([
-      "Campaign / Collab",
-      "Creator Support",
-    ]);
+    const brandPayload = reduceInstagramConversation(
+      first.snapshot,
+      signal(PERSONA_BRAND_TITLE, {
+        messageId: "ig.brand",
+        payload: PERSONA_BRAND_PAYLOAD,
+      }),
+    );
+    assertSameChoice(brand, brandPayload);
+    expect(brand.snapshot.state).toBe("brand_action");
 
-    const incomplete = reduceChannelConversation(
-      supportFromButton.snapshot,
-      signal("Riya Sharma", { messageId: "wamid.name-only" }),
-      WHATSAPP_INTAKE_COPY,
+    const agency = reduceInstagramConversation(
+      first.snapshot,
+      signal(PERSONA_AGENCY_TITLE, { messageId: "wati.agency" }),
     );
-    expect(incomplete.snapshot.state).toBe("support_intake");
-    expect(incomplete.snapshot.currentIntakeField).toBe("creator_details");
-    expect(sendText(incomplete)).toBe("Please send a valid email address.");
+    const agencyPayload = reduceInstagramConversation(
+      first.snapshot,
+      signal(PERSONA_AGENCY_TITLE, {
+        messageId: "ig.agency",
+        payload: PERSONA_AGENCY_PAYLOAD,
+      }),
+    );
+    assertSameChoice(agency, agencyPayload);
+    expect(agency.snapshot.state).toBe("agency_details");
 
-    const creator = reduceChannelConversation(
-      incomplete.snapshot,
-      signal("riya@example.com", { messageId: "wamid.email" }),
-      WHATSAPP_INTAKE_COPY,
+    const other = reduceInstagramConversation(
+      first.snapshot,
+      signal(PERSONA_OTHER_TITLE, { messageId: "wati.other" }),
     );
-    expect(creator.snapshot.currentIntakeField).toBe("platform_details");
-    expect(sendText(creator)).toBe(PLATFORM_DETAILS_PROMPT_TEXT);
+    const otherPayload = reduceInstagramConversation(
+      first.snapshot,
+      signal(PERSONA_OTHER_TITLE, {
+        messageId: "ig.other",
+        payload: PERSONA_OTHER_PAYLOAD,
+      }),
+    );
+    assertSameChoice(other, otherPayload);
+    expect(other.snapshot.state).toBe("other_inquiry");
 
-    const platform = reduceChannelConversation(
-      creator.snapshot,
-      signal("Instagram, @riya_creates", { messageId: "wamid.platform" }),
-      WHATSAPP_INTAKE_COPY,
+    const midFlowHi = reduceInstagramConversation(
+      creatorFromButton.snapshot,
+      signal("Hi", { messageId: "wamid.hi.mid" }),
     );
-    expect(platform.snapshot.currentIntakeField).toBe("campaign_details");
+    expect(midFlowHi.snapshot.state).toBe("awaiting_creator_reason");
 
-    const created = reduceChannelConversation(
-      platform.snapshot,
-      signal("Acme, August 2026", { messageId: "wamid.campaign" }),
-      WHATSAPP_INTAKE_COPY,
+    const restarted = reduceInstagramConversation(
+      creatorFromButton.snapshot,
+      signal("restart", { messageId: "wamid.restart" }),
     );
-    expect(created.snapshot.state).toBe("awaiting_month_confirmation");
-    const confirmed = reduceChannelConversation(
-      created.snapshot,
-      signal("Yes", { messageId: "wamid.month.yes" }),
-      WHATSAPP_INTAKE_COPY,
+    expect(restarted.snapshot.state).toBe("awaiting_persona");
+    expect(restarted.snapshot.intakeSessionVersion).toBeGreaterThan(
+      creatorFromButton.snapshot.intakeSessionVersion,
     );
-    expect(confirmed.snapshot.state).toBe("ticket_open");
-    expect(confirmed.effects.some((effect) => effect.type === "create_ticket")).toBe(
-      true,
-    );
-    expect(confirmed.snapshot.collected.campaignName).toBeNull();
 
-    const restart = reduceChannelConversation(
-      creator.snapshot,
-      signal("RESTART", { messageId: "wamid.restart" }),
-      WHATSAPP_INTAKE_COPY,
-    );
-    expect(restart.snapshot.state).toBe("support_intake");
-    expect(restart.snapshot.currentIntakeField).toBe("creator_details");
-    expect(restart.snapshot.intakeSessionVersion).toBeGreaterThan(
-      creator.snapshot.intakeSessionVersion,
-    );
-    expect(sendText(restart)).toBe(INTAKE_RESTARTED_TEXT);
-
-    const cancelled = reduceChannelConversation(
-      creator.snapshot,
-      signal("CANCEL", { messageId: "wamid.cancel" }),
-      WHATSAPP_INTAKE_COPY,
-    );
-    expect(cancelled.snapshot.state).toBe("cancelled");
-    expect(sendText(cancelled)).toBe(INTAKE_CANCELLED_TEXT);
-
-    const followUp = reduceChannelConversation(
+    const followUp = reduceInstagramConversation(
       emptyConversationSnapshot({
         state: "ticket_open",
         routingIntent: "creator_support",
@@ -210,7 +163,6 @@ describe("WATI WhatsApp end-to-end parity with the shared conversation machine",
         ticketCode: "CF-2026-00001",
       }),
       signal("Following up", { messageId: "wamid.follow" }),
-      WHATSAPP_INTAKE_COPY,
     );
     expect(followUp.snapshot.state).toBe("ticket_open");
     expect(followUp.effects).toEqual([{ type: "notify_help_inbound" }]);
@@ -263,9 +215,9 @@ describe("WATI WhatsApp end-to-end parity with the shared conversation machine",
       signal("Yes", { messageId: "mid.month.yes" }),
     );
     expect(monthYes.snapshot.state).toBe("awaiting_post_completion");
-    expect(monthYes.effects.filter((effect) => effect.type === "create_ticket")).toHaveLength(
-      1,
-    );
+    expect(
+      monthYes.effects.filter((effect) => effect.type === "create_ticket"),
+    ).toHaveLength(1);
     expect(monthYes.snapshot.collected.campaignName).toBeNull();
   });
 });
