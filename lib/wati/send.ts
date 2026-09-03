@@ -7,7 +7,10 @@ import type {
   WhatsAppSendResult,
 } from "@/lib/meta/whatsapp-send";
 import {
-  getWatiSendConfig,
+  INVALID_WATI_CONVERSATION_TARGET_MODE,
+  resolveWatiSendConfig,
+  WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT,
+  type WatiConversationTargetMode,
   type WatiSendConfig,
 } from "@/lib/wati/config";
 import {
@@ -105,6 +108,26 @@ export function watiV3InteractiveMessageUrl(
 }
 
 /**
+ * Shared WATI v3 conversation target for text, buttons, and lists.
+ * Channel and recipient are always validated. Recipient-only mode omits
+ * the channel prefix from the API target; it does not skip channel identity.
+ */
+export function buildWatiConversationTarget(options: {
+  channelPhoneNumber: string;
+  recipientWaId: string;
+  mode: WatiConversationTargetMode;
+}): string | null {
+  const channel = normalizeWaId(options.channelPhoneNumber);
+  const recipient = normalizeWaId(options.recipientWaId);
+  if (!channel || !recipient) return null;
+  if (!WA_ID_PATTERN.test(channel) || !WA_ID_PATTERN.test(recipient)) {
+    return null;
+  }
+  if (options.mode === "recipient") return recipient;
+  return `${channel}:${recipient}`;
+}
+
+/**
  * Channel-scoped target: `{channelPhoneNumber}:{recipientWaId}`.
  * Both parts must be digits-only.
  */
@@ -112,11 +135,11 @@ export function buildWatiChannelScopedTarget(
   channelPhoneNumber: string,
   recipientWaId: string,
 ): string | null {
-  const channel = normalizeWaId(channelPhoneNumber);
-  const recipient = normalizeWaId(recipientWaId);
-  if (!channel || !recipient) return null;
-  if (!WA_ID_PATTERN.test(channel) || !WA_ID_PATTERN.test(recipient)) return null;
-  return `${channel}:${recipient}`;
+  return buildWatiConversationTarget({
+    channelPhoneNumber,
+    recipientWaId,
+    mode: WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT,
+  });
 }
 
 function classifyWatiHttpError(status: number): WhatsAppSendFailure {
@@ -198,6 +221,16 @@ function invalidRecipientResult(): WhatsAppSendFailure {
   };
 }
 
+function invalidConversationTargetModeResult(): WhatsAppSendFailure {
+  return {
+    ok: false,
+    errorCode: INVALID_WATI_CONVERSATION_TARGET_MODE,
+    retryable: false,
+    messagingWindowExpired: false,
+    httpStatus: null,
+  };
+}
+
 function prepareWatiSend(options: {
   recipientId: string;
   deps?: WatiSendDeps;
@@ -212,16 +245,36 @@ function prepareWatiSend(options: {
     }
   | WhatsAppSendFailure {
   const env = options.deps?.env ?? process.env;
-  const config = options.config ?? getWatiSendConfig(env);
-  if (!config) return notConfiguredResult();
+  let config: WatiSendConfig;
+  let mode: WatiConversationTargetMode;
+
+  if (options.config) {
+    config = options.config;
+    mode =
+      config.conversationTargetMode ??
+      WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT;
+  } else {
+    const resolved = resolveWatiSendConfig(env);
+    if (!resolved.ok) {
+      if (resolved.errorCode === INVALID_WATI_CONVERSATION_TARGET_MODE) {
+        return invalidConversationTargetModeResult();
+      }
+      return notConfiguredResult();
+    }
+    config = resolved.config;
+    mode =
+      resolved.config.conversationTargetMode ??
+      WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT;
+  }
 
   const recipientId = normalizeWaId(options.recipientId);
   if (!recipientId) return invalidRecipientResult();
 
-  const target = buildWatiChannelScopedTarget(
-    config.channelPhoneNumber,
-    recipientId,
-  );
+  const target = buildWatiConversationTarget({
+    channelPhoneNumber: config.channelPhoneNumber,
+    recipientWaId: recipientId,
+    mode,
+  });
   if (!target) return invalidRecipientResult();
 
   return {

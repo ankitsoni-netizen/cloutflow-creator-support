@@ -8,6 +8,7 @@ import "server-only";
  * - WATI_API_ENDPOINT
  * - WATI_API_TOKEN (token only; Authorization Bearer is added by the client)
  * - WATI_CHANNEL_PHONE_NUMBER
+ * - WATI_CONVERSATION_TARGET_MODE (channel_recipient | recipient; unset defaults)
  * - WATI_WEBHOOK_SECRET
  */
 
@@ -16,8 +17,24 @@ export const WATI_ENV = {
   API_ENDPOINT: "WATI_API_ENDPOINT",
   API_TOKEN: "WATI_API_TOKEN",
   CHANNEL_PHONE_NUMBER: "WATI_CHANNEL_PHONE_NUMBER",
+  CONVERSATION_TARGET_MODE: "WATI_CONVERSATION_TARGET_MODE",
   WEBHOOK_SECRET: "WATI_WEBHOOK_SECRET",
 } as const;
+
+export const WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT =
+  "channel_recipient" as const;
+export const WATI_CONVERSATION_TARGET_MODE_RECIPIENT = "recipient" as const;
+
+export const WATI_CONVERSATION_TARGET_MODES = [
+  WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT,
+  WATI_CONVERSATION_TARGET_MODE_RECIPIENT,
+] as const;
+
+export type WatiConversationTargetMode =
+  (typeof WATI_CONVERSATION_TARGET_MODES)[number];
+
+export const INVALID_WATI_CONVERSATION_TARGET_MODE =
+  "invalid_wati_conversation_target_mode" as const;
 
 export type WatiEnvName = (typeof WATI_ENV)[keyof typeof WATI_ENV];
 
@@ -89,22 +106,87 @@ export function getWatiChannelPhoneNumber(
   return digits.length > 0 ? digits : null;
 }
 
+export type WatiConversationTargetModeResolution =
+  | { ok: true; mode: WatiConversationTargetMode }
+  | { ok: false; errorCode: typeof INVALID_WATI_CONVERSATION_TARGET_MODE };
+
+/**
+ * Unset or blank → channel_recipient.
+ * Only channel_recipient and recipient are allowed.
+ * Invalid values fail closed. Never logs the raw value.
+ */
+export function resolveWatiConversationTargetMode(
+  env: Record<string, string | undefined> = process.env,
+): WatiConversationTargetModeResolution {
+  const raw = env[WATI_ENV.CONVERSATION_TARGET_MODE];
+  if (raw === undefined || raw === null) {
+    return { ok: true, mode: WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT };
+  }
+  if (typeof raw !== "string") {
+    return { ok: false, errorCode: INVALID_WATI_CONVERSATION_TARGET_MODE };
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return { ok: true, mode: WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT };
+  }
+  if (normalized === WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT) {
+    return { ok: true, mode: WATI_CONVERSATION_TARGET_MODE_CHANNEL_RECIPIENT };
+  }
+  if (normalized === WATI_CONVERSATION_TARGET_MODE_RECIPIENT) {
+    return { ok: true, mode: WATI_CONVERSATION_TARGET_MODE_RECIPIENT };
+  }
+  return { ok: false, errorCode: INVALID_WATI_CONVERSATION_TARGET_MODE };
+}
+
 export type WatiSendConfig = {
   apiEndpoint: string;
   apiToken: string;
   channelPhoneNumber: string;
+  conversationTargetMode?: WatiConversationTargetMode;
 };
 
+export type WatiSendConfigResolution =
+  | { ok: true; config: WatiSendConfig }
+  | {
+      ok: false;
+      errorCode:
+        | "wati_send_not_configured"
+        | typeof INVALID_WATI_CONVERSATION_TARGET_MODE;
+    };
+
 /**
- * Returns a validated WATI send config, or null when incomplete.
+ * Validated WATI send config. Channel phone remains required in every mode.
+ * Does not log endpoint, token, phone, or mode values.
+ */
+export function resolveWatiSendConfig(
+  env: Record<string, string | undefined> = process.env,
+): WatiSendConfigResolution {
+  const apiEndpoint = readWatiEnv(WATI_ENV.API_ENDPOINT, env);
+  const apiToken = readWatiEnv(WATI_ENV.API_TOKEN, env);
+  const channelPhoneNumber = getWatiChannelPhoneNumber(env);
+  if (!apiEndpoint || !apiToken || !channelPhoneNumber) {
+    return { ok: false, errorCode: "wati_send_not_configured" };
+  }
+  const mode = resolveWatiConversationTargetMode(env);
+  if (!mode.ok) return mode;
+  return {
+    ok: true,
+    config: {
+      apiEndpoint,
+      apiToken,
+      channelPhoneNumber,
+      conversationTargetMode: mode.mode,
+    },
+  };
+}
+
+/**
+ * Returns a validated WATI send config, or null when incomplete or invalid.
  * Does not log endpoint or token values.
  */
 export function getWatiSendConfig(
   env: Record<string, string | undefined> = process.env,
 ): WatiSendConfig | null {
-  const apiEndpoint = readWatiEnv(WATI_ENV.API_ENDPOINT, env);
-  const apiToken = readWatiEnv(WATI_ENV.API_TOKEN, env);
-  const channelPhoneNumber = getWatiChannelPhoneNumber(env);
-  if (!apiEndpoint || !apiToken || !channelPhoneNumber) return null;
-  return { apiEndpoint, apiToken, channelPhoneNumber };
+  const resolved = resolveWatiSendConfig(env);
+  return resolved.ok ? resolved.config : null;
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildWatiChannelScopedTarget,
+  buildWatiConversationTarget,
   messageIdFromWatiV3Body,
   normalizeWatiApiEndpoint,
   sendWatiInteractiveMessage,
@@ -10,6 +11,7 @@ import {
   watiV3InteractiveMessageUrl,
   watiV3TextMessageUrl,
 } from "@/lib/wati/send";
+import { INVALID_WATI_CONVERSATION_TARGET_MODE } from "@/lib/wati/config";
 import {
   PERSONA_AGENCY_PAYLOAD,
   PERSONA_BRAND_PAYLOAD,
@@ -26,6 +28,28 @@ const config = {
   apiToken: "wati-secret-token-value",
   channelPhoneNumber: "17435002445",
 };
+
+const RECIPIENT_ID = "8618719149214";
+
+function sendEnv(
+  overrides: Record<string, string | undefined> = {},
+): Record<string, string | undefined> {
+  return {
+    WATI_API_ENDPOINT: config.apiEndpoint,
+    WATI_API_TOKEN: config.apiToken,
+    WATI_CHANNEL_PHONE_NUMBER: config.channelPhoneNumber,
+    ...overrides,
+  };
+}
+
+function acceptedResponse() {
+  return new Response(
+    JSON.stringify({
+      message: { whatsappMessageId: "wamid.out.wati" },
+    }),
+    { status: 200 },
+  );
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -236,6 +260,30 @@ describe("WATI v3 send client", () => {
     expect(buildWatiChannelScopedTarget("abc", "8618719149214")).toBeNull();
   });
 
+  it("builds conversation targets from the shared helper", () => {
+    expect(
+      buildWatiConversationTarget({
+        channelPhoneNumber: "+17435002445",
+        recipientWaId: "+8618719149214",
+        mode: "channel_recipient",
+      }),
+    ).toBe("17435002445:8618719149214");
+    expect(
+      buildWatiConversationTarget({
+        channelPhoneNumber: "+17435002445",
+        recipientWaId: "+8618719149214",
+        mode: "recipient",
+      }),
+    ).toBe("8618719149214");
+    expect(
+      buildWatiConversationTarget({
+        channelPhoneNumber: "",
+        recipientWaId: "8618719149214",
+        mode: "recipient",
+      }),
+    ).toBeNull();
+  });
+
   it("parses documented v3 response identifiers only", () => {
     expect(
       messageIdFromWatiV3Body({
@@ -441,5 +489,253 @@ describe("WATI v3 interactive send", () => {
       errorCode: "wati_interactive_option_too_long",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("WATI conversation target modes", () => {
+  const routingButtons = [
+    {
+      content_type: "text" as const,
+      title: "Campaign / Collab",
+      payload: ROUTE_COLLABORATION_PAYLOAD,
+    },
+    {
+      content_type: "text" as const,
+      title: "Creator Support",
+      payload: ROUTE_CREATOR_SUPPORT_PAYLOAD,
+    },
+  ];
+
+  const personaList = [
+    {
+      content_type: "text" as const,
+      title: "I'm a creator",
+      payload: PERSONA_CREATOR_PAYLOAD,
+    },
+    {
+      content_type: "text" as const,
+      title: "I'm a brand",
+      payload: PERSONA_BRAND_PAYLOAD,
+    },
+    {
+      content_type: "text" as const,
+      title: "I'm an agency",
+      payload: PERSONA_AGENCY_PAYLOAD,
+    },
+    {
+      content_type: "text" as const,
+      title: "Something else",
+      payload: PERSONA_OTHER_PAYLOAD,
+    },
+  ];
+
+  it("preserves channel_recipient when the mode env is unset", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => acceptedResponse());
+    await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: { fetchImpl, env: sendEnv() },
+    });
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.target).toBe(
+      buildWatiConversationTarget({
+        channelPhoneNumber: config.channelPhoneNumber,
+        recipientWaId: RECIPIENT_ID,
+        mode: "channel_recipient",
+      }),
+    );
+    expect(body.target).toBe("17435002445:8618719149214");
+  });
+
+  it("uses channel:recipient when mode is explicitly channel_recipient", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => acceptedResponse());
+    await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: {
+        fetchImpl,
+        env: sendEnv({ WATI_CONVERSATION_TARGET_MODE: "channel_recipient" }),
+      },
+    });
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.target).toBe("17435002445:8618719149214");
+  });
+
+  it("uses recipient only when mode is recipient", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => acceptedResponse());
+    const result = await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: {
+        fetchImpl,
+        env: sendEnv({ WATI_CONVERSATION_TARGET_MODE: "recipient" }),
+      },
+    });
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.target).toBe("8618719149214");
+    expect(body.target).not.toContain(":");
+    expect(body.target).not.toContain("17435002445");
+  });
+
+  it("uses the same helper target for text and interactive sends", async () => {
+    const expected = buildWatiConversationTarget({
+      channelPhoneNumber: config.channelPhoneNumber,
+      recipientWaId: RECIPIENT_ID,
+      mode: "recipient",
+    });
+    const textFetch = vi.fn<typeof fetch>(async () => acceptedResponse());
+    const interactiveFetch = vi.fn<typeof fetch>(async () => acceptedResponse());
+    const env = sendEnv({ WATI_CONVERSATION_TARGET_MODE: "recipient" });
+
+    await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: { fetchImpl: textFetch, env },
+    });
+    await sendWatiInteractiveMessage({
+      recipientId: RECIPIENT_ID,
+      text: "Choose",
+      quickReplies: routingButtons,
+      deps: { fetchImpl: interactiveFetch, env },
+    });
+
+    expect(JSON.parse(String(textFetch.mock.calls[0]?.[1]?.body)).target).toBe(
+      expected,
+    );
+    expect(
+      JSON.parse(String(interactiveFetch.mock.calls[0]?.[1]?.body)).target,
+    ).toBe(expected);
+  });
+
+  it("sends buttons and lists with recipient-only targets", async () => {
+    const buttonFetch = vi.fn<typeof fetch>(async () => acceptedResponse());
+    const listFetch = vi.fn<typeof fetch>(async () => acceptedResponse());
+    const env = sendEnv({ WATI_CONVERSATION_TARGET_MODE: "recipient" });
+
+    const buttons = await sendWatiInteractiveMessage({
+      recipientId: RECIPIENT_ID,
+      text: "Please choose one of the options below so we can route your message correctly.",
+      quickReplies: routingButtons,
+      deps: { fetchImpl: buttonFetch, env },
+    });
+    const list = await sendWatiInteractiveMessage({
+      recipientId: RECIPIENT_ID,
+      text: "Tell me a bit about yourself so I can point you to the right place.",
+      quickReplies: personaList,
+      deps: { fetchImpl: listFetch, env },
+    });
+
+    expect(buttons.ok).toBe(true);
+    expect(list.ok).toBe(true);
+    const buttonBody = JSON.parse(String(buttonFetch.mock.calls[0]?.[1]?.body));
+    const listBody = JSON.parse(String(listFetch.mock.calls[0]?.[1]?.body));
+    expect(buttonBody.type).toBe("buttons");
+    expect(buttonBody.target).toBe(RECIPIENT_ID);
+    expect(listBody.type).toBe("list");
+    expect(listBody.target).toBe(RECIPIENT_ID);
+  });
+
+  it("fails closed on invalid mode before fetch", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: {
+        fetchImpl,
+        env: sendEnv({ WATI_CONVERSATION_TARGET_MODE: "auto" }),
+      },
+    });
+    expect(result).toEqual({
+      ok: false,
+      errorCode: INVALID_WATI_CONVERSATION_TARGET_MODE,
+      retryable: false,
+      messagingWindowExpired: false,
+      httpStatus: null,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const logged = errorSpy.mock.calls.map((call) => JSON.stringify(call)).join(" ");
+    expect(logged).not.toContain("auto");
+    expect(logged).not.toContain(RECIPIENT_ID);
+    expect(logged).not.toContain("wati-secret-token-value");
+  });
+
+  it("fails closed without a channel even in recipient mode", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const result = await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: {
+        fetchImpl,
+        env: sendEnv({
+          WATI_CHANNEL_PHONE_NUMBER: undefined,
+          WATI_CONVERSATION_TARGET_MODE: "recipient",
+        }),
+      },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "wati_send_not_configured",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not retry a failed send with the other target shape", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            result: "error",
+            info: "Conversation Expired",
+            error: { code: 5002 },
+          }),
+          { status: 400 },
+        ),
+    );
+    const result = await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: {
+        fetchImpl,
+        env: sendEnv({ WATI_CONVERSATION_TARGET_MODE: "recipient" }),
+      },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "http_400",
+      messagingWindowExpired: false,
+      httpStatus: 400,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body.target).toBe(RECIPIENT_ID);
+    expect(body.target).not.toBe("17435002445:8618719149214");
+  });
+
+  it("keeps the token only in Authorization and the URL origin-only", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => acceptedResponse());
+    await sendWatiSessionText({
+      recipientId: RECIPIENT_ID,
+      text: "Hello from CRM",
+      deps: {
+        fetchImpl,
+        env: sendEnv({ WATI_CONVERSATION_TARGET_MODE: "recipient" }),
+      },
+    });
+    const url = String(fetchImpl.mock.calls[0]?.[0]);
+    const init = fetchImpl.mock.calls[0]?.[1];
+    expect(url).toBe(`https://live-mt-server.wati.io${WATI_V3_TEXT_PATH}`);
+    expect(url).not.toContain("?");
+    expect(url).not.toContain("101197");
+    expect(url).not.toContain(RECIPIENT_ID);
+    expect(url).not.toContain("17435002445");
+    expect(url).not.toContain("Hello");
+    expect(url.toLowerCase()).not.toContain("wati-secret-token-value");
+    expect(init?.headers).toMatchObject({
+      Authorization: "Bearer wati-secret-token-value",
+    });
+    const body = String(init?.body);
+    expect(body.toLowerCase()).not.toContain("wati-secret-token-value");
   });
 });
