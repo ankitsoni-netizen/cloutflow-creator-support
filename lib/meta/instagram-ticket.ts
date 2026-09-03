@@ -10,7 +10,8 @@ import {
 } from "@/lib/meta/intake-validate";
 import { toPlainTicketDescription, toUntrustedPlainText } from "@/lib/meta/plain-text";
 import type { NormalizedMetaInboundText } from "@/lib/meta/types";
-import type { DbPlatform } from "@/lib/tickets/types";
+import type { DbPlatform, DbTicket } from "@/lib/tickets/types";
+import { isIdentitySchemaPhaseC } from "@/lib/meta/identity-schema-phase";
 
 export const INSTAGRAM_TICKET_ASSIGNED_TEAM = "Creator Support";
 
@@ -46,6 +47,8 @@ export type InstagramTicketInsert = {
   external_conversation_id: string;
   intake_details: Record<string, unknown>;
   metadata: Record<string, unknown>;
+  identity_status?: "unambiguous";
+  recipient_account_id?: string;
 };
 
 export function buildInstagramCollectedData(
@@ -168,6 +171,75 @@ export function mapIntakeToInstagramTicketInsert(input: {
       igIssueCategory: collected.igIssueCategory,
       route,
     },
+  };
+}
+
+export function stampWatiTicketIdentity(
+  insert: InstagramTicketInsert,
+  identity: {
+    provider: string;
+    recipientAccountId: string;
+  },
+): InstagramTicketInsert {
+  const stamped: InstagramTicketInsert = {
+    ...insert,
+    metadata: {
+      ...insert.metadata,
+      provider: identity.provider,
+      recipientAccountId: identity.recipientAccountId,
+    },
+  };
+  if (isIdentitySchemaPhaseC()) {
+    stamped.identity_status = "unambiguous";
+    stamped.recipient_account_id = identity.recipientAccountId;
+  }
+  return stamped;
+}
+
+export function dbTicketFromIntakeInsert(input: {
+  id: string;
+  ticketCode: string;
+  insert: InstagramTicketInsert;
+}): DbTicket {
+  return {
+    id: input.id,
+    ticket_code: input.ticketCode,
+    creator_name: input.insert.creator_name,
+    creator_phone: input.insert.creator_phone,
+    creator_email: input.insert.creator_email,
+    social_handle: input.insert.social_handle,
+    platform: input.insert.platform,
+    issue_type: input.insert.issue_type,
+    campaign_name: input.insert.campaign_name,
+    brand_name: input.insert.brand_name,
+    campaign_month: input.insert.campaign_month,
+    cloutflow_poc_name: input.insert.cloutflow_poc_name,
+    cloutflow_poc_contact_number: input.insert.cloutflow_poc_contact_number,
+    request_category: input.insert.request_category,
+    company_name: null,
+    requester_type: null,
+    topic_or_module: null,
+    intake_details: input.insert.intake_details,
+    source_channel: input.insert.source_channel,
+    status: input.insert.status,
+    priority: input.insert.priority,
+    assigned_team: input.insert.assigned_team,
+    assigned_executive_id: input.insert.assigned_executive_id,
+    assigned_executive_name: input.insert.assigned_executive_name,
+    issue_description: input.insert.issue_description,
+    internal_notes: input.insert.internal_notes,
+    acknowledgement_email_requested: input.insert.acknowledgement_email_requested,
+    acknowledgement_email_sent_at: null,
+    resolution_summary: null,
+    first_response_at: null,
+    resolved_at: null,
+    customer_last_notified_at: null,
+    metadata: input.insert.metadata,
+    external_contact_id: input.insert.external_contact_id,
+    external_conversation_id: input.insert.external_conversation_id,
+    identity_status: input.insert.identity_status ?? null,
+    created_at: new Date(0).toISOString(),
+    updated_at: new Date(0).toISOString(),
   };
 }
 

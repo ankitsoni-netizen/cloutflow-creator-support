@@ -313,12 +313,14 @@ export function createMemoryChatbotStore(
         }
         const metadata =
           row.metadata && typeof row.metadata === "object"
-            ? (row.metadata as { recipientAccountId?: unknown })
+            ? (row.metadata as { recipientAccountId?: unknown; provider?: unknown })
             : null;
         const identity = conversationIdentityFromLookup({
           channel,
           externalConversationId: conversationId,
           externalContactId: contactId,
+          provider:
+            typeof metadata?.provider === "string" ? metadata.provider : null,
           recipientAccountId: resolvedRecipientAccountId(
             typeof metadata?.recipientAccountId === "string"
               ? metadata.recipientAccountId
@@ -393,6 +395,7 @@ export function createMemoryChatbotStore(
         ...input,
         direction: "outbound",
         deliveryStatus: "pending",
+        routingKind: input.routingKind ?? "support",
       });
       return { outcome: "claimed" as const, id };
     },
@@ -473,9 +476,14 @@ export function createMemoryChatbotStore(
         }
       }
     },
-    async listSupportTranscript() {
+    async listSupportTranscript(input: { conversationId: string; ticketId: string }) {
       return messages
-        .filter((message) => message.routingKind === "support")
+        .filter(
+          (message) =>
+            message.conversationId === input.conversationId &&
+            message.ticketId === input.ticketId &&
+            message.purpose !== "internal_note",
+        )
         .map((message) => ({
           direction: String(message.direction ?? ""),
           messageBody: String(message.messageBody ?? ""),

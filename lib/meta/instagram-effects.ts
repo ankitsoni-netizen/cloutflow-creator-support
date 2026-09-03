@@ -34,7 +34,7 @@ import {
   sendWhatsAppProviderText,
   type WhatsAppProviderSendDeps,
 } from "@/lib/meta/whatsapp-provider";
-import { mapIntakeToInstagramTicketInsert } from "@/lib/meta/instagram-ticket";
+import { mapIntakeToInstagramTicketInsert, stampWatiTicketIdentity, dbTicketFromIntakeInsert } from "@/lib/meta/instagram-ticket";
 import { conversationIdentityFromLookup } from "@/lib/meta/conversation-identity";
 import type {
   InstagramIngestStore,
@@ -51,6 +51,7 @@ import {
   type ChatbotIdempotencyPrefix,
 } from "@/lib/meta/prompt-keys";
 import type { DbTicket } from "@/lib/tickets/types";
+import { WATI_WHATSAPP_PROVIDER } from "@/lib/wati/constants";
 
 export type ChannelEffectChannel = "instagram" | "whatsapp";
 
@@ -290,15 +291,20 @@ async function createTicketIfNeeded(options: ApplyEffectsOptions): Promise<{
         retryableFailure: false,
       };
     }
-    const created = await options.deps.store.insertInstagramTicket(
-      mapIntakeToInstagramTicketInsert({
-        collected: options.collected,
-        externalContactId: identity.externalContactId,
-        externalConversationId: identity.externalConversationId,
-        sourceChannel: channel,
-        recipientAccountId: identity.recipientAccountId || null,
-      }),
-    );
+    let insert = mapIntakeToInstagramTicketInsert({
+      collected: options.collected,
+      externalContactId: identity.externalContactId,
+      externalConversationId: identity.externalConversationId,
+      sourceChannel: channel,
+      recipientAccountId: identity.recipientAccountId || null,
+    });
+    if (identity.provider === WATI_WHATSAPP_PROVIDER) {
+      insert = stampWatiTicketIdentity(insert, {
+        provider: identity.provider,
+        recipientAccountId: identity.recipientAccountId,
+      });
+    }
+    const created = await options.deps.store.insertInstagramTicket(insert);
     if (created.outcome === "failed") {
       return { ticketId: null, ticketCode: null, created: false, retryableFailure: true };
     }
@@ -744,8 +750,30 @@ export async function applyInstagramEffects(
         created.ticketId as string,
         options.deps.loadTicket,
       );
+      const isWati = options.event.provider === WATI_WHATSAPP_PROVIDER;
+      const mailTicket =
+        ticket ??
+        (isWati && created.ticketId && created.ticketCode
+          ? dbTicketFromIntakeInsert({
+              id: created.ticketId,
+              ticketCode: created.ticketCode,
+              insert: stampWatiTicketIdentity(
+                mapIntakeToInstagramTicketInsert({
+                  collected: options.collected,
+                  externalContactId: options.event.externalContactId,
+                  externalConversationId: options.event.externalConversationId,
+                  sourceChannel: "whatsapp",
+                  recipientAccountId: options.event.recipientAccountId ?? null,
+                }),
+                {
+                  provider: WATI_WHATSAPP_PROVIDER,
+                  recipientAccountId: options.event.recipientAccountId ?? "",
+                },
+              ),
+            })
+          : null);
       let emailSent = false;
-      if (ticket) {
+      if (mailTicket) {
         const transcriptRows = await options.deps.store.listSupportTranscript({
           conversationId: options.deps.conversationId,
           ticketId: created.ticketId as string,
@@ -758,22 +786,30 @@ export async function applyInstagramEffects(
           idempotencyKey: `email:wa-confirm:${created.ticketId}`,
         });
         if (confirmationClaim.outcome === "claimed") {
-          const mail = await import("@/lib/email/instagram-ticket-mail");
-          const mailed = await mail.sendInstagramTicketConfirmationEmail({
-            ticket,
-            transcriptText,
-          });
-          await options.deps.store.markEmailDelivery(confirmationClaim.id, {
-            deliveryStatus:
-              mailed.outcome === "sent"
-                ? "sent"
-                : mailed.outcome === "skipped"
-                  ? "skipped"
-                  : "failed",
-            brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
-            errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
-          });
-          emailSent = mailed.outcome === "sent";
+          try {
+            const mail = await import("@/lib/email/instagram-ticket-mail");
+            const mailed = await mail.sendInstagramTicketConfirmationEmail({
+              ticket: mailTicket,
+              transcriptText,
+            });
+            await options.deps.store.markEmailDelivery(confirmationClaim.id, {
+              deliveryStatus:
+                mailed.outcome === "sent"
+                  ? "sent"
+                  : mailed.outcome === "skipped"
+                    ? "skipped"
+                    : "failed",
+              brevoMessageId: mailed.outcome === "sent" ? mailed.messageId : null,
+              errorCode: mailed.outcome === "sent" ? null : mailed.errorCode,
+            });
+            emailSent = mailed.outcome === "sent";
+          } catch {
+            await options.deps.store.markEmailDelivery(confirmationClaim.id, {
+              deliveryStatus: "failed",
+              brevoMessageId: null,
+              errorCode: "email_send_failed",
+            });
+          }
         } else if (
           confirmationClaim.outcome === "duplicate" &&
           confirmationClaim.deliveryStatus === "sent"
@@ -783,23 +819,42 @@ export async function applyInstagramEffects(
       }
 
       const firstName = firstNameFromFullName(
-        ticket?.creator_name ?? options.collected.creatorName ?? "",
+        mailTicket?.creator_name ?? options.collected.creatorName ?? "",
       );
-      const confirmCode = created.ticketCode ?? ticket?.ticket_code ?? "";
+      const confirmCode = created.ticketCode ?? mailTicket?.ticket_code ?? "";
       if (confirmCode && created.ticketId) {
-        const confirmSend = await dispatchSend(
-          {
-            type: "send_text",
-            text: emailSent
-              ? ticketCreatedWithEmailText(firstName, confirmCode)
-              : ticketCreatedWithoutEmailText(firstName, confirmCode),
-            promptKey: channelTicketCreatedKey("wa", created.ticketId),
-          },
-          options.deps,
-          created.ticketId,
-          options.intakeSessionVersion,
-          channel,
-        );
+        const confirmSend = isWati
+          ? await dispatchSend(
+              {
+                type: "send_quick_replies",
+                text: withPostCompletionQuestion(
+                  created.created
+                    ? creatorTicketRaisedText(confirmCode)
+                    : activeTicketAttachText(confirmCode),
+                ),
+                promptKey: created.created
+                  ? "awaiting_post_completion"
+                  : `awaiting_post_completion:reuse:${confirmCode}`,
+                quickReplies: postCompletionQuickReplies(),
+              },
+              options.deps,
+              created.ticketId,
+              options.intakeSessionVersion,
+              channel,
+            )
+          : await dispatchSend(
+              {
+                type: "send_text",
+                text: emailSent
+                  ? ticketCreatedWithEmailText(firstName, confirmCode)
+                  : ticketCreatedWithoutEmailText(firstName, confirmCode),
+                promptKey: channelTicketCreatedKey("wa", created.ticketId),
+              },
+              options.deps,
+              created.ticketId,
+              options.intakeSessionVersion,
+              channel,
+            );
         if (confirmSend.retryableFailure) {
           return { ticketId, ticketCode, retryableFailure: true, snapshotPersisted: false };
         }

@@ -519,15 +519,6 @@ export async function ingestWhatsAppInboundMessage(
       ...whatsappEffectArgs(event, store, conversation.row.id, ingestDeps),
     });
 
-    if (applied.retryableFailure) {
-      await store.markWebhookEvent(
-        eventId,
-        WEBHOOK_STATUS_FAILED,
-        "whatsapp_send_failed",
-      );
-      return { outcome: "failed", errorCode: "whatsapp_send_failed" };
-    }
-
     if (applied.ticketId) {
       reduced.snapshot.ticketId = applied.ticketId;
       if (watiPersona) {
@@ -538,6 +529,27 @@ export async function ingestWhatsAppInboundMessage(
       } else {
         reduced.snapshot.state = "ticket_open";
       }
+    }
+
+    if (applied.retryableFailure) {
+      if (watiPersona && applied.ticketId) {
+        const linked = await store.saveConversationSnapshot(
+          conversation.row.id,
+          reduced.snapshot,
+          event.timestamp,
+          event.displayName,
+        );
+        if (linked.outcome === "failed") {
+          await store.markWebhookEvent(eventId, WEBHOOK_STATUS_FAILED, linked.errorCode);
+          return { outcome: "failed", errorCode: linked.errorCode };
+        }
+      }
+      await store.markWebhookEvent(
+        eventId,
+        WEBHOOK_STATUS_FAILED,
+        "whatsapp_send_failed",
+      );
+      return { outcome: "failed", errorCode: "whatsapp_send_failed" };
     }
 
     const saved = await store.saveConversationSnapshot(

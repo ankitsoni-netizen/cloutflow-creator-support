@@ -20,8 +20,10 @@ import {
   IDENTITY_AMBIGUOUS,
   allowOutboundReply,
   boundOutboundRecipient,
-  recipientAccountIdFromConversationKey,
+  outboundIdentityAllowsReply,
 } from "@/lib/meta/conversation-identity";
+import { isIdentitySchemaPhaseC } from "@/lib/meta/identity-schema-phase";
+import { whatsappCrmConversationLookup } from "@/lib/tickets/whatsapp-crm-identity";
 
 export type WhatsAppStaffReplyResult =
   | {
@@ -70,7 +72,16 @@ export async function sendStaffWhatsAppReply(input: {
       errorCode: "ticket_not_active",
     };
   }
-  if (
+  if (isIdentitySchemaPhaseC()) {
+    const ticketStatus = input.ticket.identity_status;
+    if (ticketStatus && !outboundIdentityAllowsReply(ticketStatus)) {
+      return {
+        ok: false,
+        error: "This ticket's conversation identity is not verified for outbound replies.",
+        errorCode: IDENTITY_AMBIGUOUS,
+      };
+    }
+  } else if (
     !allowOutboundReply({
       identityStatus: input.ticket.identity_status,
       ticketContactId: input.ticket.external_contact_id,
@@ -109,13 +120,7 @@ export async function sendStaffWhatsAppReply(input: {
       ? await store.getConversation(
           "whatsapp",
           input.ticket.external_conversation_id,
-          {
-            externalContactId: input.ticket.external_contact_id,
-            recipientAccountId: recipientAccountIdFromConversationKey(
-              input.ticket.external_conversation_id,
-              input.ticket.external_contact_id,
-            ),
-          },
+          whatsappCrmConversationLookup(input.ticket),
         )
       : null;
   if (conversation && "errorCode" in conversation) {

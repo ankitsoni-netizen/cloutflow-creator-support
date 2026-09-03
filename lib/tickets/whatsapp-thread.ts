@@ -3,7 +3,7 @@
 import { getActiveStaffContext } from "@/lib/tickets/auth-action";
 import { loadTicketById } from "@/lib/tickets/email-delivery";
 import { createAdminInstagramStore } from "@/lib/meta/instagram-store";
-import { recipientAccountIdFromConversationKey } from "@/lib/meta/conversation-identity";
+import { whatsappCrmConversationLookup } from "@/lib/tickets/whatsapp-crm-identity";
 import type { TimelineItem } from "@/lib/tickets/workflow-types";
 
 export async function fetchWhatsAppTicketTimelineAction(input: {
@@ -27,13 +27,7 @@ export async function fetchWhatsAppTicketTimelineAction(input: {
     const conversation = await store.getConversation(
       "whatsapp",
       conversationId,
-      {
-        externalContactId: loaded.data.external_contact_id,
-        recipientAccountId: recipientAccountIdFromConversationKey(
-          conversationId,
-          loaded.data.external_contact_id,
-        ),
-      },
+      whatsappCrmConversationLookup(loaded.data),
     );
     if (!conversation || "errorCode" in conversation) return { items: [] };
     if (
