@@ -58,7 +58,7 @@ export interface TimelineItem {
   fromStatus?: string | null;
   toStatus?: string | null;
   deliveryStatus?: DeliveryStatus | null;
-  visibilityLabel?: "Internal Note" | "Creator Reply" | "Resolution Email" | "Instagram" | "WhatsApp";
+  visibilityLabel?: "Internal Note" | "Creator Reply" | "Resolution Email" | "Inbound Email" | "Instagram" | "WhatsApp";
   commentId?: string;
   canRetryEmail?: boolean;
   canRetryInstagram?: boolean;

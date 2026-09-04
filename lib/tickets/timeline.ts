@@ -155,16 +155,21 @@ function describeEvent(event: TicketEvent): TimelineItem {
 
 function describeComment(comment: TicketComment): TimelineItem {
   const isCreator = comment.visibility === "creator";
+  const inboundEmail = isCreator && !comment.sendToCreator;
   const failed = comment.deliveryStatus === "failed";
   const pending = comment.deliveryStatus === "pending";
   const sent =
     comment.deliveryStatus === "sent" ||
     comment.deliveryStatus === "delivered";
 
-  let title = isCreator ? "Creator reply email" : "Internal note added";
-  if (isCreator && pending) title = "Creator reply email · Pending";
-  if (isCreator && sent) title = "Creator reply email · Sent";
-  if (isCreator && failed) title = "Creator reply email · Failed";
+  let title = inboundEmail
+    ? "Inbound email from creator"
+    : isCreator
+      ? "Creator reply email"
+      : "Internal note added";
+  if (isCreator && !inboundEmail && pending) title = "Creator reply email · Pending";
+  if (isCreator && !inboundEmail && sent) title = "Creator reply email · Sent";
+  if (isCreator && !inboundEmail && failed) title = "Creator reply email · Failed";
 
   return {
     id: `comment-${comment.id}`,
@@ -174,9 +179,13 @@ function describeComment(comment: TicketComment): TimelineItem {
     title,
     detail: comment.commentText,
     deliveryStatus: comment.deliveryStatus,
-    visibilityLabel: isCreator ? "Creator Reply" : "Internal Note",
-    commentId: isCreator ? comment.id : undefined,
-    canRetryEmail: isCreator && failed,
+    visibilityLabel: inboundEmail
+      ? "Inbound Email"
+      : isCreator
+        ? "Creator Reply"
+        : "Internal Note",
+    commentId: isCreator && !inboundEmail ? comment.id : undefined,
+    canRetryEmail: isCreator && !inboundEmail && failed,
   };
 }
 

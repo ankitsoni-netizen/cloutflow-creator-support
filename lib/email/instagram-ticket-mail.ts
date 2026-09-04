@@ -6,6 +6,7 @@ import {
   sanitizeEmailHeaderValue,
 } from "@/lib/email/html";
 import { sendTransactionalEmail } from "@/lib/email/send";
+import { ensureTicketReplyToAddress } from "@/lib/email/ensure-reply-alias";
 import { buildTicketAcknowledgementEmail } from "@/lib/email/templates/ticket-acknowledgement";
 import { buildTicketReplyEmail } from "@/lib/email/templates/ticket-reply";
 import {
@@ -75,9 +76,11 @@ export async function sendInstagramTicketConfirmationEmail(input: {
     const content = buildTicketAcknowledgementEmail(
       buildInstagramTicketAcknowledgementContent(input.ticket),
     );
+    const replyTo = await ensureTicketReplyToAddress(input.ticket.id);
     const sent = await sendTransactionalEmail({
       toEmail: recipient,
       toName: sanitizeEmailHeaderValue(input.ticket.creator_name ?? ""),
+      replyTo: replyTo ?? undefined,
       subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,
@@ -177,9 +180,11 @@ export async function sendInstagramCreatorReplyEmail(input: {
       campaignName: input.ticket.campaign_name ?? "",
       campaignMonth: labels.campaignMonth,
     });
+    const replyTo = await ensureTicketReplyToAddress(input.ticket.id);
     const sent = await sendTransactionalEmail({
       toEmail: recipient,
       toName: sanitizeEmailHeaderValue(input.ticket.creator_name ?? ""),
+      replyTo: replyTo ?? undefined,
       subject: instagramTicketEmailSubject(input.ticket.ticket_code),
       html: content.html,
       text: content.text,
@@ -379,11 +384,15 @@ export async function sendInstagramResolutionTranscriptEmail(input: {
   }
 
   try {
+    const replyTo = isValidEmailAddress(creator)
+      ? (await ensureTicketReplyToAddress(input.ticket.id)) ?? undefined
+      : undefined;
     const sent = await sendTransactionalEmail({
       toEmail,
       toName: isValidEmailAddress(creator)
         ? sanitizeEmailHeaderValue(input.ticket.creator_name ?? "")
         : "Cloutflow Support",
+      replyTo,
       subject: instagramTicketEmailSubject(ticketCode),
       html,
       text: transcript,

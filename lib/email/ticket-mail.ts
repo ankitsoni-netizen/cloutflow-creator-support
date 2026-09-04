@@ -6,6 +6,7 @@ import {
   sanitizeEmailHeaderValue,
 } from "@/lib/email/html";
 import { sendTransactionalEmail } from "@/lib/email/send";
+import { ensureTicketReplyToAddress } from "@/lib/email/ensure-reply-alias";
 import {
   buildTicketAcknowledgementEmail,
   type TicketAcknowledgementContent,
@@ -39,6 +40,13 @@ import { formatDateTime } from "@/lib/utils";
 export type AcknowledgementOutcome = "sent" | "skipped" | "failed";
 export type InternalNotificationOutcome = "sent" | "skipped" | "failed";
 
+export type TicketMailSendDeps = {
+  sendEmail?: (
+    input: SendTransactionalEmailInput,
+  ) => Promise<SendTransactionalEmailResult>;
+  ensureReplyTo?: (ticketId: string) => Promise<string | null>;
+};
+
 export type InternalNotificationSendDeps = {
   sendEmail?: (
     input: SendTransactionalEmailInput,
@@ -46,6 +54,13 @@ export type InternalNotificationSendDeps = {
   getSupportInboxEmail?: () => string | undefined;
   isEmailConfigured?: () => boolean;
 };
+
+async function creatorFacingReplyTo(
+  ticketId: string,
+  ensureReplyTo: TicketMailSendDeps["ensureReplyTo"],
+): Promise<string | null> {
+  return (ensureReplyTo ?? ensureTicketReplyToAddress)(ticketId);
+}
 
 export function safeEmailErrorMessage(error: unknown): string {
   if (error instanceof EmailServiceError) return error.message;
@@ -305,6 +320,7 @@ export async function sendInternalSupportNotificationForTicket(
 
 export async function sendAcknowledgementForTicket(
   ticket: DbTicket,
+  deps: TicketMailSendDeps = {},
 ): Promise<{ outcome: AcknowledgementOutcome; error?: string }> {
   if (!ticket.acknowledgement_email_requested) {
     return { outcome: "skipped" };
@@ -331,9 +347,12 @@ export async function sendAcknowledgementForTicket(
     const content = buildTicketAcknowledgementEmail(
       buildAcknowledgementEmailContent(ticket),
     );
-    await sendTransactionalEmail({
+    const replyTo = await creatorFacingReplyTo(ticket.id, deps.ensureReplyTo);
+    const sendEmail = deps.sendEmail ?? sendTransactionalEmail;
+    await sendEmail({
       toEmail: recipient,
       toName: sanitizeEmailHeaderValue(ticket.creator_name ?? ""),
+      replyTo: replyTo ?? undefined,
       subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,
@@ -348,10 +367,13 @@ export async function sendAcknowledgementForTicket(
   }
 }
 
-export async function sendCreatorReplyEmail(options: {
-  ticket: DbTicket;
-  commentText: string;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function sendCreatorReplyEmail(
+  options: {
+    ticket: DbTicket;
+    commentText: string;
+  },
+  deps: TicketMailSendDeps = {},
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const recipient = options.ticket.creator_email?.trim() ?? "";
   if (!isValidEmailAddress(recipient)) {
     return { ok: false, error: "Creator email is missing or invalid." };
@@ -377,9 +399,12 @@ export async function sendCreatorReplyEmail(options: {
       campaignMonth: labels.campaignMonth,
     });
 
-    await sendTransactionalEmail({
+    const replyTo = await creatorFacingReplyTo(options.ticket.id, deps.ensureReplyTo);
+    const sendEmail = deps.sendEmail ?? sendTransactionalEmail;
+    await sendEmail({
       toEmail: recipient,
       toName: sanitizeEmailHeaderValue(options.ticket.creator_name ?? ""),
+      replyTo: replyTo ?? undefined,
       subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,
@@ -394,10 +419,13 @@ export async function sendCreatorReplyEmail(options: {
   }
 }
 
-export async function sendResolutionEmail(options: {
-  ticket: DbTicket;
-  resolutionSummary: string;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function sendResolutionEmail(
+  options: {
+    ticket: DbTicket;
+    resolutionSummary: string;
+  },
+  deps: TicketMailSendDeps = {},
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const recipient = options.ticket.creator_email?.trim() ?? "";
   if (!isValidEmailAddress(recipient)) {
     return { ok: false, error: "Creator email is missing or invalid." };
@@ -423,9 +451,12 @@ export async function sendResolutionEmail(options: {
       campaignMonth: labels.campaignMonth,
     });
 
-    await sendTransactionalEmail({
+    const replyTo = await creatorFacingReplyTo(options.ticket.id, deps.ensureReplyTo);
+    const sendEmail = deps.sendEmail ?? sendTransactionalEmail;
+    await sendEmail({
       toEmail: recipient,
       toName: sanitizeEmailHeaderValue(options.ticket.creator_name ?? ""),
+      replyTo: replyTo ?? undefined,
       subject: sanitizeEmailHeaderValue(content.subject),
       html: content.html,
       text: content.text,
